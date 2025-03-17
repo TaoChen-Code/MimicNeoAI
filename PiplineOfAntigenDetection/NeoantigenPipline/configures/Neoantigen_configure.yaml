@@ -1,0 +1,44 @@
+# input_dir/
+# ├── Sample_001/
+# │   ├── Sample_001.R1.fq.gz
+# │   └── Sample_001.R2.fq.gz
+# ├── Sample_002/
+# │   ├── Sample_002.R1.fq.gz
+# │   └── Sample_002.R2.fq.gz
+# └── Sample_003/
+#     ├── Sample_003.R1.fq.gz
+#     └── Sample_003.R2.fq.gz
+# Configuration Paths
+path:
+  tmp_dir: "/path/to/project/tmp/"          # Directory for temporary files
+  input_dir: "/path/to/raw_data/"           # Input data directory containing samples
+  output_dir: "/path/to/analysis_results/" # Output directory for final results
+
+# Runtime Parameters
+args:
+  thread: 60                # CPU threads per sample
+  pool_size: 1              # Concurrent sample processing count
+  mem: "128G"               # Max memory per sample (pool_size × mem < total memory)
+
+# Analysis Parameters
+others:
+  seq_type: "wes"           # Sequencing type (wes/rna)
+  species: "human"          # Species (human/mouse)
+  mutation_calling_tool: "Mutect2"  # Variant caller (Mutect2 for somatic, HaplotypeCaller for germline)
+  pair: True                # Paired-end sequencing (True/False)
+  QC: True                  # Enable quality control
+  host_variants_calling_and_annotation: True  # Host variant processing
+  hlatyping: True           # HLA typing enable
+  peptides_identification: True  # Peptide prediction
+  
+  # WES-specific parameters
+  bed_file: "/path/to/target_regions/exome_targets.bed"  # Capture regions file
+  time_out: 36000          # Maximum runtime in seconds
+
+# Sample List (Example entries)
+samples:
+  - Sample_001
+  - Sample_002
+  # - sample_name_03
+  # - sample_name_04
+  # - sample_name_05
