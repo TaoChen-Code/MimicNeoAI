@@ -1,0 +1,29 @@
+#配置路经
+path:
+ tmp_dir : "/home/chentao/project/neoantigen/tmp/" #存放产生的临时文件
+ input_dir : "/home/data/Sequencing/Level1/WGS/" #样本所在的文件夹
+ output_dir : "/home/data/Sequencing/Level2/WGS/mutationCalling_v1.0/human/" #输出文件夹
+#配置运行参数
+args:
+ thread : 10 #每个样本占用的cpu资源数量，master节点有120个线程,node2节点的服务器cpu共有80个线程，注意thread*pool_size不能超过总线程数
+ pool_size : 1 #同时处理的样本数量，建议不要太大，2~4左右
+ mem : "128G" #所占用的最大内存空间
+#其他配置
+others:
+ seq_type : "wgs" # wgs/wes/rna 
+ species : "human" #human or mouse
+ pair : False #如果是双末端测序填True，单端测序填Fasle
+#待处理的样本名称
+samples:
+ - P156N
+ # - LLC-1 
+ # - LLC-2 
+ # - Panc02-2 
+ # - Panc02wei-1 
+ # - RM1-1 
+ # - RM1-2
+ #- MC38T1
+ #- MC38T2
+ #- MC38T3
+ 
+
