@@ -1,0 +1,23 @@
+category	subcategory	value
+Response	Fusobacterium animalis	4.62813241217363
+Response	Bacteroides hominis	4.156737253564673
+Response	Fusobacterium varium	4.137030841531859
+Response	Segatella copri	3.9582726962539665
+Response	Bacteroides fragilis	3.2001242917474775
+Response	Fusobacterium vincentii	2.502812033771485
+Response	Kocuria palustris	2.3095882241304606
+Response	Prevotella merdae	2.12224739321559
+Response	Porphyromonas uenonis	2.0756039525061505
+Response	Campylobacter ureolyticus	2.038418986037655
+Response	others	68.87103191506705
+Non_Response	Fusobacterium animalis	0.05454971362784215
+Non_Response	Bacteroides hominis	1.7040555767608936
+Non_Response	Fusobacterium varium	0.002576431314827525
+Non_Response	Segatella copri	3.3437093050574678
+Non_Response	Bacteroides fragilis	0.5537358278331619
+Non_Response	Fusobacterium vincentii	0.07198141534700245
+Non_Response	Kocuria palustris	0.0036013482048837
+Non_Response	Prevotella merdae	2.2947371209098404
+Non_Response	Porphyromonas uenonis	0.17768934999644195
+Non_Response	Campylobacter ureolyticus	0.0
+Non_Response	others	91.79336391094765
