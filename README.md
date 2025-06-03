@@ -1,3 +1,4 @@
 # MimicNeoAI
-Due to the lack of algorithms and tools for the systematic analysis of microbial mimicry antigens, we developed the MimicNeoAI pipeline, which is composed of three main components: candidate microbial antigen detection, candidate tumor neoantigen detection and prediction of neoantigens and microbial antigen mimicry!
+MimicNeoAI, a computational pipeline that integrates sequencing data to simultaneously identify microbial antigens, tumor neoantigens, and predict the immunogenic potential of peptide-HLA complexes using a Bidirectional Long Short-Term Memory (BiLSTM) network-based model trained on immunogenic epitope datasets from host and microbial. This pipline also evaluates microbial mimicry antigen and tumor neoantigen pairs through sequence similarity, identifying candidates that can provoke cross-reactive immune responses and enhance immunotherapy.
+
 
