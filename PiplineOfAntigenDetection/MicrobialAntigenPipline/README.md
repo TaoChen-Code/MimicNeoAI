@@ -1,5 +1,4 @@
 # MicrobialAntigen
-Transcriptional Activity of Tumor Microbiota Dictates the Specificity of Microbial Antigens in Cancer Immunotherapy
 ## install 
 
 ### **1. Download release**, pkgs , refs and test data
@@ -9,7 +8,7 @@ Transcriptional Activity of Tumor Microbiota Dictates the Specificity of Microbi
 ####  [MicrobialAntigen.zip]()
 
 ```shell
-git clone https://github.com/BioStaCs-public/MicrobialAbundance.git
+git clone https://github.com/BioStaCs-public/MicrobialAntigen.git
 ```
 
 #### (2) pkgs:
@@ -41,21 +40,34 @@ conda create -n java17
 conda activate java17
 conda install conda-forge::openjdk=17
 
-conda create -n MicrobialAntigen
 conda create -n MicrobialAntigen python=3.6
+conda activate MicrobialAntigen
 pip install pyyaml tqdm pandas
 conda install -y bioconda::fastp=0.22.0
 conda install -y bioconda::samtools=1.5
+("ln -sf ~/.conda/envs/MicrobialAntigen/lib/libcrypto.so.1.1 ~/.conda/envs/MicrobialAntigen/lib/libcrypto.so.1.0.0" if error while loading shared libraries: libcrypto.so.1.0.0)
 conda install -y bioconda::bwa=0.7.17
 conda install -y bioconda::bowtie2=2.3.5.1
 conda install -y bioconda::blast=2.12.0
 
-
-
 conda create -n pvactools4.2.1
 conda activate pvactools4.2.1
-conda install python=3.9
+conda install python=3.7
 pip install pvactools==4.2.1
+pip install mhcflurry
+mhcflurry-downloads fetch( Download the data manually: mhcflurry-downloads fetch models_class1_presentation --already-downloaded-dir downloads)
+pip install tensorflow==1.15.0
+conda install -c conda-forge cudatoolkit=10.0 cudnn=7.6
+pip install mhcnuggets
+pip install git+https://github.com/griffithlab/bigmhc.git#egg=bigmhc
+BIGMHC_DIR=$(dirname $(which bigmhc_predict))
+echo "export PATH=\$PATH:$BIGMHC_DIR" >> ~/.bashrc
+source ~/.bashrc
+pip install git+https://github.com/griffithlab/deepimmuno.git#egg=deepimmuno
+DEEPIMMUNO_DIR=$(dirname $(which deepimmuno-cnn))
+echo "export PATH=\$PATH:$DEEPIMMUNO_DIR" >> ~/.bashrc
+source ~/.bashrc
+conda activate MicrobialAntigen
 ```
 
 ### 3. ‌**Edit the configuration file**
@@ -152,7 +164,6 @@ samples:
 - Sample_2
 - Sample_3
 ```
-
 ### **4. Run pipline on test data**
 
 ```shell
@@ -164,4 +175,18 @@ python MicrobialAbundance_start.py -c ./configures/MicrobialAbundance_configure.
 ```
 
 **Runtime logs can be viewed in the command-line terminal and are backed up in `MicrobialAbundance/MicrobialAbundancePipline/log`**`MicrobialAbundance/MicrobialAbundancePipline/log`
+
+### **5. Important Notes**‌
+**① Pipeline Interruption Handling**‌
+If the pipeline is terminated due to errors or manually interrupted, it will ‌skip existing non-empty files‌ upon restarting. To ensure pipeline integrity:
+
+‌**Mandatory verification‌:**
+Before rerunning, confirm all pre-existing files (e.g., in <project_root>/sample/01.alignment/) are fully generated and valid.
+**‌Uncertainty protocol‌:**
+If file completeness cannot be verified, delete them using:
+```shell
+rm -rf <project_root>/tmp/sample_01/alignment/*
+```
+‌**Critical warning‌:**
+Residual corrupted files may cause downstream analysis failures or data contamination.
 

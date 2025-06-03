@@ -37,7 +37,6 @@ def hlahd(sample, configure, pathes, tool):
     hla_gen = pathes['path']['hla_gen']
     
     # Output directory configuration
-    
     step_name_hla = configure['step_name']['hla']
     output_hla = output_path + f'/{sample}/{step_name_hla}/'
     fastq_dir = f"{output_hla}/{sample}/fastq/"

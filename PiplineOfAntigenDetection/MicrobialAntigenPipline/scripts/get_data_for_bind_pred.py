@@ -1,4 +1,4 @@
-def get_data_for_pvacbind(blast_file,pvacbind_file,output_blastx):
+def get_data_for_bind_pred(blast_file,pvacbind_file,output_blastx):
     """Process BLAST results for pVACbind input
     
     Args:
