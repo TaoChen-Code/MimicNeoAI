@@ -1,5 +1,5 @@
-# MicrobialAntigen
-Transcriptional Activity of Tumor Microbiota Dictates the Specificity of Microbial Antigens in Cancer Immunotherapy
+# MimicNeoAI
+MimicNeoAI, a computational pipeline that integrates sequencing data to simultaneously identify microbial antigens, tumor neoantigens, and predict the immunogenic potential of peptide-HLA complexes using a Bidirectional Long Short-Term Memory (BiLSTM) network-based model trained on immunogenic epitope datasets from host and microbial. This pipline also evaluates microbial mimicry antigen and tumor neoantigen pairs through sequence similarity, identifying candidates that can provoke cross-reactive immune responses and enhance immunotherapy.
 ## install 
 
 ### **1. Download release**, pkgs , refs and test data
@@ -164,4 +164,3 @@ python MicrobialAbundance_start.py -c ./configures/MicrobialAbundance_configure.
 ```
 
 **Runtime logs can be viewed in the command-line terminal and are backed up in `MicrobialAbundance/MicrobialAbundancePipline/log`**`MicrobialAbundance/MicrobialAbundancePipline/log`
-
