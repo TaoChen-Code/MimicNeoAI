@@ -130,7 +130,7 @@ def start(sample):
             hlahd(sample,configure,pathes,tool)    
         
         # Neoantigen prediction
-        if seq_type != 'rna':
+        if seq_type != 'rna' and peptides_identification:
             output_dir = configure['path']['output_dir']
             output_vep = output_dir + f'/{sample}/08-vep/'
             step_name_hla = configure['step_name']['hla']
