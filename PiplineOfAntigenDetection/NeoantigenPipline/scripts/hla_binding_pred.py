@@ -6,7 +6,6 @@ import multiprocessing
 from multiprocessing import Manager
 from multiprocessing import Pool
 
-
 class NoDaemonProcess(multiprocessing.Process):
     # make 'daemon' attribute always return False
     def _get_daemon(self):
@@ -15,15 +14,16 @@ class NoDaemonProcess(multiprocessing.Process):
         pass
     daemon = property(_get_daemon, _set_daemon)
     
-# ##python3.11
-# class NoDaemonPool(multiprocessing.pool.Pool):
-#     @staticmethod
-#     def Process(_, *args, **kwds):
-#         return NoDaemonProcess(*args, **kwds)
-
-#python3.7
-class NoDaemonPool(multiprocessing.pool.Pool):
-    Process = NoDaemonProcess
+if sys.version_info <= (3, 7):
+    # Python 3.7及以下版本实现
+    class NoDaemonPool(Pool):
+        Process = NoDaemonProcess
+else:
+    # Python 3.8及以上版本实现
+    class NoDaemonPool(Pool):
+        @staticmethod
+        def Process(_, *args, **kwds):
+            return NoDaemonProcess(*args, **kwds)
 
 class Pvacseq():
     def __init__(self, tool):
@@ -61,7 +61,7 @@ class Pvacseq():
                             
         return hlaI, hlaII
     
-    def pvacseq(self,sample, output_vcf,output_hla,configure,pathes,vcf_chunk = None):
+    def pvacseq(self,run_sample_id, sample, output_vcf,output_hla,configure,pathes,vcf_chunk = None):
         """
         Run pVACseq pipeline on a VCF file or chunk with multiprocessing support.
         
@@ -103,7 +103,7 @@ class Pvacseq():
             output_pvacseq = output_dir + f'/{sample}/{step_name_pvacseq}/chunks/chunk_{vcf_chunk}'
     
         cmd_mkdir = "mkdir -p {}".format(output_pvacseq)
-        self.tool.judge_then_exec(sample,cmd_mkdir,output_pvacseq)
+        self.tool.judge_then_exec(run_sample_id,cmd_mkdir,output_pvacseq)
         #后缀
         if mutation_calling_tool == 'HaplotypeCaller':
             if species == "mouse":
@@ -132,12 +132,12 @@ class Pvacseq():
             # cmd_export2 = "export CUDA_VISIBLE_DEVICES=\"\""
             # self.tool.exec_cmd(cmd_export1,sample)
             # self.tool.exec_cmd(cmd_export2,sample)
-            self.tool.judge_then_exec(sample,cmd,f"{output_pvacseq}/combined/{sample_name}.all_epitopes.tsv",vcf_chunk)
+            self.tool.judge_then_exec(run_sample_id,cmd,f"{output_pvacseq}/combined/{sample_name}.all_epitopes.tsv",vcf_chunk)
         else:
             self.tool.write_log("hlahd results is all Not_typed!","error")
         return output_pvacseq
           
-    def run_pvacseq_parallel(self,sample, output_vcf,output_hla,configure,pathes):
+    def run_pvacseq_parallel(self,run_sample_id,sample,output_vcf,output_hla,configure,pathes):
         """
         Execute pvacseq in parallel across 10 VCF chunks.
         
@@ -156,7 +156,7 @@ class Pvacseq():
         pool = NoDaemonPool(thread)
         for i in range(thread):
             chunk = str(i)
-            pool.apply_async(self.pvacseq,(sample, output_vcf, output_hla, configure, pathes, chunk,),error_callback=self.tool.print_pool_error)
+            pool.apply_async(self.pvacseq,(run_sample_id, sample, output_vcf, output_hla, configure, pathes, chunk,),error_callback=self.tool.print_pool_error)
         pool.close()
         pool.join()
         

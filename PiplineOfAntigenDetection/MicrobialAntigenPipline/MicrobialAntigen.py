@@ -28,6 +28,7 @@ tool.write_log(f"cmd_log: {tool.cmd_log}","info")
 # Argument parser setup
 parser = argparse.ArgumentParser(description='MicNeo')
 parser.add_argument('-c','--configure',help="Configuration file path")
+parser.add_argument('-p','--pathes',help="Pathes file")
 args = parser.parse_args()
 
 # Load configuration
@@ -35,8 +36,7 @@ configure = tool.get_configure(args.configure)
 tool.write_log(f"configures: {configure}","info")
 
 # Load path configurations
-with open(f"./configures/{flag}_pathes.yaml","r") as file:
-    pathes = yaml.safe_load(file)
+pathes = tool.get_pathes(args.pathes)
 tool.write_log(f"pathes: {pathes}","info")
 
 # Read configuration parameters

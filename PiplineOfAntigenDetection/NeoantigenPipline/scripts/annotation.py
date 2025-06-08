@@ -72,7 +72,7 @@ def split_vcf(input_vcf: str, output_dir: str, file_suffix: str, chunks: int = 1
         chunk_start = chunk_end
 
 
-def annotation_vcf(sample,tool,pathes,configure):
+def annotation_vcf(run_sample_id,sample,tool,pathes,configure):
     # Load parameters
     mouse_vep_sif = pathes['path']['mouse_vep_sif']
     human_vep_sif = pathes['path']['human_vep_sif']
@@ -86,7 +86,7 @@ def annotation_vcf(sample,tool,pathes,configure):
     # Create output directory
     vep_dir = output_dir + '/{}/'.format(sample) + configure['step_name']['annotation'] + '/'
     cmd_mkdir = "mkdir {}".format(vep_dir)
-    tool.judge_then_exec(sample,cmd_mkdir,vep_dir)
+    tool.judge_then_exec(run_sample_id,cmd_mkdir,vep_dir)
     
     # Configure file paths
     mutation_calling_tool = configure['others']['mutation_calling_tool']
@@ -121,11 +121,11 @@ def annotation_vcf(sample,tool,pathes,configure):
         cmd1 = f"singularity exec -B {vep_dir}:/output_dir/ -B {data_dir}:/data_dir/ -B {vep_data_dir}:/vep_data/ -B {hg38_ref_dir}:/fasta_data/ {human_vep_sif} vep --fork {thread} --input_file {input_file} --output_file {output_file} --dir_cache /vep_data/ --fasta /fasta_data/{ref_name} --dir_plugins /vep_data/{plugins_version}/ {vep_options}"
     
     # Execute annotation
-    tool.judge_then_exec(sample,cmd1,abs_output_file)
+    tool.judge_then_exec(run_sample_id,cmd1,abs_output_file)
     
     # Filter mismatches
     cmd2 = f"ref-transcript-mismatch-reporter {abs_output_file} -f hard"
-    tool.judge_then_exec(sample,cmd2,abs_filtered_vcf)
+    tool.judge_then_exec(run_sample_id,cmd2,abs_filtered_vcf)
 
     # Transfer2tab
     fields = "Uploaded_variation,Location,Allele,Gene,Feature,Feature_type,Consequence,cDNA_position,CDS_position,Protein_position,Amino_acids,Codons,Existing_variation,Extra,HGVSc,REF_ALLELE,UPLOADED_ALLELE,IMPACT,VARIANT_CLASS,SYMBOL,SYMBOL_SOURCE,STRAND,ENSP,FLAGS,SWISSPROT,TREMBL,UNIPARC,HGVSp,HGVSg,HGVS_OFFSET,NEAREST,SIFT,PolyPhen,MOTIF_NAME,MOTIF_POS,HIGH_INF_POS,MOTIF_SCORE_CHANGE,CELL_TYPE,CANONICAL,CCDS,INTRON,EXON,DOMAINS,DISTANCE,IND,ZYG,SV,FREQS,AF,AFR_AF,AMR_AF,ASN_AF,EUR_AF,EAS_AF,SAS_AF,gnomADe_AF,gnomADe_AFR_AF,gnomADe_AMR_AF,gnomADe_ASJ_AF,gnomADe_EAS_AF,gnomADe_FIN_AF,gnomADe_NFE_AF,gnomADe_OTH_AF,gnomADe_SAS_AF,gnomADg_AF,gnomADg_AFR_AF,gnomADg_AMI_AF,gnomADg_AMR_AF,gnomADg_ASJ_AF,gnomADg_EAS_AF,gnomADg_FIN_AF,gnomADg_MID_AF,gnomADg_NFE_AF,gnomADg_OTH_AF,gnomADg_SAS_AF,MAX_AF,MAX_AF_POPS,CLIN_SIG,BIOTYPE,APPRIS,TSL,GENCODE_PRIMARY,PUBMED,SOMATIC,PHENO,GENE_PHENO,ALLELE_NUM,MINIMISED,PICK,BAM_EDIT,GIVEN_REF,USED_REF,REFSEQ_MATCH,OverlapBP,OverlapPC,CHECK_REF,AMBIGUITY,Frameshift,Wildtype"
@@ -138,7 +138,7 @@ def annotation_vcf(sample,tool,pathes,configure):
     ## Create chunks directory
     chunk_dir = vep_dir + '/chunks'
     cmd_mkdir = "mkdir {}".format(chunk_dir)
-    tool.judge_then_exec(sample,cmd_mkdir,chunk_dir)
+    tool.judge_then_exec(run_sample_id,cmd_mkdir,chunk_dir)
     ## split_vcf
     tool.write_log(f"split vcf to {thread} chunks.","info")
     split_vcf(abs_filtered_vcf, chunk_dir, f"{sample}.{suffix}.VEP.filtered", chunks=thread)

@@ -12,7 +12,7 @@ def is_directory_empty(dir_path):
     """
     return not os.listdir(dir_path)
 
-def hlahd(sample, configure, pathes, tool):
+def hlahd(run_sample_id, sample, configure, pathes, tool):
     """
     Perform HLA typing analysis using HLaHD pipeline
     
@@ -78,13 +78,13 @@ def hlahd(sample, configure, pathes, tool):
 
     # Execute pipeline steps conditionally
     if not os.path.exists(f"{output_hla}/{sample}/result/{sample}_final.result.txt"): 
-        tool.judge_then_exec(sample, cmd_0, fastq_dir)
-        tool.judge_then_exec(sample, cmd_1, f"{fastq_dir}/{sample}.hla.1.fastq")
-        tool.judge_then_exec(sample, cmd_2, f"{fastq_dir}/{sample}.mapped.sam")
-        tool.judge_then_exec(sample, cmd_3, f"{fastq_dir}/{sample}.hlatmp.1.fastq")
-        tool.judge_then_exec(sample, cmd_4, f"{fastq_dir}/{sample}.hla.1.fastq")
-        tool.judge_then_exec(sample, cmd_5, f"{fastq_dir}/{sample}.hla.2.fastq")
-        tool.judge_then_exec_with_time(sample, cmd_6, f"{output_hla}/{sample}/result/{sample}_final.result.txt", time_out)
+        tool.judge_then_exec(run_sample_id, cmd_0, fastq_dir)
+        tool.judge_then_exec(run_sample_id, cmd_1, f"{fastq_dir}/{sample}.hla.1.fastq")
+        tool.judge_then_exec(run_sample_id, cmd_2, f"{fastq_dir}/{sample}.mapped.sam")
+        tool.judge_then_exec(run_sample_id, cmd_3, f"{fastq_dir}/{sample}.hlatmp.1.fastq")
+        tool.judge_then_exec(run_sample_id, cmd_4, f"{fastq_dir}/{sample}.hla.1.fastq")
+        tool.judge_then_exec(run_sample_id, cmd_5, f"{fastq_dir}/{sample}.hla.2.fastq")
+        tool.judge_then_exec_with_time(run_sample_id, cmd_6, f"{output_hla}/{sample}/result/{sample}_final.result.txt", time_out)
 
     # Conditional cleanup of intermediate files
     mapfile_dir = f"{output_hla}/{sample}/mapfile/"
@@ -92,10 +92,10 @@ def hlahd(sample, configure, pathes, tool):
     exon_dir = f"{output_hla}/{sample}/exon/"
     
     if os.path.exists(f'{fastq_dir}/{sample}.hlamap.sam'):
-        tool.exec_cmd(cmd_7, sample)
+        tool.exec_cmd(cmd_7, run_sample_id)
     if os.path.exists(mapfile_dir) and not is_directory_empty(mapfile_dir):
-        tool.exec_cmd(cmd_8, sample)
+        tool.exec_cmd(cmd_8, run_sample_id)
     if os.path.exists(intron_dir) and not is_directory_empty(intron_dir):
-        tool.exec_cmd(cmd_9, sample)
+        tool.exec_cmd(cmd_9, run_sample_id)
     if os.path.exists(exon_dir) and not is_directory_empty(exon_dir):
-        tool.exec_cmd(cmd_10, sample)
+        tool.exec_cmd(cmd_10, run_sample_id)

@@ -331,6 +331,23 @@ class tools:
                 self.cp_configure(configure)
         return configure
 
+    def get_pathes(self, args_pathes):
+        """
+        Load pathes from YAML file
+        
+        Args:
+            args_pathes (str): Path to pathes file
+        Returns:
+            dict: Loaded configuration
+        """
+        if args_pathes is None or len(args_pathes) == 0:
+            with open(f"{self.sys_path}/configures/{self.log_type}_pathes.yaml","r") as file:
+                pathes = yaml.safe_load(file)
+        else:
+            with open(f"{args_pathes}","r") as file:
+                pathes = yaml.safe_load(file)
+        return pathes
+
     def write2shell(self, cmd, fileName):
         """
         Write command to shell script for later execution

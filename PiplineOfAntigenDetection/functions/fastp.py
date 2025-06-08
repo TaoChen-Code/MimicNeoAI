@@ -2,7 +2,7 @@
 import os
 import traceback
 
-def fastp(sample, configure, pathes, tool):
+def fastp(run_sample_id,sample, configure, pathes, tool):
     """
     Process FASTQ files using fastp for quality control
     
@@ -27,16 +27,16 @@ def fastp(sample, configure, pathes, tool):
         qc_dir = f"{output_dir}/{sample}/00.QC/{sample}/"
         
         # Create output directory if not exists
-        tool.judge_then_exec(sample,f"mkdir -p {qc_dir}",qc_dir)
+        tool.judge_then_exec(run_sample_id,f"mkdir -p {qc_dir}",qc_dir)
 
         if pair:
             # Paired-end processing command
             cmd = f"{fastp} -w {thread} -i {input_dir}/{sample}/{sample}.R1.fq.gz -I {input_dir}/{sample}/{sample}.R2.fq.gz -o {qc_dir}/{sample}.QC.R1.fq.gz -O {qc_dir}/{sample}.QC.R2.fq.gz -j {qc_dir}/{sample}.fastp.json -h {qc_dir}/{sample}.fastp.html"
-            tool.judge_then_exec(sample,cmd,f"{qc_dir}/{sample}.QC.R1.fq.gz")
+            tool.judge_then_exec(run_sample_id,cmd,f"{qc_dir}/{sample}.QC.R1.fq.gz")
         else:
             # Single-end processing command
             cmd = f"{fastp} -w {thread} -i {input_dir}/{sample}/{sample}.fq.gz -o {qc_dir}/{sample}.QC.fq.gz -j {qc_dir}/{sample}.fastp.json -h {qc_dir}/{sample}.fastp.html"
-            tool.judge_then_exec(sample,cmd,f"{qc_dir}/{sample}.QC.fq.gz")
+            tool.judge_then_exec(run_sample_id,cmd,f"{qc_dir}/{sample}.QC.fq.gz")
         
     except Exception as e:
         error_message = traceback.format_exc()
