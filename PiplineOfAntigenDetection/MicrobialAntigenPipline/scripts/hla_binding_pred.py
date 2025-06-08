@@ -60,7 +60,7 @@ def pvacbind(sample, fa_dir, output_hla, output_dir, configure, pathes, tool):
     # Algorithm configurations
     # algoIandII = 'NNalign NetMHC NetMHCIIpan SMM SMMPMBEC SMMalign NetMHCpanEL NetMHCIIpanEL'
     algoIandII = 'BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign \
-    NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC SMMalign all all_class_i all_class_ii'
+    NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC SMMalign'
     #algoIandII = 'all'
     algoI = 'NNalign NetMHC SMM SMMPMBEC SMMalign NetMHCpanEL'
 
@@ -101,17 +101,3 @@ def pvacbind(sample, fa_dir, output_hla, output_dir, configure, pathes, tool):
                 f.write(f"{cmd} done!")        
     else:
         tool.write_log(f"[{sample}] hlahd results is all Not_typed!", "error")
-
-def pvacbind_for_mouse(sample, fa_dir, output_dir, configure, pathes, tool):
-    """
-    Placeholder function for mouse-specific pVACbind implementation.
-    
-    Parameters:
-    - sample (str): Sample identifier
-    - fa_dir (str): Directory containing input FASTA files
-    - output_dir (str): Output directory for results
-    - configure (dict): Configuration parameters
-    - pathes (dict): Path configurations
-    - tool (object): Tool execution object
-    """
-    pass

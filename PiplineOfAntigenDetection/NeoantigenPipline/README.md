@@ -69,7 +69,6 @@ pip install git+https://github.com/griffithlab/deepimmuno.git#egg=deepimmuno
 DEEPIMMUNO_DIR=$(dirname $(which deepimmuno-cnn))
 echo "export PATH=\$PATH:$DEEPIMMUNO_DIR" >> ~/.bashrc
 source ~/.bashrc
-conda activate Neoantigen
 ```
 
 ### 3. ‌**Edit the configuration file**
@@ -170,11 +169,14 @@ samples:
 ### **4. Run pipline on test data**
 
 ```shell
+conda activate pvactools4.2.1 
 YOUR_PATH="/your_custom/"
-cd "${YOUR_PATH}/MicrobialAbundance/MicrobialAbundancePipline"
-python MicrobialAbundance_start.py
+cd "${YOUR_PATH}/MimicNeoAI/PiplineOfAntigenDetection/NeoantigenPipline/"
+./run.sh
 # or
-python MicrobialAbundance_start.py -c ./configures/MicrobialAbundance_configure.yaml
+export TF_CPP_MIN_LOG_LEVEL=2. 
+export CUDA_VISIBLE_DEVICES="".
+python Neoantigen.py -c ../../../configures/Neoantigen_configure_afana.yaml -p ../../../configures/Neoantigen_pathes.yaml
 ```
 
 **Runtime logs can be viewed in the command-line terminal and are backed up in `MicrobialAbundance/MicrobialAbundancePipline/log`**`MicrobialAbundance/MicrobialAbundancePipline/log`

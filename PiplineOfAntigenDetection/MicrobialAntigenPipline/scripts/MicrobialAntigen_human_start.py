@@ -4,8 +4,8 @@ import os
 import traceback
 sys.path.append("./scripts/")
 from MicrobialAbundance import get_data
-from get_data_for_bind_pred import get_data_for_bind_pred
-from pvacbind import pvacbind, get_hlahd_results
+from get_data_for_binding_pred import get_data_for_binding_pred
+from hla_binding_pred import pvacbind, get_hlahd_results
 from datetime import datetime
 sys.path.append("../functions/")
 from fastp import fastp
@@ -236,7 +236,7 @@ def MicrobialPeptidesIdentification(sample,configure,pathes,tool):
     if not os.path.exists(f'{output_blastx}/{sample}.peptide.fasta'):
         tool.write_log("Processing BLAST results for pVACbind","info")         
         start = datetime.now()
-        get_data_for_bind_pred(f'{sample}.taxidlist.blast',f'{sample}.peptide.fasta',output_blastx)
+        get_data_for_binding_pred(f'{sample}.taxidlist.blast',f'{sample}.peptide.fasta',output_blastx)
         end = datetime.now()
         tool.print_time(end-start)
 

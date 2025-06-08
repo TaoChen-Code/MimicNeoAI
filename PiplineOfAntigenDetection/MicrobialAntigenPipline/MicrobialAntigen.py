@@ -11,7 +11,7 @@ from fastp import fastp
 from pipline_tools import tools
 from multiprocessing import Pool,Manager
 sys.path.append("./scripts/")
-from hlahd_faster import hlahd
+from hlatyping import hlahd
 #from hlahd import hlahd
 #from MicrobialAntigen_mouse_start import Microbial_Taxas_Annotation
 from MicrobialAntigen_human_start import HostSequencesRemoving,MicrobialTaxasQuantification,MicrobialPeptidesIdentification,MicrobialPeptidesBindingPrediction
@@ -75,7 +75,7 @@ def start(sample):
 
     if QC:
         try:
-            fastp(sample,configure,pathes,tool)
+            fastp(sample,sample,configure,pathes,tool)
         except Exception as e:
             error_message = traceback.format_exc()
             tool.write_log(f"QC Error occurred: {error_message}","error")
