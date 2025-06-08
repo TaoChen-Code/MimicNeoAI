@@ -25,9 +25,8 @@ class NoDaemonProcess(multiprocessing.Process):
     def _set_daemon(self, value):
         pass
     daemon = property(_get_daemon, _set_daemon)
-    
-if sys.version_info <= (3, 7):
-    # Python 3.7及以下版本实现
+if sys.version_info < (3, 8):
+    # Python 3.8以下版本实现
     class NoDaemonPool(multiprocessing.pool.Pool):
         Process = NoDaemonProcess
 else:
