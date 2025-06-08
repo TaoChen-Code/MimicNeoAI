@@ -28,11 +28,11 @@ class NoDaemonProcess(multiprocessing.Process):
     
 if sys.version_info <= (3, 7):
     # Python 3.7及以下版本实现
-    class NoDaemonPool(Pool):
+    class NoDaemonPool(multiprocessing.pool.Pool):
         Process = NoDaemonProcess
 else:
     # Python 3.8及以上版本实现
-    class NoDaemonPool(Pool):
+    class NoDaemonPool(multiprocessing.pool.Pool):
         @staticmethod
         def Process(_, *args, **kwds):
             return NoDaemonProcess(*args, **kwds)
@@ -66,7 +66,8 @@ pool_size = configure['args']['pool_size']
 species = configure['others']['species']  # human/mouse
 seq_type = configure['others']['seq_type']  # wgs/wes/rna
 QC = configure['others']['QC']
-host_variants_calling_and_annotation = configure['others']['host_variants_calling_and_annotation']
+host_variants_calling = configure['others']['host_variants_calling']
+annotation = configure['others']['annotation']
 hlatyping = configure['others']['hlatyping']
 peptides_identification = configure['others']['peptides_identification']
 tumor_with_matched_normal = configure['others']['tumor_with_matched_normal']
@@ -98,14 +99,15 @@ configure['step_name']['pvacseq'] = '09.peptides_identification'
 def variants_calling_and_annotation(sample,configure,pathes,tool):
     """Execute mutation calling and annotation steps"""
     # Perform mutation calling
-    func = funcs[f"{seq_type}_{species}"]
-    if func:
-        func(sample,tool,configure,pathes)
-    else:
-        print("Function does not exist.")
+    if host_variants_calling:
+        func = funcs[f"{seq_type}_{species}"]
+        if func:
+            func(sample,tool,configure,pathes)
+        else:
+            print("Function does not exist.")
     
     # Perform variant annotation
-    if seq_type != 'rna':
+    if annotation:
         if tumor_with_matched_normal:
             tumor_sample = sample.split(",")[0]
             output_vep = annotation_vcf(sample,tumor_sample,tool,pathes,configure)
@@ -127,8 +129,7 @@ def start(sample):
                 fastp(sample,sample,configure,pathes,tool)
             
         # Variant processing pipeline
-        if host_variants_calling_and_annotation:
-            variants_calling_and_annotation(sample,configure,pathes,tool)
+        variants_calling_and_annotation(sample,configure,pathes,tool)
     
         # HLA typing
         if hlatyping:

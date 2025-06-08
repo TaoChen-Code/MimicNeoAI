@@ -127,13 +127,6 @@ def annotation_vcf(run_sample_id,sample,tool,pathes,configure):
     cmd2 = f"ref-transcript-mismatch-reporter {abs_output_file} -f hard"
     tool.judge_then_exec(run_sample_id,cmd2,abs_filtered_vcf)
 
-    # Transfer2tab
-    fields = "Uploaded_variation,Location,Allele,Gene,Feature,Feature_type,Consequence,cDNA_position,CDS_position,Protein_position,Amino_acids,Codons,Existing_variation,Extra,HGVSc,REF_ALLELE,UPLOADED_ALLELE,IMPACT,VARIANT_CLASS,SYMBOL,SYMBOL_SOURCE,STRAND,ENSP,FLAGS,SWISSPROT,TREMBL,UNIPARC,HGVSp,HGVSg,HGVS_OFFSET,NEAREST,SIFT,PolyPhen,MOTIF_NAME,MOTIF_POS,HIGH_INF_POS,MOTIF_SCORE_CHANGE,CELL_TYPE,CANONICAL,CCDS,INTRON,EXON,DOMAINS,DISTANCE,IND,ZYG,SV,FREQS,AF,AFR_AF,AMR_AF,ASN_AF,EUR_AF,EAS_AF,SAS_AF,gnomADe_AF,gnomADe_AFR_AF,gnomADe_AMR_AF,gnomADe_ASJ_AF,gnomADe_EAS_AF,gnomADe_FIN_AF,gnomADe_NFE_AF,gnomADe_OTH_AF,gnomADe_SAS_AF,gnomADg_AF,gnomADg_AFR_AF,gnomADg_AMI_AF,gnomADg_AMR_AF,gnomADg_ASJ_AF,gnomADg_EAS_AF,gnomADg_FIN_AF,gnomADg_MID_AF,gnomADg_NFE_AF,gnomADg_OTH_AF,gnomADg_SAS_AF,MAX_AF,MAX_AF_POPS,CLIN_SIG,BIOTYPE,APPRIS,TSL,GENCODE_PRIMARY,PUBMED,SOMATIC,PHENO,GENE_PHENO,ALLELE_NUM,MINIMISED,PICK,BAM_EDIT,GIVEN_REF,USED_REF,REFSEQ_MATCH,OverlapBP,OverlapPC,CHECK_REF,AMBIGUITY,Frameshift,Wildtype"
-
-    cmd3 = f"singularity exec -B {vep_dir}:/output_dir/ -B {vep_data_dir}:/vep_data/ -B {hg38_ref_dir}:/fasta_data/ {human_vep_sif} vep --fork {thread} -i {filtered_vcf} --tab --check_existing --fields {fields} -o {output_file_tsv} --offline --cache  --symbol --terms SO --tsl --biotype --hgvs --plugin Frameshift --plugin Wildtype  --af --af_1kg --sift b --transcript_version --pick --dir_cache /vep_data/ --fasta /fasta_data/{ref_name} --dir_plugins /vep_data/{plugins_version}/"
-
-    #tool.judge_then_exec(sample,cmd3,abs_output_file_tsv)
-
     # split vcf
     ## Create chunks directory
     chunk_dir = vep_dir + '/chunks'

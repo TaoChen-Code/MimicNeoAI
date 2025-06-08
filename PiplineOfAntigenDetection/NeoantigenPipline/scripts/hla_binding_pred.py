@@ -1,6 +1,7 @@
 # coding=<encoding name> ： # coding=utf-8
 #mouse
 import os
+import sys
 import pandas as pd
 import multiprocessing
 from multiprocessing import Manager
@@ -13,14 +14,14 @@ class NoDaemonProcess(multiprocessing.Process):
     def _set_daemon(self, value):
         pass
     daemon = property(_get_daemon, _set_daemon)
-    
+
 if sys.version_info <= (3, 7):
     # Python 3.7及以下版本实现
-    class NoDaemonPool(Pool):
+    class NoDaemonPool(multiprocessing.pool.Pool):
         Process = NoDaemonProcess
 else:
     # Python 3.8及以上版本实现
-    class NoDaemonPool(Pool):
+    class NoDaemonPool(multiprocessing.pool.Pool):
         @staticmethod
         def Process(_, *args, **kwds):
             return NoDaemonProcess(*args, **kwds)
@@ -120,19 +121,17 @@ class Pvacseq():
     
             # Build the pvacseq command
             input_vcf = f"{output_dir}/{sample}/{step_name_annotation}/{sample}.{suffix}"
-            sample_name = sample
             running_thread = thread
             if vcf_chunk is not None:
                 input_vcf = f"{output_dir}/{sample}/{step_name_annotation}/chunks/{sample}.{suffix[:-4]}.chunk_{vcf_chunk}.vcf"
-                sample_name = f"{sample}_chunk_{vcf_chunk}"
                 running_thread = 1
             
-            cmd = f"{pvacseq} run {input_vcf} {sample_name} {HLA} {algoIandII} {output_pvacseq} -e1 8,9,10 -e2 15 --iedb-install-directory {iedb_install_directory} -t {running_thread} --fasta-size 100000"
+            cmd = f"{pvacseq} run {input_vcf} {sample} {HLA} {algoIandII} {output_pvacseq} -e1 8,9,10 -e2 15 --iedb-install-directory {iedb_install_directory} -t {running_thread} --fasta-size 100000"
             # cmd_export1 = "export TF_CPP_MIN_LOG_LEVEL=2"
             # cmd_export2 = "export CUDA_VISIBLE_DEVICES=\"\""
             # self.tool.exec_cmd(cmd_export1,sample)
             # self.tool.exec_cmd(cmd_export2,sample)
-            self.tool.judge_then_exec(run_sample_id,cmd,f"{output_pvacseq}/combined/{sample_name}.all_epitopes.tsv",vcf_chunk)
+            self.tool.judge_then_exec(run_sample_id,cmd,f"{output_pvacseq}/combined/{sample}.all_epitopes.tsv",vcf_chunk)
         else:
             self.tool.write_log("hlahd results is all Not_typed!","error")
         return output_pvacseq
@@ -178,7 +177,7 @@ class Pvacseq():
         
         # Merge all epitope files
         merged_epitopes = f"{merged_dir}/{sample}.merged.all_epitopes.tsv"
-        chunk_files = [f"{output_dir}/chunks/chunk_{i}/combined/{sample}_chunk_{i}.all_epitopes.tsv" 
+        chunk_files = [f"{output_dir}/chunks/chunk_{i}/combined/{sample}.all_epitopes.tsv" 
                       for i in range(0, num_chunks)]
 
         # Check which files are missing

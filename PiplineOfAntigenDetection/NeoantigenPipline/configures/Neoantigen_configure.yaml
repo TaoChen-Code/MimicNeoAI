@@ -27,7 +27,8 @@ others:
   mutation_calling_tool: "Mutect2"  # Variant caller (Mutect2 for somatic, HaplotypeCaller for germline)
   pair: True                # Paired-end sequencing (True/False)
   QC: True                  # Enable quality control
-  host_variants_calling_and_annotation: True  # Host variant processing
+  host_variants_calling: True  # Host variant processing
+  annotation: True
   hlatyping: True           # HLA typing enable
   peptides_identification: True  # Peptide prediction
   
