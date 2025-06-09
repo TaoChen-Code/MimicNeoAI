@@ -70,7 +70,7 @@ def hlahd(sample, configure, pathes, tool):
     cmd_6 = f'hlahd.sh -t {thread} -m 30 -f {freq_data_dir} {fastq_dir}/{sample}.hla.1.fastq {fastq_dir}/{sample}.hla.2.fastq {HLA_gene} {dictionary} {sample} {output_hla}'  
     
     # Cleanup commands
-    cmd_7 = f'rm {fastq_dir}/{sample}.hlamap.sam'
+    cmd_7 = f'rm {fastq_dir}/*'
     cmd_8 = f"rm {output_hla}/{sample}/mapfile/*"
     cmd_9 = f"rm {output_hla}/{sample}/intron/*"
     cmd_10 = f"rm {output_hla}/{sample}/exon/*"
