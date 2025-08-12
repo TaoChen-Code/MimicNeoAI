@@ -39,6 +39,10 @@ path:
   pvacbind: '/opt/conda/envs/pvactools/bin/pvacbind'
   iedb-install-directory: '/opt/db/IEDB/'
 
+  # R
+  R_HOME: '/opt/conda/envs/r4.3/lib/R/'
+  R_LIBRARY: "/opt/conda/envs/r4.3/lib/R/library"
+
 # Database Configuration
 database:
   db_dir: "/path/to/custom_protein_V3"  # Blast database path

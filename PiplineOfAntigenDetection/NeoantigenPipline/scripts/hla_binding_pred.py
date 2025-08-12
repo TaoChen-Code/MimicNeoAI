@@ -86,9 +86,18 @@ class Pvacseq():
         # algoIandII = 'MHCnuggetsI MHCnuggetsII NNalign NetMHC NetMHCIIpan SMM SMMPMBEC SMMalign NetMHCpanEL NetMHCIIpanEL'
         # algoI = 'MHCnuggetsI NNalign NetMHC SMM SMMPMBEC SMMalign NetMHCpanEL'
         #algoIandII = 'NNalign NetMHC NetMHCIIpan SMM SMMPMBEC SMMalign NetMHCpanEL NetMHCIIpanEL'
+        
+        # # Neo algo
+        # algoIandII = 'BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign \
+        # NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC SMMalign'
+        # algoI = 'NNalign NetMHC SMM SMMPMBEC SMMalign NetMHCpanEL'
+
+        # Neo algo
         algoIandII = 'BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign \
-        NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC SMMalign'
-        algoI = 'NNalign NetMHC SMM SMMPMBEC SMMalign NetMHCpanEL'
+        NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC'
+        algoI = 'NNalign NetMHC SMM SMMPMBEC NetMHCpanEL'
+        
+        
         #configure
         thread = configure['args']['thread']
         species = configure['others']['species']

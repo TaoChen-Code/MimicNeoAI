@@ -180,18 +180,24 @@ def Mutect2(run_sample_id,sample_name,tool,configure,pathes):
     java17 = pathes['path']['java17']
     gatk_jar = pathes['path']['gatk_4.6_jar']
     mem = configure['args']['mem']
+    bed_file = configure['others']['bed_file']  # Target regions BED file
     gatk = "{} -Xmx{} -jar {}".format(java17,mem,gatk_jar)
 
     tumor_with_matched_normal = configure['others']['tumor_with_matched_normal']
+    pre_mutation_calling_only = configure['others']['pre_mutation_calling_only']
     if tumor_with_matched_normal:
         tumor_sample = sample_name.split(",")[0]
         normal_sample = sample_name.split(",")[1]
         dir_pre_vcf_tumor,dir_VQSR_tumor,tumor_bam = mutation_calling(run_sample_id,tumor_sample,tool,configure,pathes)
         dir_pre_vcf_normal,dir_VQSR_normal,normal_bam = mutation_calling(run_sample_id,normal_sample,tool,configure,pathes)
+        
+        if pre_mutation_calling_only:
+            return
+        
         ### Tumor with matched normal
         mutect_file = dir_pre_vcf_tumor + tumor_sample + '.mutect.vcf.gz'
-        cmd_mutect = "{} Mutect2 --tmp-dir {} -R {} -I {} -I {} -normal {} -O {}"\
-        .format(gatk,tmp_dir,ref,tumor_bam,normal_bam,normal_sample,mutect_file)
+        cmd_mutect = "{} Mutect2 --tmp-dir {} -R {} -I {} -I {} -normal {} -O {} -L {}"\
+        .format(gatk,tmp_dir,ref,tumor_bam,normal_bam,normal_sample,mutect_file,bed_file)
         tool.judge_then_exec(run_sample_id,cmd_mutect,mutect_file)
 
         filtered_mutect_file = dir_VQSR_tumor + tumor_sample + '.mutect.filtered.vcf.gz'
@@ -201,10 +207,14 @@ def Mutect2(run_sample_id,sample_name,tool,configure,pathes):
 
     else:
         dir_pre_vcf,dir_VQSR,BQSR_index_rmdup_sorted_bam_filename  = mutation_calling(sample_name,sample_name,tool,configure,pathes)
+        
+        if pre_mutation_calling_only:
+            return
+        
         ### Tumor-only mode workflow
         mutect_file = dir_pre_vcf + sample_name + '.mutect.vcf.gz'
-        cmd_mutect = "{} Mutect2 --tmp-dir {} -R {} -I {} -O {}"\
-        .format(gatk,tmp_dir,ref,BQSR_index_rmdup_sorted_bam_filename,mutect_file)
+        cmd_mutect = "{} Mutect2 --tmp-dir {} -R {} -I {} -O {} -L {}"\
+        .format(gatk,tmp_dir,ref,BQSR_index_rmdup_sorted_bam_filename,mutect_file,bed_file)
         tool.judge_then_exec(sample_name,cmd_mutect,mutect_file)
 
         filtered_mutect_file = dir_VQSR + sample_name + '.mutect.filtered.vcf.gz'
