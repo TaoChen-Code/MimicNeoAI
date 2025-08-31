@@ -60,7 +60,7 @@ def pvacbind(sample, fa_dir, output_hla, output_dir, configure, pathes, tool):
     # Algorithm configurations
     # algoIandII = 'NNalign NetMHC NetMHCIIpan SMM SMMPMBEC SMMalign NetMHCpanEL NetMHCIIpanEL'
     algoIandII = 'BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign \
-    NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC SMMalign'
+    NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC'
     #algoIandII = 'all'
     algoI = 'NNalign NetMHC SMM SMMPMBEC SMMalign NetMHCpanEL'
 
