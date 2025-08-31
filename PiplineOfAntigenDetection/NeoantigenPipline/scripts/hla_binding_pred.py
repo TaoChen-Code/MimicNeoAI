@@ -173,26 +173,33 @@ class Pvacseq():
 
     def merge_chunk_results(self, sample, output_dir, num_chunks):
         """
-        将各 chunk 的 {sample}.all_epitopes.tsv 合并为一个文件。
-        - 仅合并实际存在且包含数据的文件
-        - 表头只写一次
+        Merge {sample}.all_epitopes.tsv from available chunks into a single file.
+
+        - Only merges files that exist and contain data rows (beyond the header).
+        - Writes the header exactly once.
+        - Logs a summary; if no usable files are found, logs an error.
+
+        Args:
+            sample (str): Sample ID.
+            output_dir (str): Base output directory.
+            num_chunks (int): Number of chunks to check.
         """
         merged_dir = f"{output_dir}/combined"
         os.makedirs(merged_dir, exist_ok=True)
 
         merged_epitopes = f"{merged_dir}/{sample}.merged.all_epitopes.tsv"
 
-        # 构造所有候选文件路径
-        all_candidates = [
+        # Candidate paths for each chunk
+        candidates = [
             f"{output_dir}/chunks/chunk_{i}/combined/{sample}.all_epitopes.tsv"
             for i in range(num_chunks)
         ]
 
-        # 过滤：存在且非空的文件
-        existing = [p for p in all_candidates if os.path.exists(p) and os.path.getsize(p) > 0]
+        # Keep only existing, non-empty files
+        existing = [p for p in candidates if os.path.exists(p) and os.path.getsize(p) > 0]
 
         if not existing:
-            self.tool.write_log("未找到可合并的 chunk 结果文件。", "error")
+            self.tool.write_log("No chunk result files found to merge.", "error")
             return
 
         wrote_header = False
@@ -203,16 +210,13 @@ class Pvacseq():
             with open(merged_epitopes, "w") as out_f:
                 for path in existing:
                     with open(path, "r") as in_f:
-                        # 读取表头
                         header = in_f.readline()
-                        # 读取剩余内容
                         body_lines = in_f.readlines()
 
-                        # 跳过只有表头、没有数据的文件
+                        # Skip files that only contain a header
                         if not body_lines:
                             continue
 
-                        # 第一次写入表头
                         if not wrote_header:
                             out_f.write(header)
                             wrote_header = True
@@ -222,9 +226,7 @@ class Pvacseq():
                         used_files.append(path)
 
             if total_rows == 0:
-                # 所有文件都只有表头，没有实际数据
-                self.tool.write_log("所有 chunk 文件均无数据行（只有表头）。", "error")
-                # 可选：删除生成的空合并文件
+                self.tool.write_log("All chunk files contain only headers (no data).", "error")
                 try:
                     os.remove(merged_epitopes)
                 except OSError:
@@ -232,11 +234,11 @@ class Pvacseq():
                 return
 
             self.tool.write_log(
-                f"合并完成：{len(used_files)} 个文件，共 {total_rows} 条数据 -> {merged_epitopes}",
+                f"Merged {len(used_files)} files with {total_rows} data rows -> {merged_epitopes}",
                 "info"
             )
         except IOError as e:
-            raise Exception(f"合并文件时出错：{e}")
+            raise Exception(f"Error while merging files: {e}")
 
 
   
