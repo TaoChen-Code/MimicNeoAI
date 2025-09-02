@@ -1,27 +1,13 @@
 # import
 import collections
-import gzip
-import os
 import pandas as pd
-import pickle
 import re
-import time
-import traceback
 import warnings
 from collections import OrderedDict
-from datetime import datetime
-from functools import partial
-from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 
 import numpy as np
-import torch
-import torch.nn.functional as F
 from torch import nn
-from torch import sigmoid
-from torch.nn import DataParallel
-from torch.utils import data
-from torch.utils.data import DataLoader, TensorDataset
 from torchvision import models
 
 warnings.filterwarnings("ignore", category=FutureWarning)  # 屏蔽所有 FutureWarning
@@ -228,9 +214,10 @@ def parallel_encode(features, peptides, hlas, hla2prot, vocab, padding_size, wor
     
     return torch.from_numpy(np.stack(encoded_arrays)), flags
 
-def inference(df, thread, device, model_path,hla2prot_file, batch_size=512):
+
+def inference(df, thread, device, model_path, batch_size=512):
     padding_length = 419
-    hla2prot = load_hla(hla2prot_file)
+    hla2prot = load_hla()
     amino = 'ARNDCQEGHILKMFPSTWYV-'
     tokens = list(amino)
     vocab = Vocab(tokens, min_freq=1)
@@ -239,28 +226,34 @@ def inference(df, thread, device, model_path,hla2prot_file, batch_size=512):
     torch.set_num_threads(thread)
     peptides = df['peptide'].tolist()
     peptides = [p.replace(" ", "") for p in peptides]
-    hlas = df['HLA'].tolist()
-    
+
+    def process_hla(hla):
+        if '/' in hla:
+            return hla.split('/')[-1]
+        else:
+            return hla
+
+    hlas = df['HLA'].apply(process_hla).tolist()
+
     # 获取特征
     features = get_features_parallel(df, thread)
 
     imm_probs = []
     print("inference....")
-    
+
     model = newBiLSTM(vocab_size=len(vocab), embedding_dim=12, hidden_dim_x1=256,
                       hidden_dim_x2=16, output_dim=2, n_layers=2, bidirectional=True,
                       dropout=0.5, pad_idx=vocab['<pad>'], x2_dim=25)
     model = nn.DataParallel(model)
 
-    state_dict = torch.load(model_path, map_location=d2l.try_gpu())
+    state_dict = torch.load(model_path, map_location=try_gpu())
     new_state_dict = OrderedDict()
     for k, v in state_dict.items():
         name = k.replace('.module.', '.')  # 移除 `module.`
         new_state_dict[name] = v
 
     model.load_state_dict(new_state_dict)
-    model.to(device=d2l.try_gpu())
-    
+    model.to(device=try_gpu())
 
     # 预处理阶段：全量数据并行编码
     print("Parallel encoding...")
@@ -268,7 +261,6 @@ def inference(df, thread, device, model_path,hla2prot_file, batch_size=512):
         features, peptides, hlas, hla2prot, vocab, padding_length, thread
     )
 
-    
     # 按照 batch_size 分批处理
     print("Infer...")
     model.eval()
@@ -276,13 +268,13 @@ def inference(df, thread, device, model_path,hla2prot_file, batch_size=512):
         end = min(start + batch_size, len(peptides))
         batch_encoded = encoded_all[start:end].to(device)
         batch_flags = flags_all[start:end]
-        
+
         with torch.no_grad():
             x1 = batch_encoded[:, 25:].int()
             x2 = batch_encoded[:, 0:25].float()
             y = model(x1, x2)
             probs = torch.softmax(y, dim=1)
-            
+
             for j, flag in enumerate(batch_flags):
                 imm_probs.append(float(probs[j, 1]) if flag else 0.5)
 
@@ -301,5 +293,24 @@ def try_all_gpus():  #@save
     devices = [torch.device(f'cuda:{i}')
              for i in range(torch.cuda.device_count())]
     return devices if devices else [torch.device('cpu')]
+
+
+
+def normalize_hla(df, col="MHC Allele"):
+    """
+    处理 MHC Allele 列：
+    1. 去掉前缀 HLA-
+    2. 用正则将基因片段之间的 '-' 改成 '/'
+       例如: DQA1*03:02-DQB1*04:01 -> DQA1*03:02/DQB1*04:01
+    3. 给所有结果重新添加前缀 HLA-
+    """
+    def process(allele):
+        allele = str(allele).replace("HLA-", "")  # 去掉已有前缀
+        # 用正则替换：在等位基因片段之间的 '-' 改为 '/'
+        allele = re.sub(r'(?<=[0-9])-(?=[A-Z])', '/', allele)
+        return f"HLA-{allele}"
+
+    df[col] = df[col].apply(process)
+    return df
 
 
