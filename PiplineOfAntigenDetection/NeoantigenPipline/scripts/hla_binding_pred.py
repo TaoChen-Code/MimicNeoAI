@@ -173,44 +173,72 @@ class Pvacseq():
 
     def merge_chunk_results(self, sample, output_dir, num_chunks):
         """
-        Merge results from all chunks into a single output file using Python file operations.
-        
-        Parameters:
-            sample (str): Sample ID
-            output_dir (str): Base output directory
-            step_name_pvacseq (str): Name of pvacseq step
-            num_chunks (int): Number of chunks to merge
+        Merge {sample}.all_epitopes.tsv from available chunks into a single file.
+
+        - Only merges files that exist and contain data rows (beyond the header).
+        - Writes the header exactly once.
+        - Logs a summary; if no usable files are found, logs an error.
+
+        Args:
+            sample (str): Sample ID.
+            output_dir (str): Base output directory.
+            num_chunks (int): Number of chunks to check.
         """
-        merged_dir = f"{output_dir}/combined/"
+        merged_dir = f"{output_dir}/combined"
         os.makedirs(merged_dir, exist_ok=True)
-        
-        # Merge all epitope files
+
         merged_epitopes = f"{merged_dir}/{sample}.merged.all_epitopes.tsv"
-        chunk_files = [f"{output_dir}/chunks/chunk_{i}/combined/{sample}.all_epitopes.tsv" 
-                      for i in range(0, num_chunks)]
 
-        # Check which files are missing
-        missing_files = [f for f in chunk_files if not os.path.exists(f)]
-        
-        if not missing_files:
-            try:
-                with open(merged_epitopes, 'w') as outfile:
-                    # Write header from first file
-                    with open(chunk_files[0], 'r') as first_file:
-                        outfile.write(first_file.readline())
-                    
-                    # Append content from all files (including first file)
-                    for chunk_file in chunk_files:
-                        with open(chunk_file, 'r') as infile:
-                            next(infile)  # Skip header
-                            outfile.writelines(infile)
-                self.tool.write_log("Merge all chunks done!","info")
-            except IOError as e:
-                raise Exception(f"Error merging chunk files: {str(e)}")
+        # Candidate paths for each chunk
+        candidates = [
+            f"{output_dir}/chunks/chunk_{i}/combined/{sample}.all_epitopes.tsv"
+            for i in range(num_chunks)
+        ]
 
-        else:
-            error_msg = f"Missing chunk files: {', '.join(missing_files)}"
-            self.tool.write_log(error_msg, "error")
+        # Keep only existing, non-empty files
+        existing = [p for p in candidates if os.path.exists(p) and os.path.getsize(p) > 0]
+
+        if not existing:
+            self.tool.write_log("No chunk result files found to merge.", "error")
+            return
+
+        wrote_header = False
+        total_rows = 0
+        used_files = []
+
+        try:
+            with open(merged_epitopes, "w") as out_f:
+                for path in existing:
+                    with open(path, "r") as in_f:
+                        header = in_f.readline()
+                        body_lines = in_f.readlines()
+
+                        # Skip files that only contain a header
+                        if not body_lines:
+                            continue
+
+                        if not wrote_header:
+                            out_f.write(header)
+                            wrote_header = True
+
+                        out_f.writelines(body_lines)
+                        total_rows += len(body_lines)
+                        used_files.append(path)
+
+            if total_rows == 0:
+                self.tool.write_log("All chunk files contain only headers (no data).", "error")
+                try:
+                    os.remove(merged_epitopes)
+                except OSError:
+                    pass
+                return
+
+            self.tool.write_log(
+                f"Merged {len(used_files)} files with {total_rows} data rows -> {merged_epitopes}",
+                "info"
+            )
+        except IOError as e:
+            raise Exception(f"Error while merging files: {e}")
 
 
   

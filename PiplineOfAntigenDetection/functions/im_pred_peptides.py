@@ -1,17 +1,8 @@
 # import
-import collections
-import gzip
 import os
 import pandas as pd
-import pickle
-import re
-import time
 import warnings
-from collections import OrderedDict
-from datetime import datetime
-from functools import partial
 from multiprocessing import Pool, cpu_count
-from tqdm import tqdm
 warnings.filterwarnings("ignore", category=FutureWarning)  # 屏蔽所有 FutureWarning
 
 # calculate_peptide_features
