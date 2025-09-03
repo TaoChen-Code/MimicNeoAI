@@ -97,31 +97,37 @@ The `*` symbol in the list marks the currently activated environment, and the pa
 (Use absolute paths if you're not sure how Python handles relative paths.)
 
 ```yaml
-# MicrobialAbundance_pathes.yaml
+# Neoantigen_pathes.yaml
 # Resource Path Configuration
 path:
-  # Host reference genomes
-  host_fa_hg38: '/path/to/refs/GRCh38/GCA_000001405.15_GRCh38_no_alt_analysis_set.fa'
-  host_img_hg38: '/path/to/refs/GRCh38/GCA_000001405.15_GRCh38_no_alt_analysis_set.fa.img'
-  host_kmer_hg38: '/path/to/refs/GRCh38/GCA_000001405.15_GRCh38_no_alt_analysis_set.hss'
+  # Human reference genome resources
+  hg38_ref_dir: "/path/to/neoantigen/WGS/hg38/"
+  hg38_ref_file: "/path/to/neoantigen/WGS/hg38/hg38.fa"
+  hg38_bundle_path: "/path/to/neoantigen/WGS/human_bundle/"
 
-  host_fa_t2t: '/path/to/refs/t2t/chm13v2.0.fa'
-  host_img_t2t: '/path/to/refs/t2t/chm13v2.0.fa.img'
-  host_kmer_t2t: '/path/to/refs/t2t/chm13v2.0.hss'
-  
-  # Microbial database
-  microbe_dict: '/path/to/refs/microbiome/BioStaCs_microbes.dict'
-  microbe_img: '/path/to/refs/microbiome/BioStaCs_microbes.fa.img'
-  taxonomy_file: '/path/to/refs/microbiome/BioStaCs_microbes.db'
-  ncid2microbeNames_file: '/path/to/refs/microbiome/BioStaCs_microbeNames_sep=tab.csv'
-  microbial_genome_length: '/path/to/refs/microbiome/BioStaCs_GenomeLength.csv'
-  tax_id_hierarchy: '/path/to/refs/microbiome/BioStaCs_taxid_hierarchy.txt'
-  catalog_genome: '/path/to/refs/microbiome/BioStaCs_catalog_genome.txt'
-  
-  # Tool paths, 
-  java17: '~/.conda/envs/java17/bin/java'
-  gatk_4.6_jar: '/your_custom/pkgs/gatk-4.6.0.0/gatk-package-4.6.0.0-local.jar'
-  fastp: '~/.conda/envs/MicrobialAbundance/bin/fastp'
+  # Tool executables
+  java17: '/opt/conda/envs/java17/bin/java'
+  gatk_4.6_jar: '/opt/biotools/gatk-4.6.0.0/gatk-package-4.6.0.0-local.jar'
+  fastp: '/opt/conda/envs/scMic/bin/fastp'
+
+  # VEP resources
+  vep_data_dir: "/path/to/neoantigen/pvactools/vep_data"
+  human_vep_sif: "/path/to/neoantigen/pvactools/vep.sif"
+
+  # HLA typing resources
+  freq_data_dir: '/path/to/hlahd1.7.0_new/hlahd.1.7.0/freq_data/'
+  HLA_gene: '/path/to/hlahd1.7.0_new/hlahd.1.7.0/HLA_gene.split.txt'
+  dictionary: '/path/to/hlahd1.7.0_new/hlahd.1.7.0/dictionary/'
+  picard_path: "/path/to/BioDatahub/picard.jar"
+  hla_gen: "/path/to/hlahd1.7.0_new/hla_gen/hla_gen"
+
+  # Antigen prediction configuration
+  pvacseq: '/opt/conda/envs/pvactools/bin/pvacseq'
+  iedb-install-directory: '/opt/db/IEDB/'
+
+  # R
+  R_HOME: '/opt/conda/envs/r4.3/lib/R/'
+  R_LIBRARY: "/opt/conda/envs/r4.3/lib/R/library"
 ```
 
 **Configure2：configures/Neoantigen_configure.yaml**
@@ -129,36 +135,41 @@ path:
 (Single-end data must meet the following requirements: the folder should be named after the sample (sample), and it should contain `sample.fq.gz`, with the suffix required to be `.fq.gz`. The file format should be `sample/sample.fq.gz`. For paired-end data, the file formats should be `sample/sample.R1.fq.gz` and `sample/sample.R2.fq.gz`, with the suffixes required to be `.R1.fq.gz` and `.R2.fq.gz`, respectively.)
 
 ```yaml
-# MicrobialAbundance_configure.yaml
+# Neoantigen_configure.yaml
 # Configuration Paths
 path:
- tmp_dir : "<project_root>/tmp/"  # Temporary directory for processing files
- input_dir : "<project_root>/input_data/"  # Input data directory
- output_dir : "<project_root>/analysis_output/"  # Output directory
+  tmp_dir: "/path/to/project/tmp/"          # Directory for temporary files
+  input_dir: "/path/to/raw_data/"           # Input data directory containing samples
+  output_dir: "/path/to/analysis_results/" # Output directory for final results
 
 # Runtime Parameters
 args:
- thread : 20  # CPU threads allocated per sample
- pool_size : 2  # Number of samples processed concurrently
- mem : "128G"  # Maximum memory allocation
- mem_perthread : "256M"  # Memory per thread in samtools sort
+  thread: 30                # CPU threads per sample
+  pool_size: 2              # Concurrent sample processing count
+  mem: "128G"               # Max memory per sample (pool_size × mem < total memory)
 
 # Analysis Parameters
 others:
- species : "human"  # Species selection (human/mouse)
- seq_type : "rna"  # Sequencing type (wgs/rna)
- pair : True  # Paired-end sequencing status
- QC : True  # Enable quality control steps
- host_sequences_removing : True  # Enable host sequence removal
- microbial_taxas_quantification : True  # Enable microbial taxonomy analysis
- match_length_threshold : 0.95  # Alignment length threshold
- score_threshold : 1  # Maximum allowed number of mismatched bases during alignment to the reference genome
+  seq_type: "wes"           # Sequencing type (wes/rna)
+  species: "human"          # Species (human/mouse)
+  pair: True                # Paired-end sequencing (True/False)
+  QC: True                  # Enable quality control
 
-# Sample List (Note: Numeric sample IDs require quotes)
+  tumor_with_matched_normal: True   # In this mode, input samples must be provided as a matched Tumor-Normal pair.
+                                   # Use a comma to separate sample names, e.g. - {TumorName},{NormalName}
+  host_variants_calling_and_annotation: True  # Host variant processing
+  mutation_calling_tool: "Mutect2"  # Variant caller (Mutect2 for somatic variants)
+  hlatyping: False          # HLA typing enable
+  peptides_identification: False  # Peptide prediction
+  
+  # WES-specific parameters
+  bed_file: "/path/to/target_regions/exome_targets.bed"  # Capture regions file
+  time_out: 36000          # Maximum runtime in seconds
+
+# Sample List (Example entries)
 samples:
-- Sample_1
-- Sample_2
-- Sample_3
+  - Sample_001
+  - Sample_002
 ```
 
 ### **4. Run pipline on test data**

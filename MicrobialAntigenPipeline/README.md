@@ -97,31 +97,52 @@ The `*` symbol in the list marks the currently activated environment, and the pa
 (Use absolute paths if you're not sure how Python handles relative paths.)
 
 ```yaml
-# MicrobialAbundance_pathes.yaml
+# MicrobialAntigen_pathes.yaml
+# Resource Path Configuration
 # Resource Path Configuration
 path:
   # Host reference genomes
-  host_fa_hg38: '/path/to/refs/GRCh38/GCA_000001405.15_GRCh38_no_alt_analysis_set.fa'
-  host_img_hg38: '/path/to/refs/GRCh38/GCA_000001405.15_GRCh38_no_alt_analysis_set.fa.img'
-  host_kmer_hg38: '/path/to/refs/GRCh38/GCA_000001405.15_GRCh38_no_alt_analysis_set.hss'
+  host_fa_hg38: '/path/to/GRCh38/GCA_000001405.15_GRCh38_no_alt_analysis_set.fa'
+  host_img_hg38: '/path/to/GRCh38/GCA_000001405.15_GRCh38_no_alt_analysis_set.fa.img'
+  host_kmer_hg38: '/path/to/GRCh38/GCA_000001405.15_GRCh38_no_alt_analysis_set.hss'
 
-  host_fa_t2t: '/path/to/refs/t2t/chm13v2.0.fa'
-  host_img_t2t: '/path/to/refs/t2t/chm13v2.0.fa.img'
-  host_kmer_t2t: '/path/to/refs/t2t/chm13v2.0.hss'
-  
+  host_fa_t2t: '/path/to/t2t/chm13v2.0.fa'
+  host_img_t2t: '/path/to/t2t/chm13v2.0.fa.img'
+  host_kmer_t2t: '/path/to/t2t/chm13v2.0.hss'
+
   # Microbial database
-  microbe_dict: '/path/to/refs/microbiome/BioStaCs_microbes.dict'
-  microbe_img: '/path/to/refs/microbiome/BioStaCs_microbes.fa.img'
-  taxonomy_file: '/path/to/refs/microbiome/BioStaCs_microbes.db'
-  ncid2microbeNames_file: '/path/to/refs/microbiome/BioStaCs_microbeNames_sep=tab.csv'
-  microbial_genome_length: '/path/to/refs/microbiome/BioStaCs_GenomeLength.csv'
-  tax_id_hierarchy: '/path/to/refs/microbiome/BioStaCs_taxid_hierarchy.txt'
-  catalog_genome: '/path/to/refs/microbiome/BioStaCs_catalog_genome.txt'
-  
-  # Tool paths, 
-  java17: '~/.conda/envs/java17/bin/java'
-  gatk_4.6_jar: '/your_custom/pkgs/gatk-4.6.0.0/gatk-package-4.6.0.0-local.jar'
-  fastp: '~/.conda/envs/MicrobialAntigen/bin/fastp'
+  microbe_dict: '/path/to/MimicNeoAI-Refs/BioStaCs-microbes.dict'
+  microbe_img: '/path/to/MimicNeoAI-Refs/BioStaCs-microbes.fa.img'
+  taxonomy_file: '/path/to/MimicNeoAI-Refs/BioStaCs-microbes.db'
+  ncid2microbeNames_file: '/path/to/MimicNeoAI-Refs/BioStaCs_microbeNames_sep=tab.csv'
+  microbial_genome_length: '/path/to/MimicNeoAI-Refs/BioStaCs_GenomeLength.csv'
+  tax_id_hierarchy: '/path/to/MimicNeoAI-Refs/BioStaCs_taxid_hierarchy.txt'
+  catalog_genome: '/path/to/MimicNeoAI-Refs/BioStaCs_catalog_genome.txt'
+
+  # Tool paths
+  java17: '/opt/conda/envs/java17/bin/java'
+  gatk_4.6_jar: '/opt/biotools/gatk-4.6.0.0/gatk-package-4.6.0.0-local.jar'
+  fastp: '/opt/conda/envs/RNA-seq/bin/fastp'
+
+  # HLA typing resources
+  freq_data_dir: '/path/to/hlahd.1.7.0/freq_data/'
+  HLA_gene: '/path/to/hlahd.1.7.0/HLA_gene.split.txt'
+  dictionary: '/path/to/hlahd.1.7.0/dictionary/'
+  picard_path: "/path/to/hlahd1.7.0_new/picard.jar"
+  hla_gen: "/path/to/hla_gen/hla_gen"
+
+  # pVacTools configuration
+  pvacbind: '/opt/conda/envs/pvactools/bin/pvacbind'
+  iedb-install-directory: '/opt/db/IEDB/'
+
+  # R
+  R_HOME: '/opt/conda/envs/r4.3/lib/R/'
+  R_LIBRARY: "/opt/conda/envs/r4.3/lib/R/library"
+
+# Database Configuration
+database:
+  db_dir: "/path/to/MimicNeoAI-Refs/BioStaCs_protein"  # Blast database path
+  outfmt: "\"6 qseqid sseqid qseq sseq stitle pident length mismatch gapopen evalue bitscore\""  # blastx output format
 ```
 
 **Configure2：configures/MicrobialAntigen_configure.yaml**
@@ -129,7 +150,7 @@ path:
 (Single-end data must meet the following requirements: the folder should be named after the sample (sample), and it should contain `sample.fq.gz`, with the suffix required to be `.fq.gz`. The file format should be `sample/sample.fq.gz`. For paired-end data, the file formats should be `sample/sample.R1.fq.gz` and `sample/sample.R2.fq.gz`, with the suffixes required to be `.R1.fq.gz` and `.R2.fq.gz`, respectively.)
 
 ```yaml
-# MicrobialAbundance_configure.yaml
+# MicrobialAntigen_configure.yaml
 # Configuration Paths
 path:
  tmp_dir : "<project_root>/tmp/"  # Temporary directory for processing files
@@ -152,13 +173,20 @@ others:
  host_sequences_removing : True  # Enable host sequence removal
  microbial_taxas_quantification : True  # Enable microbial taxonomy analysis
  match_length_threshold : 0.95  # Alignment length threshold
- score_threshold : 1  # Maximum allowed number of mismatched bases during alignment to the reference genome
+ score_threshold : 1  # Minimum alignment score
+ microbial_peptides_identification : True  # Enable peptide identification
+ hlatyping : True  # Enable HLA typing
+ time_out : 36000  # Process timeout in seconds
+ microbial_peptides_bindingPrediction : True  # Enable binding prediction
 
 # Sample List (Note: Numeric sample IDs require quotes)
 samples:
 - Sample_1
 - Sample_2
 - Sample_3
+- Sample_4
+- Sample_5
+- Sample_6
 ```
 ### **4. Run pipline on test data**
 

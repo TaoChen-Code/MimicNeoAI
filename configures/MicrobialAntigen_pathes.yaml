@@ -8,21 +8,17 @@ path:
   host_fa_t2t: '/path/to/t2t/chm13v2.0.fa'
   host_img_t2t: '/path/to/t2t/chm13v2.0.fa.img'
   host_kmer_t2t: '/path/to/t2t/chm13v2.0.hss'
-  
-  host_fa_GRCm38: '/path/to/pathseq/GRCm38/GRCm38.fa'
-  host_img_GRCm38: '/path/to/pathseq/GRCm38/GRCm38.fa.img'
-  host_kmer_GRCm38: '/path/to/pathseq/GRCm38/GRCm38.hss'
-  
-  # Microbial database (preserve last 3 components)
-  microbe_dict: '/path/to/microbiome_v7/pathseq_custom_V7_fixed.dict'
-  microbe_img: '/path/to/microbiome_v7/pathseq_custom_V7_fixed.fa.img'
-  taxonomy_file: '/path/to/microbiome_v7/pathseq_custom_V7_fixed.db'
-  ncid2microbeNames_file: '/path/to/microbiome_v7/pathseq_custom_V7_fixed_microbeNames_sep=tab.csv'
-  microbial_genome_length: '/path/to/microbiome_v7/pathseq_custom_V7_fixed_GenomeLength.csv'
-  tax_id_hierarchy: '/path/to/microbiome_v7/V7_taxid_hierarchy.txt'
-  catalog_genome: '/path/to/microbiome_v7/V7_catalog_genome.txt'
-  
-  # Tool paths (preserve last 3 components)
+
+  # Microbial database
+  microbe_dict: '/path/to/MimicNeoAI-Refs/BioStaCs-microbes.dict'
+  microbe_img: '/path/to/MimicNeoAI-Refs/BioStaCs-microbes.fa.img'
+  taxonomy_file: '/path/to/MimicNeoAI-Refs/BioStaCs-microbes.db'
+  ncid2microbeNames_file: '/path/to/MimicNeoAI-Refs/BioStaCs_microbeNames_sep=tab.csv'
+  microbial_genome_length: '/path/to/MimicNeoAI-Refs/BioStaCs_GenomeLength.csv'
+  tax_id_hierarchy: '/path/to/MimicNeoAI-Refs/BioStaCs_taxid_hierarchy.txt'
+  catalog_genome: '/path/to/MimicNeoAI-Refs/BioStaCs_catalog_genome.txt'
+
+  # Tool paths
   java17: '/opt/conda/envs/java17/bin/java'
   gatk_4.6_jar: '/opt/biotools/gatk-4.6.0.0/gatk-package-4.6.0.0-local.jar'
   fastp: '/opt/conda/envs/RNA-seq/bin/fastp'
@@ -35,7 +31,6 @@ path:
   hla_gen: "/path/to/hla_gen/hla_gen"
 
   # pVacTools configuration
-  sif_file: '/opt/containers/pvactools.4.0.3.sif'
   pvacbind: '/opt/conda/envs/pvactools/bin/pvacbind'
   iedb-install-directory: '/opt/db/IEDB/'
 
@@ -45,5 +40,5 @@ path:
 
 # Database Configuration
 database:
-  db_dir: "/path/to/custom_protein_V3"  # Blast database path
+  db_dir: "/path/to/MimicNeoAI-Refs/BioStaCs_protein"  # Blast database path
   outfmt: "\"6 qseqid sseqid qseq sseq stitle pident length mismatch gapopen evalue bitscore\""  # blastx output format

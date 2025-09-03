@@ -1,3 +1,13 @@
+# input_dir/
+# ├── Sample_1/
+# │   ├── Sample_1.R1.fq.gz
+# │   └── Sample_1.R2.fq.gz
+# ├── Sample_2/
+# │   ├── Sample_2.R1.fq.gz
+# │   └── Sample_2.R2.fq.gz
+# └── Sample_3/
+#     ├── Sample_3.R1.fq.gz
+#     └── Sample_3.R2.fq.gz
 # Configuration Paths
 path:
  tmp_dir : "<project_root>/tmp/"  # Temporary directory for processing files

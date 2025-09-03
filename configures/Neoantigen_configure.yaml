@@ -24,13 +24,15 @@ args:
 others:
   seq_type: "wes"           # Sequencing type (wes/rna)
   species: "human"          # Species (human/mouse)
-  mutation_calling_tool: "Mutect2"  # Variant caller (Mutect2 for somatic, HaplotypeCaller for germline)
   pair: True                # Paired-end sequencing (True/False)
   QC: True                  # Enable quality control
-  host_variants_calling: True  # Host variant processing
-  annotation: True
-  hlatyping: True           # HLA typing enable
-  peptides_identification: True  # Peptide prediction
+
+  tumor_with_matched_normal: True   # In this mode, input samples must be provided as a matched Tumor-Normal pair.
+                                   # Use a comma to separate sample names, e.g. - {TumorName},{NormalName}
+  host_variants_calling_and_annotation: True  # Host variant processing
+  mutation_calling_tool: "Mutect2"  # Variant caller (Mutect2 for somatic variants)
+  hlatyping: False          # HLA typing enable
+  peptides_identification: False  # Peptide prediction
   
   # WES-specific parameters
   bed_file: "/path/to/target_regions/exome_targets.bed"  # Capture regions file
