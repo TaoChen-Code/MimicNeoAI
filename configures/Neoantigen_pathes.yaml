@@ -1,0 +1,45 @@
+# Resource Path Configuration
+path:
+  # VEP resources
+  vep_data_dir: "/path/to/neoantigen/pvactools/vep_data"
+  mouse_vep_sif: "/path/to/neoantigen/pvactools/vep102.sif"
+  human_vep_sif: "/path/to/neoantigen/pvactools/vep.sif"
+
+  # Tool executables
+  java17: '/opt/conda/envs/java17/bin/java'
+  gatk_4.6_jar: '/opt/biotools/gatk-4.6.0.0/gatk-package-4.6.0.0-local.jar'
+  fastp: '/opt/conda/envs/scMic/bin/fastp'
+
+  # Mouse reference genome resources
+  GRCm38_ref_dir: "/path/to/neoantigen/WGS/GRCm38/"
+  GRCm38_ref_file: "/path/to/neoantigen/WGS/GRCm38/GRCm38.fa"
+  GRCm38_bundle_path: "/path/to/neoantigen/WGS/mouse_bundle/"
+
+  # Mouse RNA reference
+  star_GRCm38_ref_dir: "/path/to/RNA/rsem/GRCm38/"
+  star_GRCm38_ref_file: '/path/to/RNA/rsem/GRCm38/GRCm38.fa'
+
+  # Human reference genome resources
+  hg38_ref_dir: "/path/to/neoantigen/WGS/hg38/"
+  hg38_ref_file: "/path/to/neoantigen/WGS/hg38/hg38.fa"
+  hg38_bundle_path: "/path/to/neoantigen/WGS/human_bundle/"
+
+  # Human RNA reference
+  star_hg38_ref_dir: "/path/to/rsem/GRCh38_gencode.v23/"
+  star_hg38_ref_file: "/path/to/rsem/GRCh38_gencode.v23/hg38.fa"
+
+  # HLA typing resources
+  freq_data_dir: '/path/to/hlahd1.7.0_new/hlahd.1.7.0/freq_data/'
+  HLA_gene: '/path/to/hlahd1.7.0_new/hlahd.1.7.0/HLA_gene.split.txt'
+  dictionary: '/path/to/hlahd1.7.0_new/hlahd.1.7.0/dictionary/'
+  picard_path: "/path/to/BioDatahub/picard.jar"
+  hla_gen: "/path/to/hlahd1.7.0_new/hla_gen/hla_gen"
+
+  # Antigen prediction configuration
+  sif_file: '/opt/containers/pvactools/pvactools.4.0.3.sif'
+  pvacseq: '/opt/conda/envs/pvactools/bin/pvacseq'
+  iedb-install-directory: '/opt/db/IEDB/'
+
+  # R
+  R_HOME: '/opt/conda/envs/r4.3/lib/R/'
+  R_LIBRARY: "/opt/conda/envs/r4.3/lib/R/library"
