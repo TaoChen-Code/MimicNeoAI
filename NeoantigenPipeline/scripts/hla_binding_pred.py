@@ -1,5 +1,4 @@
 # coding=<encoding name> ： # coding=utf-8
-#mouse
 import os
 import sys
 import multiprocessing
