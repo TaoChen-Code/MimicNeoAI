@@ -30,7 +30,7 @@ https://pvactools.readthedocs.io/en/latest/install.html
 
 #### (3) refs and test data: 
 
-https://pan.quark.cn/s/79002f0756ab?entry=webother#/list/share   password: 8T9J
+https://doi.org/10.5281/zenodo.15582924
 
 ### 2. create conda env
 
