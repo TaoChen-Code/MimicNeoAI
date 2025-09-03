@@ -99,7 +99,6 @@ The `*` symbol in the list marks the currently activated environment, and the pa
 ```yaml
 # MicrobialAntigen_pathes.yaml
 # Resource Path Configuration
-# Resource Path Configuration
 path:
   # Host reference genomes
   host_fa_hg38: '/path/to/GRCh38/GCA_000001405.15_GRCh38_no_alt_analysis_set.fa'
