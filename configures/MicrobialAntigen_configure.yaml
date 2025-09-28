@@ -31,6 +31,7 @@ others:
  microbial_taxas_quantification : True  # Enable microbial taxonomy analysis
  match_length_threshold : 0.95  # Alignment length threshold
  score_threshold : 1  # Minimum alignment score
+ min_pident_length : 100 # Minimum blastx match length
  microbial_peptides_identification : True  # Enable peptide identification
  hlatyping : True  # Enable HLA typing
  time_out : 36000  # Process timeout in seconds

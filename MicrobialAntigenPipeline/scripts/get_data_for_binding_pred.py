@@ -1,4 +1,4 @@
-def get_data_for_binding_pred(blast_file,pvacbind_file,output_blastx):
+def get_data_for_binding_pred(blast_file,pvacbind_file,output_blastx,min_pident_length):
     """Process BLAST results for pVACbind input
     
     Args:
@@ -15,7 +15,7 @@ def get_data_for_binding_pred(blast_file,pvacbind_file,output_blastx):
             peptide = line.split("\t")[2]  # Extract peptide sequence from BLAST result
             pident = line.split("\t")[5]  # Get percentage identity value
             # Keep only perfect matches (100% identity) with non-empty peptides
-            if peptide != '' and int(float(pident)) == 100:
+            if peptide != '' and int(float(pident)) >= min_pident_length:
                 context += id + '\n' + peptide + '\n'
     context = context[:-1]  # Remove trailing newline
     with open(f"{output_blastx}/{pvacbind_file}","w") as f:
