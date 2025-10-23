@@ -221,6 +221,7 @@ def MicrobialPeptidesIdentification(sample,configure,pathes,tool):
     output_nucleic = output_path + f'{sample}/{step_name_nucleic}/'
     output_blastx = output_path + f'{sample}/{step_name_blastx}/'
     thread = configure['args']['thread']  # CPU threads allocation
+    min_pident_length = configure['others']['min_pident_length']
     db_dir = pathes['database']['db_dir']  # BLAST database path
     outfmt = pathes['database']['outfmt']  # Output format
     
@@ -236,7 +237,7 @@ def MicrobialPeptidesIdentification(sample,configure,pathes,tool):
     if not os.path.exists(f'{output_blastx}/{sample}.peptide.fasta'):
         tool.write_log("Processing BLAST results for pVACbind","info")         
         start = datetime.now()
-        get_data_for_binding_pred(f'{sample}.taxidlist.blast',f'{sample}.peptide.fasta',output_blastx)
+        get_data_for_binding_pred(f'{sample}.taxidlist.blast',f'{sample}.peptide.fasta',output_blastx,min_pident_length)
         end = datetime.now()
         tool.print_time(end-start)
 

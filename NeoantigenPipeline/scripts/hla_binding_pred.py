@@ -1,11 +1,7 @@
 # coding=<encoding name> ： # coding=utf-8
-#mouse
 import os
 import sys
-import pandas as pd
 import multiprocessing
-from multiprocessing import Manager
-from multiprocessing import Pool
 
 class NoDaemonProcess(multiprocessing.Process):
     # make 'daemon' attribute always return False
