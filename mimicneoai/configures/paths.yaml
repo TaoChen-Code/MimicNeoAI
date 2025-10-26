@@ -1,0 +1,66 @@
+# ============================
+# MimicNeoAI unified paths.yaml
+# ============================
+
+# -------- 1) TOOLS / RUNTIMES (install locations, binaries, containers) --------
+path:
+  common:
+    GATK_JAR: "../database/soft/GATK/gatk-4.6.0.0.jar"
+    PVACTOOLS: "../database/soft/PVACTOOLS/pvactools-4.2.1.sif"
+
+  neoantigen:
+    VEP_SIF:  "../database/soft/VEP/vep.sif"
+
+  cryptic:
+    TRINITY_SIF: "../database/soft/Trinity/trinity_2.15.2.sif"
+
+
+# -------- 2) REFERENCES / INPUT DATA (read-only databases) --------
+database:
+  ROOT: "../database"   # (doc only)
+
+  common:
+    HLA:
+      FREQ_DATA_DIR: "../database/soft/HLAHD/hlahd.1.7.0/freq_data/"
+      HLA_GENE:      "../database/soft/HLAHD/hlahd.1.7.0/HLA_gene.split.txt"
+      DICTIONARY:    "../database/soft/HLAHD/hlahd.1.7.0/dictionary/"
+      BOWTIE2_INDEX: "../database/soft/HLAHD/hla_gen/hla_gen"
+
+  microbial:
+    HOST:
+      HG38:
+        FA:  "../database/ref/DNA/GRCh38/GRCh38_full_analysis_set_plus_decoy_hla.fa"
+      T2T:
+        FA:  "../database/ref/DNA/t2t/chm13v2.0.fa"
+
+    MICROBES:
+      DICT:            "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs-microbes.dict"
+      IMG:             "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs-microbes.fa.img"
+      TAXONOMY_DB:     "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs-microbes.db"
+      NCID2NAMES:      "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_microbeNames.csv"
+      GENOME_LENGTHS:  "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_GenomeLength.csv"
+      TAXID_HIERARCHY: "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_taxid_hierarchy.txt"
+      CATALOG_GENOME:  "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_catalog_genome.txt"
+
+    BLAST:
+      DB_DIR: "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_protein"
+      OUTFMT: "'6 qseqid sseqid qseq sseq stitle pident length mismatch gapopen evalue bitscore'"
+
+  neoantigen:
+    HG38:
+      REF_DIR:   "../database/ref/DNA/GRCh38/"
+      REF_FASTA: "../database/ref/DNA/GRCh38/GRCh38_full_analysis_set_plus_decoy_hla.fa"
+      BUNDLE:    "../database/ref/DNA/human_bundle/"
+
+    VEP_DATA_DIR: "../database/ref/DNA/VEP/vep_data/"
+    VEP_PLUGINS_VERSION: "VEP_plugins-release-110"
+
+  cryptic:
+    REF:
+      REF_DIR:      "../database/ref/RNA/"
+      REF_FA:       "../database/ref/RNA/cryptic_ref/GRCh38.p3.genome.fa"
+      REF_GTF:      "../database/ref/RNA/cryptic_ref/gencode.v23.annotation.gtf"
+      REF_LNC_GTF:  "../database/ref/RNA/cryptic_ref/gencode.v23.long_noncoding_RNAs.gtf"
+      REF_GENOME:   "../database/ref/RNA/cryptic_ref/GRCh38.p3.genome.fa"
+
+    STAR_GENOME_DIR: "../database/ref/RNA/star_and_rsem/GRCh38_gencode.v23"

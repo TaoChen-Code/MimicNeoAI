@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mimicneoai"
+version = "1.0.0"
+description = "MimicNeoAI: Integrated pipelines for microbial, cryptic (sORF), and mutation-derived epitopes with molecular mimicry analysis"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Your Name", email = "you@example.com" }]
+keywords = [
+  "immunology", "immunopeptidomics", "neoantigen", "microbiome",
+  "bioinformatics", "cancer", "HLA", "epitope", "pipeline"
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Operating System :: POSIX :: Linux",
+  "Topic :: Scientific/Engineering :: Bio-Informatics"
+]
+
+# Keep core deps minimal; heavy/optional tools go to [project.optional-dependencies]
+dependencies = [
+  "numpy>=1.22",
+  "pandas>=1.5",
+  "pyyaml>=6.0",
+  "tqdm>=4.66",
+  "vatools>=3.0"  # adjust if your code needs a specific version
+]
+
+[project.optional-dependencies]
+# Install with: pip install mimicneoai[predictors]
+predictors = [
+  "pvactools==4.2.1",
+  "mhcflurry>=2.0.0",
+  "mhcnuggets>=2.3.2"
+]
+# Install with: pip install mimicneoai[ml]
+ml = [
+  "torch"  # let users pick CPU/GPU wheels per their platform
+]
+# Install with: pip install mimicneoai[dev]
+dev = [
+  "black",
+  "isort",
+  "ruff",
+  "pytest",
+  "pytest-cov",
+  "mypy"
+]
+
+[project.urls]
+Homepage = "https://github.com/your/repo"
+Issues = "https://github.com/your/repo/issues"
+Documentation = "https://github.com/your/repo#readme"
+
+# Console entry points (installed as shell commands)
+[project.scripts]
+mimicneoai-microbial = "mimicneoai.microbial_pipeline.microbial:main"
+mimicneoai-cryptic = "mimicneoai.cryptic_pipeline.cryptic:main"
+mimicneoai-mutation = "mimicneoai.mutation_derived_pipeline.mutation_derived:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mimicneoai", "mimicneoai.*"]
+
+# Ship example YAMLs (and any small templates) inside the wheel/sdist
+[tool.setuptools.package-data]
+mimicneoai = [
+  "configures/*.yaml",
+  "configures/*.yml"
+]
