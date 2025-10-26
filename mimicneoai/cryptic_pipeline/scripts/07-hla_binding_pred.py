@@ -247,7 +247,7 @@ def main():
     # Tool paths
     ap.add_argument("--pvactools", default="pvactools",
                     help="Path to pvactools.sif (Apptainer image)")
-    ap.add_argument("--iedb-install-directory", dest="iedb_install_directory", required=True,
+    ap.add_argument("--iedb-install-directory", dest="iedb_install_directory", required=False,
                     help="Path to IEDB (kept for CLI parity; container uses /opt/iedb)")
 
     # Parallelization / sharding
