@@ -1,0 +1,43 @@
+# input_dir/
+# ├── Sample_001/
+# │   ├── Sample_001.R1.fq.gz
+# │   └── Sample_001.R2.fq.gz
+# ├── Sample_002/
+# │   ├── Sample_002.R1.fq.gz
+# │   └── Sample_002.R2.fq.gz
+# └── Sample_003/
+#     ├── Sample_003.R1.fq.gz
+#     └── Sample_003.R2.fq.gz
+# Configuration Paths
+path:
+  tmp_dir: "/path/to/project/tmp/"          # Directory for temporary files
+  input_dir: "/path/to/raw_data/"           # Input data directory containing samples
+  output_dir: "/path/to/analysis_results/" # Output directory for final results
+
+# Runtime Parameters
+args:
+  threads: 30
+  pool_size: 1
+  trinity_mem: "100G"
+others:
+  QC: true
+  alignment: true
+  known: true
+  novel: true
+  salmon_quant: true
+  salmon_quant_control: true
+  hlatyping: true
+  extract_aeseps: true
+  hla_binding_pred: true
+
+  min_tpm_tumor: 5.0
+  max_tpm_ctrl: 0.5
+  min_log2fc: 4.0
+  # Algorithms for pVACbind (space-separated)
+  algo: "BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC"
+  mhcI_lengths: "8,9,10"
+  mhcII_lengths: "15"
+
+samples:
+  - Sample_001_T,Sample_001_N
+  - Sample_002_T,Sample_002_N
