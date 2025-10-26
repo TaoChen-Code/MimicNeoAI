@@ -13,7 +13,7 @@ It ships with three production pipelines:
 ---
 
 ## Repository Layout
-
+```bash
 mimicneoai/
 ├─ configures/ # Example YAMLs for configuration and paths
 │ ├─ configure.yaml # (generic) dispatcher-level example
@@ -24,7 +24,7 @@ mimicneoai/
 ├─ cryptic_pipeline/ # cryptic (sORF) pipeline
 ├─ microbial_pipeline/ # microbial pipeline
 └─ mutation_derived_pipeline/ # mutation-derived pipeline
-
+```
 
 ---
 
@@ -58,7 +58,7 @@ Reference bundles and minimal test data:
   - `fastp`, `samtools`, `bwa/bowtie2`
   - `blast+` (microbial)
   - `GATK`/`VEP` (mutation-derived)
-  - `HLA-HD` (HLA typing, optional)
+  - `HLA-HD` (HLA typing)
   - `pVACtools`, IEDB predictors, and optional ML predictors (MHCflurry, MHCnuggets, BigMHC, DeepImmuno)
 
 ---
