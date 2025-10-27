@@ -21,6 +21,29 @@ pip install mimicneoai
 conda install -c conda-forge -c bioconda mimicneoai
 ````
 
+## External Dependencies (must be available in `PATH`)
+
+Make sure the following tools are installed and discoverable via your `PATH` with the specified versions:
+
+| Tool                    | Required version | Purpose                                | Check command                     |
+|--------------------------|------------------|----------------------------------------|-----------------------------------|
+| fastp                   | v0.22.0          | FASTQ quality control                  | `fastp --version`                 |
+| STAR                    | 2.5.3a           | RNA alignment                          | `STAR --version`                  |
+| samtools                | v1.5             | BAM/CRAM processing                    | `samtools --version`              |
+| stringtie               | 3.0.1            | Transcript assembly                    | `stringtie --version`             |
+| gffcompare              | v0.12.10         | Transcript annotation comparison       | `gffcompare -v`                   |
+| gffread                 | 0.12.7           | GFF/GTF file processing                | `gffread --version`               |
+| minimap2                | 2.30-r1287       | Transcript-to-reference alignment      | `minimap2 --version`              |
+| bcftools                | 1.11 (htslib 1.13)| Variant calling and processing         | `bcftools --version`              |
+| TransDecoder.LongOrfs   | 5.5.0            | ORF prediction                         | `TransDecoder.LongOrfs -h`        |
+| salmon                  | 1.10.0           | Transcript quantification              | `salmon --version`                |
+| bowtie2                 | 2.4.1            | Short-read mapping                     | `bowtie2 --version`               |
+| HLA-HD                  | 1.7.0            | HLA typing                             | `hlahd.sh --version`              |
+| apptainer               | 1.4.2            | Containerized tools (e.g., pVACtools)  | `apptainer --version`             |
+
+> Tip: If a command above is not found or the version is lower than required, install/upgrade it and ensure the binary is on your `PATH`.
+
+
 ## Database and Paths
 
 On first execution, MimicNeoAI automatically downloads and configures the required reference database from the official FTP server.
