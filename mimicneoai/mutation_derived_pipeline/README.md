@@ -30,7 +30,7 @@ Make sure the following tools are installed and discoverable via your `PATH` wit
 | fastp        | v0.22.0          | FASTQ quality control                 | `fastp --version`            |
 | bwa          | v0.7.17          | Short-read alignment                  | `bwa 2>&1 | head -n1`        |
 | samtools     | v1.5             | BAM/CRAM processing                   | `samtools --version`         |
-| Java (JRE/JDK)| 17              | VEP, HLA-HD and other Java tools      | `java -version`              |
+| Java (JRE/JDK)| 17              | GATK and other Java tools      | `java -version`              |
 | apptainer    | 1.4.2            | Containerized tools (e.g., pVACtools) | `apptainer --version`        |
 | bowtie2                 | 2.4.1            | Short-read mapping                     | `bowtie2 --version`               |
 | HLA-HD       | 1.7.0            | HLA typing                            | `hlahd.sh --version`         |

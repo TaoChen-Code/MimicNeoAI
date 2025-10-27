@@ -29,7 +29,7 @@ Make sure the following tools are installed and discoverable via your `PATH` wit
 | fastp        | v0.22.0          | FASTQ quality control                 | `fastp --version`            |
 | bwa          | v0.7.17          | Short-read alignment                  | `bwa 2>&1 | head -n1`        |
 | samtools     | v1.5             | BAM/CRAM processing                   | `samtools --version`         |
-| Java (JRE/JDK)| 17              | For Java-based tools (e.g., HLA-HD)   | `java -version`              |
+| Java (JRE/JDK)| 17              | For Java-based tools (e.g., GATK)     | `java -version`              |
 | blastx       | 2.15.0+          | Microbial peptide identification      | `blastx -version`            |
 | bowtie2      | 2.4.1            | Host/microbial alignment              | `bowtie2 --version`          |
 | HLA-HD       | 1.7.0            | HLA typing                            | `hlahd.sh --version`         |
