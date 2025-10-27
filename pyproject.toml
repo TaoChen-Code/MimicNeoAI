@@ -65,9 +65,7 @@ Documentation = "https://github.com/your/repo#readme"
 
 # Console entry points (installed as shell commands)
 [project.scripts]
-mimicneoai-microbial = "mimicneoai.microbial_pipeline.microbial:main"
-mimicneoai-cryptic = "mimicneoai.cryptic_pipeline.cryptic:main"
-mimicneoai-mutation = "mimicneoai.mutation_derived_pipeline.mutation_derived:main"
+mimicneoai = "mimicneoai.__main__:main"
 
 [tool.setuptools]
 include-package-data = true

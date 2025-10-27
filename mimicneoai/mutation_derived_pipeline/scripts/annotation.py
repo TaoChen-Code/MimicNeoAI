@@ -117,6 +117,7 @@ def annotation_vcf(run_sample_id, sample, tool, paths, configure):
 
     output_dir = configure['path']['output_dir'].rstrip("/")
     thread = int(configure['args']['thread'])
+    hla_binding_threads = int(configure['args']['hla_binding_threads'])
 
     # Create output directory for this step
     vep_dir = f"{output_dir}/{sample}/{configure['step_name']['annotation']}/"
@@ -177,17 +178,17 @@ def annotation_vcf(run_sample_id, sample, tool, paths, configure):
     tool.write_log("Filter VCF to FILTER==PASS for downstream analysis.", "info")
     tool.judge_then_exec(run_sample_id, cmd_keep_pass, abs_filtered_pass_vcf)
 
-    # Split VCF into chunks equal to thread count (or choose another number as needed)
+    # Split VCF into chunks equal to hla_binding_threads count (or choose another number as needed)
     chunk_dir = f"{vep_dir}chunks"
     cmd_mkdir_chunks = f"mkdir -p {shlex.quote(chunk_dir)}"
     tool.judge_then_exec(run_sample_id, cmd_mkdir_chunks, chunk_dir)
 
-    tool.write_log(f"Split PASS-only VCF into {thread} chunks.", "info")
+    tool.write_log(f"Split PASS-only VCF into {hla_binding_threads} chunks.", "info")
     split_vcf(
         input_vcf=abs_filtered_pass_vcf,
         output_dir=chunk_dir,
         file_suffix=f"{sample}.{suffix}.VEP.filtered.PASS",
-        chunks=thread
+        chunks=hla_binding_threads
     )
     tool.write_log("VCF splitting completed.", "info")
     return vep_dir

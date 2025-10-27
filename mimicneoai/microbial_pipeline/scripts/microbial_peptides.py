@@ -312,7 +312,6 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
     step_name_pvacbind = configure['step_name']['pvacbind']
 
     output_blastx   = output_path + f'{sample}/{step_name_blastx}/'
-    output_hla      = output_path + f'{sample}/{step_name_hla}/'       # kept for symmetry (not used directly here)
     output_pvacbind = output_path + f'{sample}/{step_name_pvacbind}/'
 
     # Only run if peptide FASTA exists

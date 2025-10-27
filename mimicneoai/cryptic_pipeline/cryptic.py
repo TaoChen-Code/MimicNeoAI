@@ -119,7 +119,7 @@ def _run_one_sample(
         n_trinity_cpu = int(args_cfg.get("threads", 30))
         n_salmon = int(args_cfg.get("threads", 30))
         n_hla = int(args_cfg.get("threads", 30))
-        n_pvacbind = int(args_cfg.get("threads", 30))
+        n_pvacbind = int(args_cfg.get("hla_binding_threads", 5))
 
         # Feature switches
         do_qc = bool(others.get("QC", True))

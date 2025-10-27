@@ -17,6 +17,7 @@ path:
 # Runtime Parameters
 args:
   thread: 30                # CPU threads per sample
+  hla_binding_threads : 5 # Number of threads for parallel pvactools runs; too many may reduce efficiency—adjust based on server performance.
   pool_size: 1              # Concurrent sample processing count
   mem: "128G"               # Max memory per sample (pool_size × mem < total memory)
 
