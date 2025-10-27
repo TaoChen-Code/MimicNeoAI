@@ -16,7 +16,6 @@ It ships with three production pipelines:
 ```bash
 mimicneoai/
 ├─ configures/ # Example YAMLs for configuration and paths
-│ ├─ configure.yaml # (generic) dispatcher-level example
 │ ├─ cryptic_configure.yaml # cryptic pipeline example
 │ ├─ microbial_configure.yaml # microbial pipeline example
 │ ├─ mutation_derived_configure.yaml # mutation-derived pipeline example
