@@ -12,7 +12,7 @@ Detect and prioritize mutation-derived neoepitopes from WES/WGS/RNA data.
 3. Base quality score recalibration (BQSR)  
 4. Somatic variant calling  
 5. Variant annotation (VEP)  
-6. HLA typing (optional)  
+6. HLA typing 
 7. Binding and immunogenicity prediction (pVACseq)
 
 ## Installation
@@ -21,6 +21,21 @@ pip install mimicneoai
 # or
 conda install -c conda-forge -c bioconda mimicneoai
 ````
+## External Dependencies (must be available in `PATH`)
+
+Make sure the following tools are installed and discoverable via your `PATH` with the specified versions:
+
+| Tool         | Required version | Purpose                               | Check command                |
+|--------------|------------------|---------------------------------------|------------------------------|
+| fastp        | v0.22.0          | FASTQ quality control                 | `fastp --version`            |
+| bwa          | v0.7.17          | Short-read alignment                  | `bwa 2>&1 | head -n1`        |
+| samtools     | v1.5             | BAM/CRAM processing                   | `samtools --version`         |
+| Java (JRE/JDK)| 17              | VEP, HLA-HD and other Java tools      | `java -version`              |
+| apptainer    | 1.4.2            | Containerized tools (e.g., pVACtools) | `apptainer --version`        |
+| bowtie2                 | 2.4.1            | Short-read mapping                     | `bowtie2 --version`               |
+| HLA-HD       | 1.7.0            | HLA typing                            | `hlahd.sh --version`         |
+
+> Tip: If a command above is not found or the version is lower than required, install/upgrade it and ensure the binary is on your `PATH`.
 
 ## Database and Paths
 
