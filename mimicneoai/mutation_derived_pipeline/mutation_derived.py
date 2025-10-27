@@ -220,6 +220,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # 1) Determine working directory precedence: --workdir > configure.path.output_dir > CWD
     cfg_output_dir = _peek_output_dir(args.configure)
+    base_out = Path(cfg_output_dir)
+    cfg_output_dir = str(base_out / "Mutation-derived")
+
     workdir = args.workdir or cfg_output_dir or os.getcwd()
     workdir = str(Path(workdir).resolve())
 
@@ -246,6 +249,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     samples = [str(s) for s in configure["samples"]]
     configure = dict(configure)  # shallow copy to avoid mutating the original
     configure.setdefault("step_name", {}).update(STEP_NAME)
+    base_out = Path(configure["path"]["output_dir"])
+    configure["path"]["output_dir"] = str(base_out / "Mutation-derived")
 
     # Share variables across processes
     tool_obj.sharing_variable(mgr, samples)

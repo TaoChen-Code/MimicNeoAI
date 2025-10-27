@@ -431,6 +431,8 @@ def main(argv: List[str] | None = None) -> int:
 
     # 1) Decide working/log root: --workdir > configure.path.output_dir > CWD
     cfg_output_dir = _peek_output_dir(args.configure)
+    base_out = Path(cfg_output_dir)
+    cfg_output_dir = str(base_out / "Cryptic")
     workdir = args.workdir or cfg_output_dir or os.getcwd()
     workdir = str(Path(workdir).resolve())
 
@@ -458,6 +460,8 @@ def main(argv: List[str] | None = None) -> int:
     # Inject step names (non-destructive)
     configure = dict(configure)
     configure.setdefault("step_name", {}).update(STEP_NAME)
+    base_out = Path(configure["path"]["output_dir"])
+    configure["path"]["output_dir"] = str(base_out / "Cryptic")
 
     # Share variables across processes
     tool_obj.sharing_variable(mgr, samples)
