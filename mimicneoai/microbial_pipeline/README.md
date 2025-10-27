@@ -24,7 +24,34 @@ conda install -c conda-forge -c bioconda mimicneoai
 ## Database and Paths
 
 On first execution, MimicNeoAI automatically downloads and configures the required reference database from the official FTP server.
-The file `paths.yaml` is generated automatically and does not require manual editing (unless using a custom reference).
+ The file `paths.yaml` is generated automatically and does not require manual editing (unless using a custom reference).
+
+### 🧩 Database Manual Download
+
+If the automatic download fails or you prefer to manage storage manually,
+ you can manually download and extract the MimicNeoAI database using the built-in helper:
+
+#### 1. Default download to the project path (`mimicneoai/database`)
+
+```bash
+# Method 1: Standard Python module execution
+python -m mimicneoai.download_database
+
+# Method 2: Unified CLI command (equivalent to the above)
+mimicneoai download_database
+```
+
+#### 2. Custom download path (recommended for limited system disk space)
+
+```bash
+# Method 1: Specify a custom directory for download and extraction
+python -m mimicneoai.download_database --target-dir /mnt/data/MimicNeoAI_DB
+
+# Method 2: Equivalent CLI command
+mimicneoai download_database --target-dir /mnt/data/MimicNeoAI_DB
+```
+
+If a custom path is specified, the extracted folder will be **symlinked to `mimicneoai/database/`** automatically.
 
 ## Configuration
 
@@ -51,6 +78,7 @@ path:
 # Runtime Parameters
 args:
   thread : 20  # CPU threads allocated per sample
+  hla_binding_threads : 5 # Number of threads for parallel pvactools runs; too many may reduce efficiency—adjust based on server performance.
   pool_size : 2  # Number of samples processed concurrently
   mem : "128G"  # Maximum memory allocation
   mem_perthread : "256M"  # Memory per thread in samtools sort
@@ -82,8 +110,11 @@ samples:
 ## Run
 
 ```bash
-python -m mimicneoai.microbial_pipeline.microbial \
-  -c /path/to/microbial_configure.yaml
+# Method 1: Standard Python module execution
+python -m mimicneoai.microbial_pipeline.microbial -c /path/to/microbial_configure.yaml
+
+# Method 2: Unified CLI command (equivalent to the above)
+mimicneoai microbial -c /path/to/microbial_configure.yaml
 ```
 
 ## Output Structure

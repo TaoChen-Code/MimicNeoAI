@@ -175,7 +175,7 @@ def pvacbind(sample, configure, pathes, tool):
     algoIandII = configure.get('others', {}).get('algo', _default_algo)
 
     # ---- Extract paths/parameters from config ----
-    thread = int(configure['args']['thread'])
+    thread = int(configure['args']['hla_binding_threads'])
     opt_dir = os.path.join(configure['path']['output_dir'], "")
     pvactools_sif = pathes['path']['common']['PVACTOOLS']
 

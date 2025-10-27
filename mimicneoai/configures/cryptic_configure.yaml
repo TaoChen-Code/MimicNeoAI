@@ -17,6 +17,7 @@ path:
 # Runtime Parameters
 args:
   threads: 30
+  hla_binding_threads : 5 # Number of threads for parallel pvactools runs; too many may reduce efficiency—adjust based on server performance.
   pool_size: 1
   trinity_mem: "100G"
 others:

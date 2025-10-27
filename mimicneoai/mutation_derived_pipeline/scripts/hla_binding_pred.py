@@ -220,7 +220,7 @@ class Pvacseq:
             configure: Configuration dictionary.
             pathes: Paths dictionary.
         """
-        thread = int(configure["args"]["thread"])
+        thread = int(configure["args"]["hla_binding_threads"])
         output_dir = os.path.join(configure["path"]["output_dir"], "")
         step_name_pvacseq = configure["step_name"]["pvacseq"]
         output_pvacseq = os.path.join(output_dir, sample, step_name_pvacseq, "")
