@@ -38,7 +38,7 @@ Make sure the following tools are installed and discoverable via your `PATH` wit
 | TransDecoder.LongOrfs   | 5.5.0            | ORF prediction                         | `TransDecoder.LongOrfs -h`        |
 | salmon                  | 1.10.0           | Transcript quantification              | `salmon --version`                |
 | bowtie2                 | 2.4.1            | Short-read mapping                     | `bowtie2 --version`               |
-| HLA-HD                  | 1.7.0            | HLA typing                             | `hlahd.sh --version`              |
+| hlahd.sh                  | 1.7.0            | HLA typing                             | `hlahd.sh --version`              |
 | apptainer               | 1.4.2            | Containerized tools (e.g., pVACtools)  | `apptainer --version`             |
 
 > Tip: If a command above is not found or the version is lower than required, install/upgrade it and ensure the binary is on your `PATH`.
