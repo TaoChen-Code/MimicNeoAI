@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mimicneoai"
-version = "1.0.0"
-description = "MimicNeoAI: Integrated pipelines for microbial, cryptic (sORF), and mutation-derived epitopes with molecular mimicry analysis"
+version = "0.1.0"
+description = "MimicNeoAI: An integrated pipeline for identifying microbial, cryptic, and mutation-derived epitopes with molecular mimicry analysis in cancer immunotherapy"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
-authors = [{ name = "Your Name", email = "you@example.com" }]
+authors = [{ name = "Tao Chen", email = "taochencode@hotmail.com" }]
 keywords = [
   "immunology", "immunopeptidomics", "neoantigen", "microbiome",
   "bioinformatics", "cancer", "HLA", "epitope", "pipeline"
@@ -30,38 +30,17 @@ classifiers = [
 
 # Keep core deps minimal; heavy/optional tools go to [project.optional-dependencies]
 dependencies = [
-  "numpy>=1.22",
-  "pandas>=1.5",
-  "pyyaml>=6.0",
-  "tqdm>=4.66",
-  "vatools>=3.0"  # adjust if your code needs a specific version
-]
-
-[project.optional-dependencies]
-# Install with: pip install mimicneoai[predictors]
-predictors = [
-  "pvactools==4.2.1",
-  "mhcflurry>=2.0.0",
-  "mhcnuggets>=2.3.2"
-]
-# Install with: pip install mimicneoai[ml]
-ml = [
-  "torch"  # let users pick CPU/GPU wheels per their platform
-]
-# Install with: pip install mimicneoai[dev]
-dev = [
-  "black",
-  "isort",
-  "ruff",
-  "pytest",
-  "pytest-cov",
-  "mypy"
+  "numpy>=2.0.2",
+  "pandas>=2.3.3",
+  "pyyaml>=6.0.3",
+  "tqdm>=4.67.1",
+  "vatools>=5.2.0"
 ]
 
 [project.urls]
-Homepage = "https://github.com/your/repo"
-Issues = "https://github.com/your/repo/issues"
-Documentation = "https://github.com/your/repo#readme"
+Homepage = "https://github.com/BioStaCs-public/MimicNeoAI/"
+Issues = "https://github.com/BioStaCs-public/MimicNeoAI/issues"
+Documentation = "https://github.com/BioStaCs-public/MimicNeoAI/blob/main/README.md"
 
 # Console entry points (installed as shell commands)
 [project.scripts]
