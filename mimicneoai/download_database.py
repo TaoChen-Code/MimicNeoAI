@@ -13,19 +13,88 @@ import argparse
 import shutil
 from pathlib import Path
 import urllib.request
+import subprocess
+import time
 
 URL = "https://mimicneoai.biostacs.com/database/MimicNeoAI_database_v1.0.tar.gz"
 DEFAULT_DIR = Path(__file__).resolve().parent / "database"
 ARCHIVE_NAME = "MimicNeoAI_database_v1.0.tar.gz"
 
-
-def download_file(url: str, dest: Path):
-    """Download file from URL to destination."""
+def download_file(url: str, dest: Path, retries: int = 3, backoff: float = 1.6):
+    """
+    Download file to `dest` using wget (preferred), falling back to curl, then urllib.
+    - Resumable (-c / -C -) and retriable.
+    - Creates parent dirs.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"[INFO] Downloading from {url}")
-    with urllib.request.urlopen(url) as response, open(dest, "wb") as out_file:
-        shutil.copyfileobj(response, out_file)
-    print(f"[OK] Download completed: {dest}")
+    # Prefer wget
+    if shutil.which("wget"):
+        cmd = [
+            "wget", "-c",               # resume partial download
+            "--tries=3",                # internal retries
+            "--timeout=60",
+            "--retry-connrefused",
+            "--show-progress",
+            "-O", str(dest),
+            url,
+        ]
+        for i in range(retries):
+            try:
+                subprocess.run(cmd, check=True)
+                print(f"[OK] Download completed: {dest}")
+                return
+            except subprocess.CalledProcessError as e:
+                if i == retries - 1:
+                    raise RuntimeError(f"wget failed: {e}") from e
+                sleep_s = backoff ** i
+                print(f"[WARN] wget failed (attempt {i+1}/{retries}), retry in {sleep_s:.1f}s...")
+                time.sleep(sleep_s)
+
+    # Fallback: curl (also resumable)
+    if shutil.which("curl"):
+        cmd = [
+            "curl", "-fL", "-C", "-",   # -C - resume, -L follow redirects
+            "--retry", "3",
+            "--retry-delay", "2",
+            "--connect-timeout", "30",
+            "-A", "Wget/1.21 (compatible; MimicNeoAI/1.0)",  # friendlier UA for strict servers
+            "-o", str(dest),
+            url,
+        ]
+        for i in range(retries):
+            try:
+                subprocess.run(cmd, check=True)
+                print(f"[OK] Download completed: {dest}")
+                return
+            except subprocess.CalledProcessError as e:
+                if i == retries - 1:
+                    raise RuntimeError(f"curl failed: {e}") from e
+                sleep_s = backoff ** i
+                print(f"[WARN] curl failed (attempt {i+1}/{retries}), retry in {sleep_s:.1f}s...")
+                time.sleep(sleep_s)
+
+    # Last resort: urllib (adds headers to avoid 406)
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "MimicNeoAI/1.0 (+wget-fallback)",
+            "Accept": "*/*",
+        },
+    )
+    for i in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp, open(dest, "wb") as out:
+                shutil.copyfileobj(resp, out)
+            print(f"[OK] Download completed: {dest}")
+            return
+        except Exception as e:
+            if i == retries - 1:
+                raise
+            sleep_s = backoff ** i
+            print(f"[WARN] urllib failed (attempt {i+1}/{retries}), retry in {sleep_s:.1f}s...")
+            time.sleep(sleep_s)
+
 
 
 def extract_archive(archive_path: Path, extract_to: Path):
