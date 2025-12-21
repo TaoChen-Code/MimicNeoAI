@@ -24,21 +24,26 @@ args:
 
 # Analysis Parameters
 others:
-  species : "human"  # Species selection (human)
-  seq_type : "rna"  # Sequencing type (rna)
-  pair : True  # Paired-end sequencing status
-  QC : True  # Enable quality control steps
-  host_sequences_removing : True  # Enable host sequence removal
-  microbial_taxas_quantification : True  # Enable microbial taxonomy analysis
-  match_length_threshold : 0.95  # Alignment length threshold
-  score_threshold : 1  # Minimum alignment score
-  min_pident_length : 100 # Minimum blastx match length
-  microbial_peptides_identification : True  # Enable peptide identification
-  hlatyping : True  # Enable HLA typing
-  microbial_peptides_bindingPrediction : True  # Enable binding prediction
-  # Algorithms for pVACbind (space-separated)
-  algo: "BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC"
+  species: "human"              # Species selection (human/mouse)
+  seq_type: "rna"        # Sequencing type (wgs/rna)
+  pair: True           # Paired-end sequencing status
 
+  QC: True                  # Run read quality control
+  run_host_depletion: True      # Run host read depletion (hg38 + T2T)
+  run_vector_decontamination: True   # Run vector (UniVec) decontamination
+
+  run_pathseq: True             # Run GATK PathSeq taxonomic profiling
+  run_microbial_peptide_identification: True   # Run BLASTX/DIAMOND-based microbial peptide identification
+
+  # BLASTX filtering thresholds for microbial peptides
+  blastx_min_percent_identity: 100   # Percent identity threshold
+  blastx_max_evalue: 1e-5            # E-value cutoff
+  blastx_min_query_coverage: 90      # Minimum query coverage (%)
+
+  run_hla_typing: True               # Run HLA genotyping
+  run_binding_prediction: True       # Run peptide–HLA binding prediction
+
+  binding_algorithms: "BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC"
 # Sample List (Note: Numeric sample IDs require quotes)
 samples:
 - Sample_1
