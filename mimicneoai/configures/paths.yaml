@@ -32,8 +32,13 @@ database:
         FA:  "../database/ref/DNA/GRCh38/GRCh38_full_analysis_set_plus_decoy_hla.fa"
       T2T:
         FA:  "../database/ref/DNA/t2t/chm13v2.0.fa"
+      Primary_HG38:
+        FA:   "../database/ref/DNA/GRCh38_primary/GRCh38.primary_assembly.genome.fa"
+        IMG:  "../database/ref/DNA/GRCh38_primary/GRCh38.primary_assembly.genome.fa.img"
+        KMER: "../database/ref/DNA/GRCh38_primary/GRCh38.primary_assembly.genome.hss"
 
     MICROBES:
+      UniVec:          "../database/ref/DNA/UniVec"
       DICT:            "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs-microbes.dict"
       IMG:             "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs-microbes.fa.img"
       TAXONOMY_DB:     "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs-microbes.db"
@@ -43,13 +48,15 @@ database:
       CATALOG_GENOME:  "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_catalog_genome.txt"
 
     BLAST:
-      DB_DIR: "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_protein"
-      OUTFMT: "'6 qseqid sseqid qseq sseq stitle pident length mismatch gapopen evalue bitscore'"
+      #DB_DIR: "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_protein"
+      DB_DIR: "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_protein_v2"
+      CATALOG_PROT: "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_protein_seqid2taxid_v2.txt.gz"
+      OUTFMT: "'6 qseqid qlen sseqid qseq sseq stitle pident length mismatch gapopen qstart qend sstart send evalue bitscore qcovhsp qcovs'"
 
   neoantigen:
     HG38:
-      REF_DIR:   "../database/ref/DNA/GRCh38/"
-      REF_FASTA: "../database/ref/DNA/GRCh38/GRCh38_full_analysis_set_plus_decoy_hla.fa"
+      REF_DIR:   "../database/ref/DNA/GRCh38_primary/"
+      REF_FASTA: "../database/ref/DNA/GRCh38_primary/GRCh38.primary_assembly.genome.fa"
       BUNDLE:    "../database/ref/DNA/human_bundle/"
 
     VEP_DATA_DIR: "../database/ref/DNA/VEP/vep_data/"

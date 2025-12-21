@@ -1,6 +1,6 @@
 # coding=utf-8
 from __future__ import annotations
-
+import sys
 import argparse
 import os
 import traceback
@@ -8,7 +8,6 @@ from multiprocessing import Manager
 import multiprocessing.pool
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
 import yaml
 
 from mimicneoai.functions.fastp import fastp
@@ -16,6 +15,7 @@ from mimicneoai.functions.pipline_tools import tools
 from mimicneoai.functions.hlatyping import hlahd
 from mimicneoai.microbial_pipeline.scripts.microbial_peptides import (
     HostSequencesRemoving,
+    VectorContaminationRemoving,
     MicrobialTaxasQuantification,
     MicrobialPeptidesIdentification,
     MicrobialPeptidesBindingPrediction,
@@ -26,11 +26,12 @@ STEP_NAME = {
     "QC": "00.QC",
     "hg38": "01.HostSequencesRemovingStep1",
     "t2t": "02.HostSequencesRemovingStep2",
-    "pathseq": "03.MicrobialTaxasQuantificationStep1",
-    "nucleic": "04.MicrobialTaxasQuantificationStep2",
-    "blastx": "05.MicrobialPeptidesIdentification",
-    "hla": "06.HlaTyping",
-    "pvacbind": "07.MicrobialPeptidesBindingPrediction",
+    "vector": "03.VectorContaminationRemoving",
+    "pathseq": "04.MicrobialTaxaQuantificationStep1",
+    "nucleic": "05.MicrobialTaxaQuantificationStep2",
+    "blastx": "06.MicrobialPeptidesIdentification",
+    "hla": "07.HlaTyping",
+    "pvacbind": "08.MicrobialPeptidesBindingPrediction",
 }
 
 # -------- Non-daemon Pool (only needed if workers spawn child processes) --------
@@ -42,14 +43,15 @@ class _NoDaemonProcess(multiprocessing.Process):
         pass
     daemon = property(_get_daemon, _set_daemon)
 
-if hasattr(multiprocessing, "get_start_method"):
-    # Python ≥ 3.8: override Pool.Process to use _NoDaemonProcess
+if sys.version_info >= (3, 8):
+    # Python 3.8+
     class NoDaemonPool(multiprocessing.pool.Pool):
         @staticmethod
         def Process(_, *args, **kwargs):
+            # 丢掉第一个 ctx 参数，用自定义 _NoDaemonProcess
             return _NoDaemonProcess(*args, **kwargs)
 else:
-    # Python < 3.8 fallback
+    # Python 3.7 early
     class NoDaemonPool(multiprocessing.pool.Pool):
         Process = _NoDaemonProcess
 
@@ -61,48 +63,58 @@ def _start_one_sample(
     tool: tools,
 ) -> None:
     """Run the microbial pipeline for a single sample with per-step guards."""
-    QC = configure["others"]["QC"]
-    host_sequences_removing = configure["others"]["host_sequences_removing"]
-    microbial_taxas_quantification = configure["others"]["microbial_taxas_quantification"]
-    microbial_peptides_identification = configure["others"]["microbial_peptides_identification"]
-    hlatyping = configure["others"]["hlatyping"]
-    microbial_peptides_bindingPrediction = configure["others"]["microbial_peptides_bindingPrediction"]
+    o = configure["others"]
 
-    if QC:
+    run_qc                   = o["QC"]
+    run_host_depletion       = o["run_host_depletion"]
+    run_vector_decontam      = o["run_vector_decontamination"]
+    run_pathseq              = o["run_pathseq"]
+    run_microbial_peptide_identification    = o["run_microbial_peptide_identification"]
+    run_hla_typing           = o["run_hla_typing"]
+    run_binding_prediction   = o["run_binding_prediction"]
+
+    if run_qc:
         try:
             fastp(sample, sample, configure, paths, tool)
         except Exception:
             tool.write_log(f"QC error:\n{traceback.format_exc()}", "error")
 
-    if host_sequences_removing:
+    if run_host_depletion:
         try:
             HostSequencesRemoving(sample, configure, paths, tool)
         except Exception:
             tool.write_log(f"HostSequencesRemoving error:\n{traceback.format_exc()}", "error")
 
-    if microbial_taxas_quantification:
+    if run_vector_decontam:
+        try:
+            VectorContaminationRemoving(sample, configure, paths, tool)
+        except Exception:
+            tool.write_log(f"VectorContaminationRemoving error:\n{traceback.format_exc()}", "error")
+
+    if run_pathseq:
         try:
             MicrobialTaxasQuantification(sample, configure, paths, tool)
         except Exception:
             tool.write_log(f"MicrobialTaxasQuantification error:\n{traceback.format_exc()}", "error")
 
-    if microbial_peptides_identification:
+    if run_microbial_peptide_identification:
         try:
             MicrobialPeptidesIdentification(sample, configure, paths, tool)
         except Exception:
             tool.write_log(f"MicrobialPeptidesIdentification error:\n{traceback.format_exc()}", "error")
 
-    if hlatyping:
+    if run_hla_typing:
         try:
             hlahd(sample, sample, configure, paths, tool)
         except Exception:
             tool.write_log(f"HLA typing error:\n{traceback.format_exc()}", "error")
 
-    if microbial_peptides_bindingPrediction:
+    if run_binding_prediction:
         try:
             MicrobialPeptidesBindingPrediction(sample, configure, paths, tool)
         except Exception:
             tool.write_log(f"Binding prediction error:\n{traceback.format_exc()}", "error")
+
 
 
 def _run_pipeline(samples: List[str], pool_size: int, configure, paths, tool: tools) -> None:
