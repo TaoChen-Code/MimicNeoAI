@@ -222,10 +222,29 @@ def get_data_for_binding_pred(
         open(os.path.join(output_blastx, pvacbind_file), "w").close()
         return summary
 
-    # Write FASTA
+    # ------------------------------------------------------------
+    # Assign protIndex and write filtered BLASTX table + FASTA
+    # ------------------------------------------------------------
+    # 1) Create a copy to avoid side-effects
+    df_qcov_out = df_qcov.copy().reset_index(drop=True)
+
+    # 2) Add protIndex column (1-based) and rewrite qseqid as:
+    #    protIndex:{i}|{original_qseqid_with_Ctaxa_and_Prot}
+    df_qcov_out["protIndex"] = range(1, len(df_qcov_out) + 1)
+    df_qcov_out["qseqid"] = df_qcov_out.apply(
+        lambda r: f"protIndex:{int(r['protIndex'])}|{r['qseqid']}",
+        axis=1
+    )
+
+    # 3) Save filtered BLASTX table for downstream merging
+    filtered_path = os.path.join(output_blastx, f"{sample}.blastx.filtered")
+    df_qcov_out.to_csv(filtered_path, sep="\t", index=False)
+    tool.write_log(f"[{sample}] Wrote filtered BLASTX table: {filtered_path}", "info")
+
+    # 4) Write FASTA using the SAME qseqid (already prefixed with protIndex)
     fasta_lines = []
-    for i, row in enumerate(df_qcov.itertuples(index=False), start=1):
-        header = f">protIndex:{i}|{row.qseqid}"
+    for row in df_qcov_out.itertuples(index=False):
+        header = f">{row.qseqid}"
         peptide = str(row.sseq).replace("*", "")
         if not peptide:
             continue
@@ -237,8 +256,9 @@ def get_data_for_binding_pred(
         f_out.write("\n".join(fasta_lines))
 
     tool.write_log(
-        f"[{sample}] Wrote {len(fasta_lines)//2} peptides to {fasta_path}",
+        f"[{sample}] Wrote {len(fasta_lines) // 2} peptides to {fasta_path}",
         "info"
     )
+
     return summary
 

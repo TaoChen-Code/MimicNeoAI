@@ -68,7 +68,7 @@ def hlahd(run_sample_id, sample, configure, paths, tool):
     cmd_5 = f"cat {fastq_dir}/{sample}.hlatmp.2.fastq |awk {awk_cmd_2} > {fastq_dir}/{sample}.hla.2.fastq"
     
     # HLaHD main analysis command
-    cmd_6 = f'hlahd.sh -t {thread} -m 30 -f {freq_data_dir} {fastq_dir}/{sample}.hla.1.fastq {fastq_dir}/{sample}.hla.2.fastq {HLA_gene} {dictionary} {sample} {output_hla}'  
+    cmd_6 = f'hlahd.sh -t {thread} -f {freq_data_dir} {fastq_dir}/{sample}.hla.1.fastq {fastq_dir}/{sample}.hla.2.fastq {HLA_gene} {dictionary} {sample} {output_hla}'
     
     # Cleanup commands
     cmd_7 = f'rm {fastq_dir}/*'
