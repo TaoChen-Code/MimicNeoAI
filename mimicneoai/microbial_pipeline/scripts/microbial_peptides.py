@@ -1,8 +1,7 @@
 # coding=utf-8
-import re
 import os
 from datetime import datetime
-from typing import Optional
+from mimicneoai.functions.utils import format_java_heap
 import pandas as pd
 from mimicneoai.microbial_pipeline.scripts.get_data_for_blastx import get_data
 from mimicneoai.microbial_pipeline.scripts.get_data_for_binding_pred import get_data_for_binding_pred
@@ -112,7 +111,7 @@ def HostSequencesRemoving(sample, configure, paths, tool):
     if need_run:
         fastqs_in = _fastq_inputs()
 
-        # 4.1–4.3: 直接得到 name-sorted BAM
+        # 4.1–4.3: name-sorted BAM
         fq_part = " ".join(fastqs_in)
         cmd_align_sort_hg38 = (
             f"bwa mem -q -t {thread} "
@@ -363,13 +362,8 @@ def MicrobialTaxasQuantification(sample, configure, paths, tool):
     pathseq_threads = min(thread, 5)
 
     mem = configure['args']['mem']
-    m = re.match(r"^(\d+)([KMG]?)$", str(mem).strip(), re.IGNORECASE)
-    if not m:
-        raise ValueError(f"Invalid mem format in configure['args']['mem']: {mem}")
-    mem_num  = int(m.group(1))
-    mem_unit = (m.group(2) or "G").upper()
-    xmx = f"{mem_num}{mem_unit}"
-    xms = f"{max(1, mem_num // 2)}{mem_unit}"
+    # ---- Example usage ----
+    _, xmx, xms = format_java_heap(configure["args"]["mem"], xms_ratio=0.5)
 
     pair     = configure['others']['pair']
     seq_type = configure['others']['seq_type']

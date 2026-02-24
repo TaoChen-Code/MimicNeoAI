@@ -30,9 +30,7 @@ import sys
 from typing import Dict, Any, List, Tuple
 from multiprocessing import Manager
 import multiprocessing.pool
-
 from importlib.resources import files
-
 from mimicneoai.functions.pipline_tools import tools
 
 

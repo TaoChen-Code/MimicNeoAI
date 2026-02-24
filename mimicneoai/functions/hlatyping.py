@@ -77,15 +77,17 @@ def hlahd(run_sample_id, sample, configure, paths, tool):
     cmd_10 = f"rm {output_hla}/{sample}/exon/*"
 
     # Execute pipeline steps conditionally
-    if not os.path.exists(f"{output_hla}/{sample}/result/{sample}_final.result.txt"): 
+    final_result = f"{output_hla}/{sample}/result/{sample}_final.result.txt"
+    if not os.path.exists(final_result):
         tool.judge_then_exec(run_sample_id, cmd_0, fastq_dir)
         tool.judge_then_exec(run_sample_id, cmd_1, f"{fastq_dir}/{sample}.hla.1.fastq")
         tool.judge_then_exec(run_sample_id, cmd_2, f"{fastq_dir}/{sample}.mapped.sam")
         tool.judge_then_exec(run_sample_id, cmd_3, f"{fastq_dir}/{sample}.hlatmp.1.fastq")
         tool.judge_then_exec(run_sample_id, cmd_4, f"{fastq_dir}/{sample}.hla.1.fastq")
         tool.judge_then_exec(run_sample_id, cmd_5, f"{fastq_dir}/{sample}.hla.2.fastq")
-        tool.judge_then_exec(run_sample_id, cmd_6, f"{output_hla}/{sample}/result/{sample}_final.result.txt")
-        #tool.judge_then_exec_with_time(run_sample_id, cmd_6, f"{output_hla}/{sample}/result/{sample}_final.result.txt", time_out)
+        tool.judge_then_exec(run_sample_id, cmd_6, final_result)
+    else:
+        tool.write_log(f"[{sample}] HLA-HD final result already exists, skip: {final_result}", "warn")
 
     # Conditional cleanup of intermediate files
     mapfile_dir = f"{output_hla}/{sample}/mapfile/"

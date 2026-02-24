@@ -5,7 +5,6 @@ import gzip
 import shlex
 from typing import List
 
-
 def _open_text_auto(path: str, mode: str):
     """
     Open a text file transparently for .gz or plain files.
@@ -83,68 +82,81 @@ def split_vcf(input_vcf: str, output_dir: str, file_suffix: str, chunks: int = 1
 
 def annotation_vcf(run_sample_id, sample, tool, paths, configure):
     """
-    Run VEP annotation inside an Apptainer/Singularity container, post-filter,
-    and then split the annotated VCF into chunks.
-
-    Required keys (examples, do not hardcode absolute paths in code):
-        paths['path']['neoantigen']['VEP_SIF']                  -> path to .sif image
-        paths['database']['neoantigen']['VEP_DATA_DIR']         -> VEP cache directory
-        paths['database']['neoantigen']['HG38']['REF_FASTA']    -> reference fasta
-        paths['database']['neoantigen']['VEP_PLUGINS_VERSION']  -> plugins dir name (optional)
-
-        configure['path']['output_dir']                         -> base output dir
-        configure['args']['thread']                             -> int threads
-        configure['step_name']['annotation']                    -> step name string
-        configure['step_name']['vqsr']                          -> step name string
+    Run VEP annotation inside an Apptainer/Singularity container, remove
+    ref-transcript mismatches (hard filter), keep PASS only using bcftools,
+    index, then split the PASS VCF into chunks.
 
     The function expects `tool` to provide:
         - tool.judge_then_exec(run_id, cmd, expect_path)
         - tool.write_log(msg, level)
+
+    Notes:
+      - Input VCF is from Merge3Callers shared_mutect:
+        {output_dir}/{sample}/04.variants_calling/Merge3Callers/02.shared_mutect/
+        {sample}.mutect.shared.bypos.vcf.gz
+      - Output naming (recommended semantic):
+        {sample}.mutect.shared.bypos.VEP.vcf
+        {sample}.mutect.shared.bypos.VEP.rm_mismatch.vcf
+        {sample}.mutect.shared.bypos.VEP.rm_mismatch.PASS.vcf.gz (+ index)
     """
-    # Resolve parameters
-    human_vep_sif = paths['path']['neoantigen']['VEP_SIF']
-    vep_data_dir = paths['database']['neoantigen']['VEP_DATA_DIR']
+    # -------- resolve paths / args --------
+    human_vep_sif = paths["path"]["neoantigen"]["VEP_SIF"]
+    vep_data_dir = paths["database"]["neoantigen"]["VEP_DATA_DIR"]
+
     ref_fasta_path = Path(paths["database"]["neoantigen"]["HG38"]["REF_FASTA"]).expanduser()
     hg38_ref_dir = str(ref_fasta_path.parent)
     ref_name = ref_fasta_path.name
 
-    # Optional: plugin version with fallback
     plugins_version = (
         paths.get("database", {})
              .get("neoantigen", {})
              .get("VEP_PLUGINS_VERSION", "VEP_plugins-release-110")
     )
 
-    output_dir = configure['path']['output_dir'].rstrip("/")
-    thread = int(configure['args']['thread'])
-    hla_binding_threads = int(configure['args']['hla_binding_threads'])
+    output_dir = configure["path"]["output_dir"].rstrip("/")
+    thread = int(configure["args"]["thread"])
+    hla_binding_threads = int(configure["args"]["hla_binding_threads"])
 
-    # Create output directory for this step
-    vep_dir = f"{output_dir}/{sample}/{configure['step_name']['annotation']}/"
-    cmd_mkdir = f"mkdir -p {shlex.quote(vep_dir)}"
-    tool.judge_then_exec(run_sample_id, cmd_mkdir, vep_dir)
-
-    # Input/previous step directory (e.g., VQSR output)
-    data_dir = f"{output_dir}/{sample}/{configure['step_name']['vqsr']}/"
-    suffix = "mutect.filtered"
-
-    # Container-bind relative paths
-    input_file = f"/data_dir/{sample}.{suffix}.vcf.gz"
-    output_file = f"/output_dir/{sample}.{suffix}.VEP.vcf"
-    abs_output_file = f"{vep_dir}{sample}.{suffix}.VEP.vcf"
-    abs_filtered_vcf = f"{vep_dir}{sample}.{suffix}.VEP.filtered.vcf"
-
-    # Notes:
-    #   --pick: restrict to top transcript per variant to control downstream runtime.
-    #   --transcript_version: append transcript version; useful if expression sources are versioned.
-    vep_options = (
-        "--offline --cache --format vcf --vcf --symbol --terms SO --tsl --biotype "
-        "--hgvs --plugin Frameshift --plugin Wildtype --af --af_1kg --sift b "
-        "--transcript_version --pick"
+    bcftools = (
+        configure.get("args", {}).get("bcftools")
+        or paths.get("path", {}).get("neoantigen", {}).get("BCFTOOLS")
+        or "bcftools"
     )
 
-    # Build Apptainer command
-    cmd_args = [
+    # Output dir
+    vep_dir = f"{output_dir}/{sample}/{configure['step_name']['annotation']}/"
+    tool.judge_then_exec(run_sample_id, f"mkdir -p {shlex.quote(vep_dir)}", vep_dir)
+
+    # Input shared VCF
+    variants_step = configure["step_name"]["variants_calling"]
+    data_dir = f"{output_dir}/{sample}/{variants_step}/Merge3Callers/02.shared_mutect/"
+    suffix = "shared"
+
+    abs_input_vcfgz = f"{data_dir}{sample}.{suffix}.vcf.gz"
+    tool.write_log(f"Annotation input VCF: {abs_input_vcfgz}", "info")
+    tool.judge_then_exec(run_sample_id, f"test -s {shlex.quote(abs_input_vcfgz)}", abs_input_vcfgz)
+
+    input_file = f"/data_dir/{sample}.{suffix}.vcf.gz"
+
+    # Outputs
+    abs_vep_vcf = f"{vep_dir}{sample}.{suffix}.VEP.vcf"
+    abs_rm_mismatch_vcf = f"{vep_dir}{sample}.{suffix}.VEP.rm_mismatch.vcf"
+    abs_pass_vcfgz = f"{vep_dir}{sample}.{suffix}.VEP.rm_mismatch.PASS.vcf.gz"
+
+    output_file_vep = f"/output_dir/{Path(abs_vep_vcf).name}"
+
+    # VEP options (match bash)
+    vep_options = (
+        "--offline --cache --format vcf --vcf "
+        "--symbol --terms SO --tsl --biotype --hgvs "
+        "--plugin Frameshift --plugin Wildtype "
+        "--af --af_1kg "
+        "--sift b "
+        "--transcript_version "
+        "--mane_select --canonical"
+    )
+
+    cmd_vep_args = [
         "apptainer", "exec",
         "-B", f"{vep_dir}:/output_dir/",
         "-B", f"{data_dir}:/data_dir/",
@@ -152,42 +164,46 @@ def annotation_vcf(run_sample_id, sample, tool, paths, configure):
         "-B", f"{hg38_ref_dir}:/fasta_data/",
         human_vep_sif,
         "vep",
-        "--fork", str(thread),
+        "--fork", str(max(1, min(thread, 5))),
         "--input_file", input_file,
-        "--output_file", output_file,
+        "--output_file", output_file_vep,
         "--dir_cache", "/vep_data/",
         f"--fasta=/fasta_data/{ref_name}",
         f"--dir_plugins=/vep_data/{plugins_version}/",
     ] + vep_options.split()
 
-    cmd1 = " ".join(shlex.quote(x) for x in cmd_args)
+    cmd_vep = " ".join(shlex.quote(x) for x in cmd_vep_args)
+    tool.write_log("Run VEP annotation.", "info")
+    tool.judge_then_exec(run_sample_id, cmd_vep, abs_vep_vcf)
 
-    # Run VEP
-    tool.judge_then_exec(run_sample_id, cmd1, abs_output_file)
+    # Remove ref-transcript mismatches (keep original style)
+    cmd_rm = f"ref-transcript-mismatch-reporter {shlex.quote(abs_vep_vcf)} -f hard"
+    tool.write_log("Remove ref-transcript mismatches (hard filter).", "info")
+    abs_tool_filtered_vcf = f"{vep_dir}{sample}.{suffix}.VEP.filtered.vcf"
+    tool.judge_then_exec(run_sample_id, cmd_rm, abs_tool_filtered_vcf)
 
-    # Post-process: report ref-transcript mismatches (requires `vatools`)
-    cmd2 = f"ref-transcript-mismatch-reporter {shlex.quote(abs_output_file)} -f hard"
-    tool.judge_then_exec(run_sample_id, cmd2, abs_filtered_vcf)
-
-    # Keep only FILTER == PASS variants before chunking
-    abs_filtered_pass_vcf = f"{vep_dir}{sample}.{suffix}.VEP.filtered.PASS.vcf"
-    cmd_keep_pass = (
-        "awk 'BEGIN{FS=OFS=\"\\t\"} /^#/ || $7==\"PASS\"' "
-        f"{shlex.quote(abs_filtered_vcf)} > {shlex.quote(abs_filtered_pass_vcf)}"
+    cmd_rename = (
+        f"mv -f {shlex.quote(abs_tool_filtered_vcf)} {shlex.quote(abs_rm_mismatch_vcf)}"
     )
-    tool.write_log("Filter VCF to FILTER==PASS for downstream analysis.", "info")
-    tool.judge_then_exec(run_sample_id, cmd_keep_pass, abs_filtered_pass_vcf)
+    tool.judge_then_exec(run_sample_id, cmd_rename, abs_rm_mismatch_vcf)
 
-    # Split VCF into chunks equal to hla_binding_threads count (or choose another number as needed)
+    # PASS only + index (bcftools)
+    tool.write_log("VEP: bcftools PASS + index", "info")
+    cmd_pass = (
+        f"{shlex.quote(bcftools)} view -f PASS -Oz -o {shlex.quote(abs_pass_vcfgz)} {shlex.quote(abs_rm_mismatch_vcf)} "
+        f"&& {shlex.quote(bcftools)} index -t {shlex.quote(abs_pass_vcfgz)}"
+    )
+    tool.judge_then_exec(run_sample_id, cmd_pass, abs_pass_vcfgz)
+
+    # Split into chunks
     chunk_dir = f"{vep_dir}chunks"
-    cmd_mkdir_chunks = f"mkdir -p {shlex.quote(chunk_dir)}"
-    tool.judge_then_exec(run_sample_id, cmd_mkdir_chunks, chunk_dir)
+    tool.judge_then_exec(run_sample_id, f"mkdir -p {shlex.quote(chunk_dir)}", chunk_dir)
 
     tool.write_log(f"Split PASS-only VCF into {hla_binding_threads} chunks.", "info")
     split_vcf(
-        input_vcf=abs_filtered_pass_vcf,
+        input_vcf=abs_pass_vcfgz,
         output_dir=chunk_dir,
-        file_suffix=f"{sample}.{suffix}.VEP.filtered.PASS",
+        file_suffix=f"{sample}.{suffix}.VEP.rm_mismatch.PASS",
         chunks=hla_binding_threads
     )
     tool.write_log("VCF splitting completed.", "info")

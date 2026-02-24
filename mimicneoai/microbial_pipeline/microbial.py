@@ -1,11 +1,9 @@
 # coding=utf-8
 from __future__ import annotations
-import sys
 import argparse
 import os
 import traceback
 from multiprocessing import Manager
-import multiprocessing.pool
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import yaml
@@ -20,6 +18,9 @@ from mimicneoai.microbial_pipeline.scripts.microbial_peptides import (
     MicrobialPeptidesIdentification,
     MicrobialPeptidesBindingPrediction,
 )
+# -------- Non-daemon Pool (only needed if workers spawn child processes) --------
+from mimicneoai.functions.nodemon_pool import NoDaemonPool
+
 
 FLAG = "MicrobialAntigen"
 STEP_NAME = {
@@ -33,28 +34,6 @@ STEP_NAME = {
     "hla": "07.HlaTyping",
     "pvacbind": "08.MicrobialPeptidesBindingPrediction",
 }
-
-# -------- Non-daemon Pool (only needed if workers spawn child processes) --------
-class _NoDaemonProcess(multiprocessing.Process):
-    """Process whose daemon attribute is always False (allows nested pools)."""
-    def _get_daemon(self):
-        return False
-    def _set_daemon(self, value):
-        pass
-    daemon = property(_get_daemon, _set_daemon)
-
-if sys.version_info >= (3, 8):
-    # Python 3.8+
-    class NoDaemonPool(multiprocessing.pool.Pool):
-        @staticmethod
-        def Process(_, *args, **kwargs):
-            # 丢掉第一个 ctx 参数，用自定义 _NoDaemonProcess
-            return _NoDaemonProcess(*args, **kwargs)
-else:
-    # Python 3.7 early
-    class NoDaemonPool(multiprocessing.pool.Pool):
-        Process = _NoDaemonProcess
-
 
 def _start_one_sample(
     sample: str,

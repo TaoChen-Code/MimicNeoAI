@@ -6,8 +6,6 @@ Optional: specify a custom path for download and extraction.
 If a custom path is used, a symbolic link will be created at mimicneoai/database.
 """
 
-import os
-import sys
 import tarfile
 import argparse
 import shutil

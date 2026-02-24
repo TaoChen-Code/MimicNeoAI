@@ -76,25 +76,8 @@ def pvacbind(sample, configure, pathes, tool):
       - Merges per-chunk TSVs if present.
       - Writes a final 'done' flag when merged output is available.
     """
-    import sys
     import gzip
-    import multiprocessing
-    import multiprocessing.pool as mppool
-
-    # ---- Non-daemon Pool (allows nested multiprocessing) ----
-    class NoDaemonProcess(multiprocessing.Process):
-        def _get_daemon(self): return False
-        def _set_daemon(self, value): pass
-        daemon = property(_get_daemon, _set_daemon)
-
-    if sys.version_info < (3, 8):
-        class NoDaemonPool(mppool.Pool):
-            Process = NoDaemonProcess
-    else:
-        class NoDaemonPool(mppool.Pool):
-            @staticmethod
-            def Process(_, *args, **kwds):
-                return NoDaemonProcess(*args, **kwds)
+    from mimicneoai.functions.nodemon_pool import NoDaemonPool
 
     # ---- Small utilities (local scope, minimal changes) ----
     def _ensure_dir(p): os.makedirs(p, exist_ok=True)

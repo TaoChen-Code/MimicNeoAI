@@ -13,7 +13,7 @@ Detect and prioritize mutation-derived neoepitopes from WES/WGS/RNA data.
 4. Somatic variant calling  
 5. Variant annotation (VEP)  
 6. HLA typing 
-7. Binding and immunogenicity prediction (pVACseq)
+7. Binding and immunogenicity prediction
 
 ## Installation
 ```bash
@@ -107,10 +107,18 @@ others:
 
   tumor_with_matched_normal: True   # In this mode, input samples must be provided as a matched Tumor-Normal pair.
                                    # Use a comma to separate sample names, e.g. - {TumorName},{NormalName}
-  host_variants_calling_and_annotation: True  # Host variant processing
+  host_variants_calling: True  # Host variant processing
   mutation_calling_tool: "Mutect2"  # Variant caller (Mutect2 for somatic variants)
-  hlatyping: False          # HLA typing enable
-  peptides_identification_and_binding_prediction: False  # Peptide prediction
+  pad_bp: 100
+  min_base_quality: 20
+  min_allele_fraction: 0.02
+
+  annotation: True
+
+  hlatyping: True          # HLA typing enable
+  peptides_identification_and_binding_prediction: True  # Peptide prediction
+  mhc_i_epitope_lengths: "8,9,10,11"
+  mhc_ii_epitope_lengths: "15"
   
   # WES-specific parameters
   bed_file: "/path/to/target_regions/exome_targets.bed"  # Capture regions file
@@ -140,16 +148,13 @@ mimicneoai mutation-derived -c /path/to/mutation_derived_configure.yaml
 <output_dir>/<sample>/
 ├─ 00.QC/
 ├─ 01.alignment/
-├─ 02.sort/
-├─ 03.rmdup/
-├─ 04.BQSR/
-├─ 05.variants_calling/
-├─ 06.vqsr/
-├─ 07.vep/
-├─ 08.hlatyping/
-└─ 09.binding_prediction/
+├─ 02.markdup/
+├─ 03.bqsr/
+├─ 04.variants_calling/
+├─ 05.annotation/
+├─ 06.hlatyping/
+├─ 07.binding_prediction/
 ```
-
 ## Notes
 
 * Tool paths, reference genomes, and database versions are managed automatically.

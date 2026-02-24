@@ -48,7 +48,6 @@ database:
       CATALOG_GENOME:  "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_catalog_genome.txt"
 
     BLAST:
-      #DB_DIR: "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_protein"
       DB_DIR: "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_protein_v2"
       CATALOG_PROT: "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_protein_seqid2taxid_v2.txt.gz"
       OUTFMT: "'6 qseqid qlen sseqid qseq sseq stitle pident length mismatch gapopen qstart qend sstart send evalue bitscore qcovhsp qcovs'"
@@ -58,6 +57,10 @@ database:
       REF_DIR:   "../database/ref/DNA/GRCh38_primary/"
       REF_FASTA: "../database/ref/DNA/GRCh38_primary/GRCh38.primary_assembly.genome.fa"
       BUNDLE:    "../database/ref/DNA/human_bundle/"
+      # Mutect2 resources (Best Practices)
+      GERMLINE_RESOURCE_VCF: "../database/ref/DNA/human_bundle/af-only-gnomad.hg38.vcf.gz"
+      PANEL_OF_NORMALS_VCF:  "../database/ref/DNA/human_bundle/1000g_pon.hg38.vcf.gz"
+      COMMON_SITES_VCF:      "../database/ref/DNA/human_bundle/small_exac_common_3.hg38.vcf.gz"
 
     VEP_DATA_DIR: "../database/ref/DNA/VEP/vep_data/"
     VEP_PLUGINS_VERSION: "VEP_plugins-release-110"
