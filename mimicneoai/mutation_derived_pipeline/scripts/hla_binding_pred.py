@@ -1,31 +1,7 @@
 # coding=utf-8
 import os
-import sys
-import multiprocessing
 from typing import Tuple, Dict, Any, Optional, List
-
-
-# ---- Non-daemon pool (allows nested pools inside workers) ----
-class NoDaemonProcess(multiprocessing.Process):
-    """Process whose daemon attribute is always False."""
-    def _get_daemon(self):
-        return False
-    def _set_daemon(self, value):
-        pass
-    daemon = property(_get_daemon, _set_daemon)
-
-
-if sys.version_info < (3, 8):
-    # Python < 3.8
-    class NoDaemonPool(multiprocessing.pool.Pool):
-        Process = NoDaemonProcess
-else:
-    # Python ≥ 3.8
-    class NoDaemonPool(multiprocessing.pool.Pool):
-        @staticmethod
-        def Process(_, *args, **kwds):
-            return NoDaemonProcess(*args, **kwds)
-
+from mimicneoai.functions.nodemon_pool import NoDaemonPool
 
 class Pvacseq:
     """
@@ -158,8 +134,8 @@ class Pvacseq:
         # Also allow upstream tool to log the mkdir action (keeps legacy behavior)
         self.tool.judge_then_exec(run_sample_id, f"mkdir -p {output_pvacseq}", output_pvacseq)
 
-        # Input VCF suffix (kept from original convention)
-        suffix = "mutect.filtered.VEP.filtered.PASS.vcf"
+        # Input VCF naming (must match annotation_vcf outputs)
+        base_prefix = "shared.VEP.rm_mismatch.PASS"
 
         # HLA parsing
         hlaI, hlaII = self.get_hlahd_results(sample, output_hla)
@@ -172,24 +148,30 @@ class Pvacseq:
 
         # Decide input VCF and threads (chunked runs use single thread inside the container)
         if vcf_chunk is not None:
-            # e.g., <...>/chunks/{sample}.mutect.filtered.VEP.filtered.PASS.chunk_{i}.vcf
+            # e.g., <...>/05.annotation/chunks/{sample}.shared.VEP.rm_mismatch.PASS.chunk_{i}.vcf.gz
             input_vcf = os.path.join(
                 output_dir, sample, step_name_annotation, "chunks",
-                f"{sample}.{suffix[:-4]}.chunk_{vcf_chunk}.vcf"
+                f"{sample}.{base_prefix}.chunk_{vcf_chunk}.vcf.gz"
             )
             running_thread = 1
         else:
-            input_vcf = os.path.join(output_dir, sample, step_name_annotation, f"{sample}.{suffix}")
+            # e.g., <...>/05.annotation/{sample}.shared.VEP.rm_mismatch.PASS.vcf.gz
+            input_vcf = os.path.join(
+                output_dir, sample, step_name_annotation,
+                f"{sample}.{base_prefix}.vcf.gz"
+            )
             running_thread = thread
 
         # Container binding: bind VCF root, HLA root, and output root
         bind_arg = f"--bind {output_vcf},{output_hla},{output_dir} "
-
+        # Epitope lengths (tool-agnostic naming)
+        e1 = str(configure.get("others", {}).get("mhc_i_epitope_lengths", "8,9,10"))
+        e2 = str(configure.get("others", {}).get("mhc_ii_epitope_lengths", "15"))
         cmd = (
             f"apptainer exec {bind_arg}"
             f"{pvactools_sif} pvacseq run "
             f"{input_vcf} {sample} {HLA} {algoIandII} "
-            f"{output_pvacseq} -e1 8,9,10 -e2 15 "
+            f"{output_pvacseq} -e1 {e1} -e2 {e2} "
             f"--iedb-install-directory /opt/iedb "
             f"-t {running_thread} --fasta-size 100000"
         )

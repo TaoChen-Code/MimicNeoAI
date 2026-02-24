@@ -10,209 +10,461 @@ Required software versions (for reproducibility/documentation):
 - GATK >= 4.6.0.0
 - Java 17
 """
-
 import os
+import traceback
+from typing import Dict, Any
+from mimicneoai.mutation_derived_pipeline.scripts.run_mutect2 import Mutect2
+from mimicneoai.mutation_derived_pipeline.scripts.run_manta_strelka2 import strelka2_main
+from mimicneoai.mutation_derived_pipeline.scripts.run_vardict import vardict_main
+from mimicneoai.mutation_derived_pipeline.scripts.ensure_calling_bed import _ensure_calling_bed
+from mimicneoai.mutation_derived_pipeline.scripts.merge_mutect_strelka_vardict import merge_mutect_strelka_vardict
+from mimicneoai.functions.nodemon_pool import NoDaemonPool
+from mimicneoai.functions.utils import format_java_heap
+
 
 
 def mutation_calling(run_sample_id: str, sample_name: str, tool, configure: dict, paths: dict):
     """
     Align paired-end FASTQs to the reference genome and perform preprocessing:
-      1) BWA-MEM alignment -> BAM
-      2) Sort BAM
-      3) Mark duplicates (GATK MarkDuplicatesSpark)
-      4) Base Quality Score Recalibration (BQSR)
-
-    Args:
-        run_sample_id: An identifier for logging/execution context.
-        sample_name: Tumor (or Normal) sample name.
-        tool: Execution helper with `judge_then_exec`, `exec_cmd`, `write_log`.
-        configure: Pipeline configuration dict (paths/args/others/step_name).
-        paths: Paths dict with references and tool jars.
+      1) BWA-MEM alignment + samtools view + samtools sort (piped; no intermediate BAM)
+      2) Mark duplicates (GATK MarkDuplicatesSpark)
+      3) Base Quality Score Recalibration (BQSR) with interval padding
 
     Returns:
-        (dir_pre_vcf, dir_VQSR, bqsr_bam_path)
+        (dir_variants_calling_root, bqsr_bam_path)
     """
     # --- References & tools ---
-    ref = paths['database']['neoantigen']['HG38']['REF_FASTA']
-    bundle_path = paths['database']['neoantigen']['HG38']['BUNDLE'] + "/"
-    gatk_jar = paths['path']['common']['GATK_JAR']
+    ref = paths["database"]["neoantigen"]["HG38"]["REF_FASTA"]
+    bundle_path = paths["database"]["neoantigen"]["HG38"]["BUNDLE"].rstrip("/") + "/"
+    gatk_jar = paths["path"]["common"]["GATK_JAR"]
 
     # --- I/O & runtime config ---
-    tmp_dir = configure['path']['tmp_dir'] + "/"
-    input_dir = configure['path']['input_dir'] + "/"
-    output_dir = configure['path']['output_dir'] + "/"
-    bed_file = configure['others']['bed_file']
-    QC = configure['others']['QC']
+    tmp_dir = configure["path"]["tmp_dir"].rstrip("/") + "/"
+    input_dir = configure["path"]["input_dir"].rstrip("/") + "/"
+    output_dir = configure["path"]["output_dir"].rstrip("/") + "/"
+    bed_file = configure["others"]["bed_file"]
+    QC = bool(configure["others"]["QC"])
 
-    # --- Resources ---
-    thread = configure['args']['thread']
-    mem = configure['args']['mem']
-    gatk = f"java -Xmx{mem} -jar {gatk_jar}"
+    # --- Knobs ---
+    pad_bp = int(configure["others"].get("pad_bp", 100))  # --interval-padding
+    thread = int(configure["args"]["thread"])
+    _, xmx, xms = format_java_heap(configure["args"]["mem"], xms_ratio=0.5)
+    gatk = f"java -Xms{xms} -Xmx{xmx} -jar {gatk_jar}"
+
+    # --- Step names ---
+    step = configure["step_name"]
+    step_qc = step["QC"]
+    step_alignment = step["alignment"]
+    step_markdup = step["markdup"]
+    step_bqsr = step["bqsr"]
+    step_varcall = step["variants_calling"]
+
+    # --- Per-sample root ---
+    sample_root = os.path.join(output_dir, sample_name) + "/"
+    tool.judge_then_exec(run_sample_id, f"mkdir -p {sample_root}", sample_root)
+
+    dir_alignment = os.path.join(sample_root, step_alignment) + "/"
+    dir_markdup = os.path.join(sample_root, step_markdup) + "/"
+    dir_bqsr = os.path.join(sample_root, step_bqsr) + "/"
+    dir_varcall_root = os.path.join(sample_root, step_varcall) + "/"
+
+    tool.judge_then_exec(run_sample_id, f"mkdir -p {dir_alignment}", dir_alignment)
+    tool.judge_then_exec(run_sample_id, f"mkdir -p {dir_markdup}", dir_markdup)
+    tool.judge_then_exec(run_sample_id, f"mkdir -p {dir_bqsr}", dir_bqsr)
+    tool.judge_then_exec(run_sample_id, f"mkdir -p {dir_varcall_root}", dir_varcall_root)
 
     # --- Input FASTQs (QC or raw) ---
-    output_dir = output_dir + sample_name + '/'
-    dir_output = output_dir
     if QC:
-        output_qc = dir_output + configure['step_name']['QC'] + '/'
-        input_file1 = output_qc + sample_name + f'/{sample_name}.QC.R1.fq.gz'
-        input_file2 = output_qc + sample_name + f'/{sample_name}.QC.R2.fq.gz'
+        # expected QC outputs: <sample_root>/00.QC/<sample>/<sample>.QC.R1.fq.gz
+        qc_root = os.path.join(sample_root, step_qc) + "/"
+        input_file1 = os.path.join(qc_root, sample_name, f"{sample_name}.QC.R1.fq.gz")
+        input_file2 = os.path.join(qc_root, sample_name, f"{sample_name}.QC.R2.fq.gz")
     else:
-        input_file1 = input_dir + sample_name + f'/{sample_name}.R1.fq.gz'
-        input_file2 = input_dir + sample_name + f'/{sample_name}.R2.fq.gz'
+        input_file1 = os.path.join(input_dir, sample_name, f"{sample_name}.R1.fq.gz")
+        input_file2 = os.path.join(input_dir, sample_name, f"{sample_name}.R2.fq.gz")
 
-    # --- Create output directory tree ---
-    tool.judge_then_exec(run_sample_id, f"mkdir -p {output_dir}", output_dir)
+    # --- 1) Alignment + Sort (pipe; produce sorted BAM directly) ---
+    sorted_bam = os.path.join(dir_alignment, f"{sample_name}.sorted.bam")
+    bwa_log = os.path.join(dir_alignment, f"{sample_name}.bwa.log")
 
-    dir_alignment = dir_output + configure['step_name']['alignment'] + '/'
-    tool.judge_then_exec(run_sample_id, f"mkdir {dir_alignment}", dir_alignment)
-
-    dir_sort = dir_output + configure['step_name']['sort'] + '/'
-    tool.judge_then_exec(run_sample_id, f"mkdir {dir_sort}", dir_sort)
-
-    dir_rmdup = dir_output + configure['step_name']['rmdup'] + '/'
-    tool.judge_then_exec(run_sample_id, f"mkdir {dir_rmdup}", dir_rmdup)
-
-    dir_BQSR = dir_output + configure['step_name']['bqsr'] + '/'
-    tool.judge_then_exec(run_sample_id, f"mkdir {dir_BQSR}", dir_BQSR)
-
-    dir_pre_vcf = dir_output + configure['step_name']['variants_calling'] + '/'
-    tool.judge_then_exec(run_sample_id, f"mkdir {dir_pre_vcf}", dir_pre_vcf)
-
-    dir_VQSR = dir_output + configure['step_name']['vqsr'] + '/'
-    tool.judge_then_exec(run_sample_id, f"mkdir {dir_VQSR}", dir_VQSR)
-
-    # --- 4.1 Alignment (BWA-MEM -> BAM) ---
-    file_alignment = dir_alignment + sample_name + ".bam"
-    cmd_alignment = (
+    cmd_align_sort = (
+        "bash -c \"set -euo pipefail; "
         "bwa mem -t {thread} -R '@RG\\tID:foo_lane\\tPL:UNKNOWN\\tLB:library\\tSM:{sm}' {ref} {fq1} {fq2} "
-        "| samtools view -S -b - > {bam}"
-    ).format(thread=thread, sm=sample_name, ref=ref, fq1=input_file1, fq2=input_file2, bam=file_alignment)
-    tool.judge_then_exec(run_sample_id, cmd_alignment, file_alignment)
-
-    # --- 4.2 Sort BAM ---
-    sorted_bam_filename = dir_sort + sample_name + ".sorted.bam"
-    cmd_sort = f"samtools sort -@ {thread} -m 4G -O bam -o {sorted_bam_filename} {file_alignment}"
-    tool.judge_then_exec(run_sample_id, cmd_sort, sorted_bam_filename)
-
-    index_sorted_bam_filename = sorted_bam_filename + ".bai"
-    cmd_sort_index = f"samtools index -@ {thread} {sorted_bam_filename}"
-    tool.judge_then_exec(run_sample_id, cmd_sort_index, index_sorted_bam_filename)
-    # Note: samtools -m specifies max memory per thread.
-
-    # --- 4.3 Mark duplicates ---
-    rmdup_sorted_bam_filename = dir_rmdup + sample_name + ".sorted.rmdup.bam"
-    metrics_filename = dir_rmdup + sample_name + ".rmdup_metrics.txt"
-    cmd_rmdup = (
-        f"{gatk} MarkDuplicatesSpark --tmp-dir {tmp_dir} --spark-master local[{thread}] "
-        f"-I {sorted_bam_filename} -O {rmdup_sorted_bam_filename} -M {metrics_filename}"
+        "2> {bwa_log} "
+        "| samtools view -S -b - "
+        "| samtools sort -@ {thread} -m 1G -O bam -o {sorted_bam} -\""
+    ).format(
+        thread=thread,
+        sm=sample_name,
+        ref=ref,
+        fq1=input_file1,
+        fq2=input_file2,
+        bwa_log=bwa_log,
+        sorted_bam=sorted_bam,
     )
-    tool.judge_then_exec(run_sample_id, cmd_rmdup, rmdup_sorted_bam_filename)
+    tool.judge_then_exec(run_sample_id, cmd_align_sort, sorted_bam)
 
-    index_rmdup_sorted_bam_filename = rmdup_sorted_bam_filename + ".bai"
-    cmd_bai = f"samtools index -@ {thread} {rmdup_sorted_bam_filename}"
-    tool.judge_then_exec(run_sample_id, cmd_bai, index_rmdup_sorted_bam_filename)
+    sorted_bai = sorted_bam + ".bai"
+    cmd_index_sorted = f"samtools index -@ {thread} {sorted_bam}"
+    tool.judge_then_exec(run_sample_id, cmd_index_sorted, sorted_bai)
 
-    # --- 4.4 BQSR ---
-    # Step 1: create recalibration table
-    recal_table = dir_BQSR + sample_name + ".sorted.rmdup.recal_data.table"
+    # --- 2) Mark duplicates (MarkDuplicatesSpark) ---
+    markdup_bam = os.path.join(dir_markdup, f"{sample_name}.sorted.markdup.bam")
+    markdup_metrics = os.path.join(dir_markdup, f"{sample_name}.markdup_metrics.txt")
+
+    cmd_markdup = (
+        f"{gatk} MarkDuplicatesSpark --tmp-dir {tmp_dir} --spark-master local[{thread}] "
+        f"-I {sorted_bam} -O {markdup_bam} -M {markdup_metrics}"
+    )
+    tool.judge_then_exec(run_sample_id, cmd_markdup, markdup_bam)
+
+    markdup_bai = markdup_bam + ".bai"
+    cmd_index_markdup = f"samtools index -@ {thread} {markdup_bam}"
+    tool.judge_then_exec(run_sample_id, cmd_index_markdup, markdup_bai)
+
+    # --- 3) BQSR (with --interval-padding) ---
+    recal_table = os.path.join(dir_bqsr, f"{sample_name}.sorted.markdup.recal_data.table")
+
     bundle_file1 = bundle_path + "1000G_phase1.snps.high_confidence.hg38.vcf.gz"
     bundle_file2 = bundle_path + "Mills_and_1000G_gold_standard.indels.hg38.vcf.gz"
     bundle_file3 = bundle_path + "dbsnp_138.hg38.vcf.gz"
+
     cmd_recal_table = (
         f"{gatk} BaseRecalibratorSpark --tmp-dir {tmp_dir} --spark-master local[{thread}] "
-        f"-R {ref} -I {rmdup_sorted_bam_filename} "
+        f"-R {ref} -I {markdup_bam} "
         f"--known-sites {bundle_file1} --known-sites {bundle_file2} --known-sites {bundle_file3} "
-        f"-O {recal_table} -L {bed_file}"
+        f"-O {recal_table} -L {bed_file} --interval-padding {pad_bp}"
     )
     tool.judge_then_exec(run_sample_id, cmd_recal_table, recal_table)
 
-    # Step 2: apply recalibration
-    bqsr_bam = dir_BQSR + sample_name + ".sorted.rmdup.BQSR.bam"
-    cmd_BQSR = (
+    bqsr_bam = os.path.join(dir_bqsr, f"{sample_name}.sorted.markdup.BQSR.bam")
+    cmd_apply_bqsr = (
         f"{gatk} ApplyBQSRSpark --tmp-dir {tmp_dir} --spark-master local[{thread}] "
-        f"-R {ref} -I {rmdup_sorted_bam_filename} --bqsr-recal-file {recal_table} -O {bqsr_bam}"
+        f"-R {ref} -I {markdup_bam} --bqsr-recal-file {recal_table} "
+        f"-O {bqsr_bam} -L {bed_file} --interval-padding {pad_bp}"
     )
-    tool.judge_then_exec(run_sample_id, cmd_BQSR, bqsr_bam)
-
-    return dir_pre_vcf, dir_VQSR, bqsr_bam
+    tool.judge_then_exec(run_sample_id, cmd_apply_bqsr, bqsr_bam)
 
 
-def Mutect2(run_sample_id: str, sample_name: str, tool, configure: dict, paths: dict):
-    """
-    Run GATK Mutect2 for somatic variant calling.
+    # --- 4) bamdst coverage (after BQSR) ---
+    bamdst_bed = configure["others"].get(
+        "bed_file",
+        "ERROR!",  # fallback
+    )
+    bamdst_dir = os.path.join(dir_bqsr, "bamdst") + "/"
+    tool.judge_then_exec(run_sample_id, f"mkdir -p {bamdst_dir}", bamdst_dir)
 
-    If `configure['others']['tumor_with_matched_normal']` is True,
-    `sample_name` must be "TUMOR,NORMAL" (comma-separated). The function will:
-      - Run alignment/preprocessing for both tumor and normal
-      - Call Mutect2 in tumor-normal mode
-      - Filter calls with FilterMutectCalls
+    # bamdst typical creates coverage.report / depth.freq or similar; choose a stable sentinel
+    bamdst_done = os.path.join(bamdst_dir, "coverage.report")
+    cmd_bamdst = f"bamdst -p {bamdst_bed} {bqsr_bam} -o {bamdst_dir}"
+    tool.judge_then_exec(run_sample_id, cmd_bamdst, bamdst_done)
 
-    Args:
-        run_sample_id: Logging/execution identifier.
-        sample_name: Tumor-only name, or "tumor,normal" when matched-normal mode.
-        tool: Execution helper.
-        configure: Pipeline configuration.
-        paths: Paths dictionary.
-    """
-    ref = paths['database']['neoantigen']['HG38']['REF_FASTA']
-    tmp_dir = configure['path']['tmp_dir'] + "/"
-    gatk_jar = paths['path']['common']['GATK_JAR']
-    mem = configure['args']['mem']
-    bed_file = configure['others']['bed_file']
-    gatk = f"java -Xmx{mem} -jar {gatk_jar}"
+    return dir_varcall_root, bqsr_bam
 
-    tumor_with_matched_normal = configure['others']['tumor_with_matched_normal']
-    if tumor_with_matched_normal:
-        tumor_sample = sample_name.split(",")[0]
-        normal_sample = sample_name.split(",")[1]
 
-        # Preprocess tumor & normal independently
-        dir_pre_vcf_tumor, dir_VQSR_tumor, tumor_bam = mutation_calling(
-            run_sample_id, tumor_sample, tool, configure, paths
+def _require(cfg: dict, key: str, ctx: str) -> str:
+    """Small helper: require a key in dict, else raise ValueError."""
+    v = cfg.get(key, None)
+    if v is None or str(v).strip() == "":
+        raise ValueError(f"Missing required {ctx}: '{key}'")
+    return v
+
+def _caller_mutect2(job: Dict[str, Any]) -> str:
+    """Mutect2 worker."""
+    tool = job["tool"]
+    try:
+        tool.write_log("Worker(Mutect2) started.", "info")
+        Mutect2(
+            run_sample_id=job["run_sample_id"],
+            sample_name=job["sample_name"],
+            tool=tool,
+            configure=job["configure"],
+            paths=job["paths"],
+            tumor_sample=job["tumor_sample"],
+            normal_sample=job["normal_sample"],
+            dir_varcall_root_tumor=job["dir_varcall_root_tumor"],
+            tumor_bam=job["tumor_bam"],
+            normal_bam=job["normal_bam"],
         )
-        dir_pre_vcf_normal, dir_VQSR_normal, normal_bam = mutation_calling(
-            run_sample_id, normal_sample, tool, configure, paths
-        )
+        tool.write_log("Worker(Mutect2) finished.", "info")
+        return "Mutect2:OK"
+    except Exception:
+        tool.write_log(f"Worker(Mutect2) crashed:\n{traceback.format_exc()}", "error")
+        raise
 
-        # Tumor + matched normal mode
-        mutect_file = dir_pre_vcf_tumor + tumor_sample + '.mutect.vcf.gz'
-        cmd_mutect = (
-            f"{gatk} Mutect2 --tmp-dir {tmp_dir} -R {ref} "
-            f"-I {tumor_bam} -I {normal_bam} -normal {normal_sample} "
-            f"-O {mutect_file} -L {bed_file}"
-        )
-        tool.judge_then_exec(run_sample_id, cmd_mutect, mutect_file)
+def _caller_strelka2(job: Dict[str, Any]) -> str:
+    """Strelka2 (Manta+Strelka2) worker."""
+    tool = job["tool"]
+    try:
+        out_dir_strelka2 = job["out_dir_strelka2"]
+        os.makedirs(out_dir_strelka2, exist_ok=True)
 
-        filtered_mutect_file = dir_VQSR_tumor + tumor_sample + '.mutect.filtered.vcf.gz'
-        cmd_mutect_filter = (
-            f"{gatk} FilterMutectCalls --tmp-dir {tmp_dir} -R {ref} "
-            f"-V {mutect_file} -O {filtered_mutect_file}"
-        )
-        tool.judge_then_exec(run_sample_id, cmd_mutect_filter, filtered_mutect_file)
+        argv_strelka2 = [
+            "--sample-t", job["tumor_sample"],
+            "--sample-n", job["normal_sample"],
+            "--ref", job["ref"],
+            "--call-regions", job["call_regions_bed_gz"],
+            "--tumor-bam", job["tumor_bam"],
+            "--normal-bam", job["normal_bam"],
+            "--threads", str(job["threads"]),
+            "--work-root", out_dir_strelka2,
+            "--bcftools", job["bcftools"],
+        ]
+        tool.write_log(f"Worker(Strelka2) CMD: {' '.join(argv_strelka2)}", "info")
 
-    else:
-        # Single-sample tumor mode is not implemented in this wrapper
-        tool.write_log("Unsupported tumor_without_matched_normal", "error")
-        return
+        strelka2_main(argv_strelka2, tool=tool, run_sample_id=job["run_sample_id"])
+
+        tool.write_log("Worker(Strelka2) finished.", "info")
+        return "Strelka2:OK"
+    except Exception:
+        tool.write_log(f"Worker(Strelka2) crashed:\n{traceback.format_exc()}", "error")
+        raise
+
+
+def _caller_vardict(job: Dict[str, Any]) -> str:
+    """VarDict worker."""
+    tool = job["tool"]
+    try:
+        out_dir_vardict = job["out_dir_vardict"]
+        os.makedirs(out_dir_vardict, exist_ok=True)
+
+        argv_vardict = [
+            "--af-thr", str(job["af_thr"]),
+            "--sample-t", job["tumor_sample"],
+            "--sample-n", job["normal_sample"],
+            "--threads", str(job["vd_threads"]),
+            "--ref", job["ref"],
+            "--bed", job["calling_bed"],
+            "--tumor-bam", job["tumor_bam"],
+            "--normal-bam", job["normal_bam"],
+            "--out-dir", out_dir_vardict,
+            "--prefix", job["prefix"],
+            "--bcftools", job["bcftools"],
+        ]
+        tool.write_log(f"Worker(VarDict) CMD: {' '.join(argv_vardict)}", "info")
+
+        vardict_main(argv_vardict, tool=tool, run_sample_id=job["run_sample_id"])
+
+        tool.write_log("Worker(VarDict) finished.", "info")
+        return "VarDict:OK"
+    except Exception:
+        tool.write_log(f"Worker(VarDict) crashed:\n{traceback.format_exc()}", "error")
+        raise
 
 
 def variants_calling_start(sample_name: str, tool, configure: dict, paths: dict):
     """
-    Entry point to select and run a variant caller based on configuration.
+    Entry point:
+      1) preprocess (T/N) once: alignment+markdup+BQSR
+      2) run 3 callers in parallel: Mutect2 + Strelka2 + VarDict
 
-    Args:
-        sample_name: Sample name (or "tumor,normal" for matched mode).
-        tool: Execution helper.
-        configure: Pipeline configuration dict.
-        paths: Paths dict.
-
-    Notes:
-        - Currently supports only Mutect2.
+    Output directory layout (tumor-root):
+      <output>/<tumor>/04.variants_calling/Mutect2/
+      <output>/<tumor>/04.variants_calling/Strelka2/
+      <output>/<tumor>/04.variants_calling/VarDict/
     """
-    mutation_calling_tool = configure['others']['mutation_calling_tool']
+    try:
+        # ---- matched-normal validation ----
+        if not bool(configure["others"]["tumor_with_matched_normal"]):
+            tool.write_log(
+                "Only matched-normal mode is supported (tumor_with_matched_normal=True).",
+                "error",
+            )
+            return
+        if "," not in sample_name:
+            tool.write_log("Matched-normal mode requires sample_name='TUMOR,NORMAL'", "error")
+            return
 
-    if mutation_calling_tool == 'Mutect2':
-        Mutect2(sample_name, sample_name, tool, configure, paths)
-    else:
-        tool.write_log("Unsupported mutation calling tool", "error")
-        return
+        tumor_sample, normal_sample = [x.strip() for x in sample_name.split(",")[:2]]
+
+        # ---- preprocessing once (T/N) ----
+        dir_varcall_root_tumor, tumor_bam = mutation_calling(
+            run_sample_id=sample_name,
+            sample_name=tumor_sample,
+            tool=tool,
+            configure=configure,
+            paths=paths,
+        )
+        _, normal_bam = mutation_calling(
+            run_sample_id=sample_name,
+            sample_name=normal_sample,
+            tool=tool,
+            configure=configure,
+            paths=paths,
+        )
+
+        if bool(configure["others"].get("pre_mutation_calling_only", False)):
+            tool.write_log("pre_mutation_calling_only=True; stop after preprocessing.", "info")
+            return
+
+        # ---- common paths/knobs ----
+        ref = paths["database"]["neoantigen"]["HG38"]["REF_FASTA"]
+        bcftools = str(configure["others"].get("bcftools", "bcftools")).strip()
+
+        # ---- build calling BEDs from raw bed_file ----
+        bed_file = configure["others"]["bed_file"]
+        pad_bp = int(configure["others"].get("pad_bp", 100))
+        calling_bed, call_regions_bed_gz = _ensure_calling_bed(
+            run_sample_id=sample_name,
+            tool=tool,
+            dir_varcall_root_tumor=dir_varcall_root_tumor,
+            bed_file=bed_file,
+            pad_bp=pad_bp,
+            bcftools=bcftools,
+        )
+
+        # ---- threads / thresholds ----
+        threads = int(configure["args"].get("thread", 20))  # Strelka2
+        vd_threads = int(configure["args"].get("thread", 20))
+        af_thr = str(configure["others"].get("min_allele_fraction", 0.02))
+
+        # ---- output dirs ----
+        out_dir_strelka2 = os.path.join(dir_varcall_root_tumor, "Strelka2")
+        out_dir_vardict = os.path.join(dir_varcall_root_tumor, "VarDict")
+        os.makedirs(out_dir_strelka2, exist_ok=True)
+        os.makedirs(out_dir_vardict, exist_ok=True)
+
+        # ---- prepare jobs (carry tool into all callers) ----
+        job_mutect2 = dict(
+            run_sample_id=sample_name,
+            sample_name=sample_name,
+            tool=tool,
+            configure=configure,
+            paths=paths,
+            tumor_sample=tumor_sample,
+            normal_sample=normal_sample,
+            dir_varcall_root_tumor=dir_varcall_root_tumor,
+            tumor_bam=tumor_bam,
+            normal_bam=normal_bam,
+        )
+
+        job_strelka2 = dict(
+            run_sample_id=sample_name,
+            tool=tool,
+            tumor_sample=tumor_sample,
+            normal_sample=normal_sample,
+            ref=ref,
+            call_regions_bed_gz=call_regions_bed_gz,
+            tumor_bam=tumor_bam,
+            normal_bam=normal_bam,
+            threads=threads,
+            out_dir_strelka2=out_dir_strelka2,
+            bcftools=bcftools,
+        )
+
+        job_vardict = dict(
+            run_sample_id=sample_name,
+            tool=tool,
+            af_thr=af_thr,
+            tumor_sample=tumor_sample,
+            normal_sample=normal_sample,
+            vd_threads=vd_threads,
+            ref=ref,
+            calling_bed=calling_bed,
+            tumor_bam=tumor_bam,
+            normal_bam=normal_bam,
+            out_dir_vardict=out_dir_vardict,
+            prefix=tumor_sample,
+            bcftools=bcftools,
+        )
+
+        tool.write_log(
+            f"Run callers in parallel: Mutect2 + Strelka2(Manta+Strelka2) + VarDict. Tumor={tumor_sample}",
+            "info",
+        )
+
+        # ---- parallel execution ----
+        results = []
+        with NoDaemonPool(processes=3) as pool:
+            results.append(
+                pool.apply_async(
+                    _caller_mutect2,
+                    (job_mutect2,),
+                    error_callback=tool.print_pool_error,
+                )
+            )
+            results.append(
+                pool.apply_async(
+                    _caller_strelka2,
+                    (job_strelka2,),
+                    error_callback=tool.print_pool_error,
+                )
+            )
+            results.append(
+                pool.apply_async(
+                    _caller_vardict,
+                    (job_vardict,),
+                    error_callback=tool.print_pool_error,
+                )
+            )
+            pool.close()
+            pool.join()
+
+        for r in results:
+            _ = r.get()
+
+
+        # ---- merge 3 callers (PASS only) ----
+        tool.write_log("Merge callers: Mutect2 + Strelka2 + VarDict (PASS only)", "info")
+
+        # Mutect2 PASS
+        mutect_pass = os.path.join(
+            dir_varcall_root_tumor,
+            "Mutect2",
+            f"{tumor_sample}.mutect.filtered.PASS.vcf.gz",
+        )
+
+        # Strelka2 PASS
+        strelka_pass = os.path.join(
+            out_dir_strelka2,
+            "strelka2",
+            tumor_sample,
+            "merged",
+            f"{tumor_sample}.strelka.somatic.merged.PASS.vcf.gz",
+        )
+
+        # VarDict PASS
+        vardict_pass = os.path.join(
+            out_dir_vardict,
+            f"{tumor_sample}.vardict.paired.PASS.vcf.gz",
+        )
+
+        # Ensure PASS files exist (hard check before merge)
+        for p, tag in (
+            (mutect_pass, "Mutect2 PASS"),
+            (strelka_pass, "Strelka2 PASS"),
+            (vardict_pass, "VarDict PASS"),
+        ):
+            if not os.path.exists(p):
+                tool.write_log(f"[ERROR] {tag} not found: {p}", "error")
+                raise RuntimeError(f"{tag} not found: {p}")
+            if ("PASS" not in os.path.basename(p)) and (".pass" not in os.path.basename(p).lower()):
+                tool.write_log(f"[ERROR] {tag} does not look PASS-filtered: {p}", "error")
+                raise RuntimeError(f"{tag} not PASS-filtered: {p}")
+
+        merge_dir = os.path.join(dir_varcall_root_tumor, "Merge3Callers")
+        tool.judge_then_exec(sample_name, f"mkdir -p {merge_dir}", merge_dir)
+
+        # mutect_pass / strelka_pass / vardict_pass
+        merge_mutect_strelka_vardict(
+            tool=tool,
+            run_sample_id=sample_name,
+            ref=ref,
+            mutect=mutect_pass,
+            strelka=strelka_pass,
+            vardict=vardict_pass,
+            tumor=tumor_sample,
+            normal=normal_sample,
+            out_dir=merge_dir,
+            prefix=tumor_sample,
+        )
+        tool.write_log(f"Merge done. Outputs in: {merge_dir}", "info")
+
+        tool.write_log(
+            f"Variant calling finished (Mutect2/Strelka2/VarDict). Tumor={tumor_sample}",
+            "info",
+        )
+
+    except Exception:
+        tool.write_log(f"variants_calling_start crashed:\n{traceback.format_exc()}", "error")
+

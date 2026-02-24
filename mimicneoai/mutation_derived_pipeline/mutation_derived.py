@@ -5,13 +5,12 @@ Launcher for the mutation-derived (neoantigen) pipeline:
 - Variant calling (WES/WGS/RNA where supported)
 - Annotation (VEP)
 - HLA typing
-- Neoantigen identification via pVACseq
+- Neoantigen identification & binding prediction
 """
 
 from __future__ import annotations
 
 import argparse
-import multiprocessing.pool
 import os
 import traceback
 from multiprocessing import Manager
@@ -26,48 +25,19 @@ from mimicneoai.mutation_derived_pipeline.scripts.hla_binding_pred import Pvacse
 from mimicneoai.mutation_derived_pipeline.scripts.variants_calling import (
     variants_calling_start,
 )
-
+from mimicneoai.functions.nodemon_pool import NoDaemonPool
 # -------- Constants --------
 FLAG = "Neoantigen"
 STEP_NAME = {
     "QC": "00.QC",
     "alignment": "01.alignment",
-    "sort": "02.sort",
-    "rmdup": "03.rmdup",
-    "bqsr": "04.BQSR",
-    "variants_calling": "05.variants_calling",
-    "vqsr": "06.vqsr",
-    "annotation": "07.vep",
-    "hla": "08.hlatyping",
-    "pvacseq": "09.binding_prediction",
+    "markdup": "02.markdup",
+    "bqsr": "03.bqsr",
+    "variants_calling": "04.variants_calling",
+    "annotation": "05.annotation",
+    "hla": "06.hlatyping",
+    "pvacseq": "07.binding_prediction",
 }
-
-
-# -------- Non-daemon Pool (only needed if workers spawn child processes) --------
-class _NoDaemonProcess(multiprocessing.Process):
-    """Process class that always behaves as non-daemon (allows child processes)."""
-
-    # For Python < 3.8
-    def _get_daemon(self):
-        return False
-
-    def _set_daemon(self, value):
-        pass
-
-    daemon = property(_get_daemon, _set_daemon)
-
-
-if hasattr(multiprocessing, "get_start_method"):
-    # Python ≥ 3.8: override Pool's Process to use the non-daemon variant
-    class NoDaemonPool(multiprocessing.pool.Pool):
-        @staticmethod
-        def Process(_, *args, **kwargs):
-            return _NoDaemonProcess(*args, **kwargs)
-else:
-    # Python < 3.8 fallback
-    class NoDaemonPool(multiprocessing.pool.Pool):
-        Process = _NoDaemonProcess
-
 
 # -------- Worker helpers --------
 def _variants_calling_and_annotation(
@@ -104,7 +74,11 @@ def _variants_calling_and_annotation(
             tumor_sample = sample.split(",")[0]
             _ = annotation_vcf(sample, tumor_sample, tool, paths, configure)
         else:
-            _ = annotation_vcf(sample, sample, tool, paths, configure)
+            tool.write_log(
+                f"tumor_with_matched_normal must be True. Got False for sample='{sample}'. "
+                f"Skip annotation.",
+                "error",
+            )
 
 
 def _start_one_sample(
@@ -113,59 +87,55 @@ def _start_one_sample(
     paths: Dict[str, Any],
     tool: tools,
 ) -> None:
-    """End-to-end per-sample workflow: QC → variants/annotation → HLA → pVACseq."""
+    """End-to-end per-sample workflow: QC → variants/annotation → HLA → peptide identification & binding prediction."""
     try:
         sample = str(sample)
 
         # Runtime toggles
         do_qc = configure["others"]["QC"]
         do_hlatyping = configure["others"]["hlatyping"]
-        do_pvacseq = configure["others"]["peptides_identification_and_binding_prediction"]
+        do_binding_pred = configure["others"]["peptides_identification_and_binding_prediction"]
         tumor_with_matched_normal = configure["others"]["tumor_with_matched_normal"]
 
-        # 1) Read QC (fastp)
+        # HARD REQUIREMENT
+        if not tumor_with_matched_normal:
+            tool.write_log(
+                f"tumor_with_matched_normal must be True (tumor,normal paired). "
+                f"Got False for sample='{sample}'. Worker will exit.",
+                "error",
+            )
+            return
+
+        # 1) Read QC
         if do_qc:
-            if tumor_with_matched_normal:
-                tumor_sample, normal_sample = sample.split(",")[0], sample.split(",")[1]
-                fastp(sample, tumor_sample, configure, paths, tool)
-                fastp(sample, normal_sample, configure, paths, tool)
-            else:
-                fastp(sample, sample, configure, paths, tool)
+            tumor_sample, normal_sample = sample.split(",")[0], sample.split(",")[1]
+            fastp(sample, tumor_sample, configure, paths, tool)
+            fastp(sample, normal_sample, configure, paths, tool)
 
         # 2) Variant calling + annotation
         _variants_calling_and_annotation(sample, configure, paths, tool)
 
         # 3) HLA typing
         if do_hlatyping:
-            if tumor_with_matched_normal:
-                tumor_sample = sample.split(",")[0]
-                hlahd(sample, tumor_sample, configure, paths, tool)
-            else:
-                hlahd(sample, sample, configure, paths, tool)
+            tumor_sample = sample.split(",")[0]
+            hlahd(sample, tumor_sample, configure, paths, tool)
 
-        # 4) Neoantigen prediction (pVACseq)
-        if do_pvacseq:
+        # 4) Peptide identification & binding prediction
+        if do_binding_pred:
             output_dir = configure["path"]["output_dir"]
             step_name_vep = configure["step_name"]["annotation"]
             step_name_hla = configure["step_name"]["hla"]
-            pvacseq_runner = Pvacseq(tool)
 
-            if tumor_with_matched_normal:
-                tumor_sample = sample.split(",")[0]
-                output_vep = f"{output_dir}/{tumor_sample}/{step_name_vep}/"
-                output_hla = f"{output_dir}/{tumor_sample}/{step_name_hla}/"
-                pvacseq_runner.run_pvacseq_parallel(
-                    sample, tumor_sample, output_vep, output_hla, configure, paths
-                )
-            else:
-                output_vep = f"{output_dir}/{sample}/{step_name_vep}/"
-                output_hla = f"{output_dir}/{sample}/{step_name_hla}/"
-                pvacseq_runner.run_pvacseq_parallel(
-                    sample, sample, output_vep, output_hla, configure, paths
-                )
+            binding_pred_runner = Pvacseq(tool)
+
+            tumor_sample = sample.split(",")[0]
+            output_vep = f"{output_dir}/{tumor_sample}/{step_name_vep}/"
+            output_hla = f"{output_dir}/{tumor_sample}/{step_name_hla}/"
+            binding_pred_runner.run_pvacseq_parallel(
+                sample, tumor_sample, output_vep, output_hla, configure, paths
+            )
 
     except Exception:
-        # Keep error messages generic to avoid leaking sensitive environment details
         tool.write_log(f"Worker crashed:\n{traceback.format_exc()}", "error")
 
 
