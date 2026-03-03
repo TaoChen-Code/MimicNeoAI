@@ -43,7 +43,7 @@ others:
   run_hla_typing: True               # Run HLA genotyping
   run_binding_prediction: True       # Run peptide–HLA binding prediction
 
-  binding_algorithms: "BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC"
+  algo: "BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC"
 # Sample List (Note: Numeric sample IDs require quotes)
 samples:
 - Sample_1
