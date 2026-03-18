@@ -1,161 +1,91 @@
-### `mimicneoai/cryptic_pipeline/README.md`
-
-````markdown
 # Cryptic (sORF-Encoded) Antigen Pipeline
 
-Discover and prioritize short ORF (sORF)-encoded peptides from known and novel transcripts.
+Discover and prioritize sORF-encoded peptides from known and novel transcripts.
 
 ## Overview
-1. Quality control (QC)  
-2. Alignment and transcript assembly  
-3. sORF discovery  
-4. Tumor/control expression quantification  
-5. Aberrant (tumor-specific) expression filtering  
-6. HLA typing (optional)  
-7. Binding and immunogenicity prediction
+1. QC
+2. STAR alignment
+3. Known/novel lncRNA-sORF discovery
+4. Tumor/control quantification
+5. HLA typing
+6. Aberrantly expressed sORF peptide extraction
+7. Binding prediction
 
 ## Installation
+
 ```bash
 pip install mimicneoai
 # or
 conda install -c conda-forge -c bioconda mimicneoai
-````
+```
 
-## External Dependencies (must be available in `PATH`)
+## External Dependencies (in `PATH`)
 
-Make sure the following tools are installed and discoverable via your `PATH` with the specified versions:
+| Tool | Recommended/validated version | Purpose |
+|---|---|---|
+| `fastp` | `0.22.0` | FASTQ QC |
+| `STAR` | `2.5.3a` | RNA alignment |
+| `samtools` | `1.5` | BAM/SAM/FASTQ processing |
+| `stringtie` | `3.0.1` | Transcript assembly (novel branch) |
+| `gffcompare` | `0.12.10` | Transcript annotation comparison |
+| `gffread` | `0.12.7` | GTF/FASTA conversion |
+| `minimap2` | `2.30-r1287` | Contig-to-reference alignment |
+| `bcftools` | `1.11` | Variant calling/filtering/consensus (known branch) |
+| `TransDecoder.LongOrfs` | `5.5.0` | ORF calling |
+| `salmon` | `1.10.0` | Expression quantification |
+| `bowtie2` | `2.4.1` | HLA typing pre-alignment |
+| `hlahd.sh` | `1.7.0` | HLA typing |
+| `apptainer` | `1.4.2` | Trinity/pVACtools container execution |
+| `pVACtools` (container) | `4.2.1` | Binding prediction (`pvacbind`) |
+| `awk` | system tool | FASTQ header normalization in HLA typing |
 
-| Tool                    | Required version | Purpose                                | Check command                     |
-|--------------------------|------------------|----------------------------------------|-----------------------------------|
-| fastp                   | v0.22.0          | FASTQ quality control                  | `fastp --version`                 |
-| STAR                    | 2.5.3a           | RNA alignment                          | `STAR --version`                  |
-| samtools                | v1.5             | BAM/CRAM processing                    | `samtools --version`              |
-| stringtie               | 3.0.1            | Transcript assembly                    | `stringtie --version`             |
-| gffcompare              | v0.12.10         | Transcript annotation comparison       | `gffcompare -v`                   |
-| gffread                 | 0.12.7           | GFF/GTF file processing                | `gffread --version`               |
-| minimap2                | 2.30-r1287       | Transcript-to-reference alignment      | `minimap2 --version`              |
-| bcftools                | 1.11 (htslib 1.13)| Variant calling and processing         | `bcftools --version`              |
-| TransDecoder.LongOrfs   | 5.5.0            | ORF prediction                         | `TransDecoder.LongOrfs -h`        |
-| salmon                  | 1.10.0           | Transcript quantification              | `salmon --version`                |
-| bowtie2                 | 2.4.1            | Short-read mapping                     | `bowtie2 --version`               |
-| hlahd.sh                  | 1.7.0            | HLA typing                             | `hlahd.sh --version`              |
-| apptainer               | 1.4.2            | Containerized tools (e.g., pVACtools)  | `apptainer --version`             |
-
-> Tip: If a command above is not found or the version is lower than required, install/upgrade it and ensure the binary is on your `PATH`.
-
+Optional (only when `others.trinity_mode: native`):
+- `Trinity`
 
 ## Database and Paths
 
-On first execution, MimicNeoAI automatically downloads and configures the required reference database from the official FTP server.
- The file `paths.yaml` is generated automatically and does not require manual editing (unless using a custom reference).
-
-### 🧩 Database Manual Download
-
-If the automatic download fails or you prefer to manage storage manually,
- you can manually download and extract the MimicNeoAI database using the built-in helper:
-
-#### 1. Default download to the project path (`mimicneoai/database`)
-
-```bash
-# Method 1: Standard Python module execution
-python -m mimicneoai.download_database
-
-# Method 2: Unified CLI command (equivalent to the above)
-mimicneoai download_database
-```
-
-#### 2. Custom download path (recommended for limited system disk space)
-
-```bash
-# Method 1: Specify a custom directory for download and extraction
-python -m mimicneoai.download_database --target-dir /mnt/data/MimicNeoAI_DB
-
-# Method 2: Equivalent CLI command
-mimicneoai download_database --target-dir /mnt/data/MimicNeoAI_DB
-```
-
-If a custom path is specified, the extracted folder will be **symlinked to `mimicneoai/database/`** automatically.
+Shared documentation:
+- [`mimicneoai/configures/Database_and_Paths.md`](../configures/Database_and_Paths.md)
 
 ## Configuration
 
-Edit only the pipeline configuration file `cryptic_configure.yaml`.
-An example is available at `mimicneoai/configures/cryptic_configure.yaml`.
+Use the canonical template directly:
+- [`mimicneoai/configures/cryptic_configure.yaml`](../configures/cryptic_configure.yaml)
 
-```yaml
-# input_dir/
-# ├── Sample_001/
-# │   ├── Sample_001.R1.fq.gz
-# │   └── Sample_001.R2.fq.gz
-# ├── Sample_002/
-# │   ├── Sample_002.R1.fq.gz
-# │   └── Sample_002.R2.fq.gz
-# └── Sample_003/
-#     ├── Sample_003.R1.fq.gz
-#     └── Sample_003.R2.fq.gz
-# Configuration Paths
-path:
-  tmp_dir: "/path/to/project/tmp/"          # Directory for temporary files
-  input_dir: "/path/to/raw_data/"           # Input data directory containing samples
-  output_dir: "/path/to/analysis_results/" # Output directory for final results
-
-# Runtime Parameters
-args:
-  threads: 30   # base fallback
-  hla_binding_threads : 5 # Number of threads for parallel pvactools runs; too many may reduce efficiency—adjust based on server performance.
-  pool_size: 1
-  trinity_mem: "100G"
-others:
-  QC: true
-  alignment: true
-  known: true
-  novel: true
-  salmon_quant: true
-  salmon_quant_control: true
-  hlatyping: true
-  extract_aeseps: true
-  hla_binding_pred: true
-
-  min_tpm_tumor: 5.0
-  max_tpm_ctrl: 0.5
-  min_log2fc: 4.0
-  # Algorithms for pVACbind (space-separated)
-  algo: "BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC"
-  mhcI_lengths: "8,9,10"
-  mhcII_lengths: "15"
-
-samples:
-  - Sample_001_T,Sample_001_N
-  - Sample_002_T,Sample_002_N
-```
+Key switches are defined in this template (for example `others.known`, `others.novel`, `others.salmon_quant_control`, `others.hla_binding_pred`). Please follow template key names exactly.
 
 ## Run
 
 ```bash
-# Method 1: Standard Python module execution
+# Method 1
 python -m mimicneoai.cryptic_pipeline.cryptic -c /path/to/cryptic_configure.yaml
 
-# Method 2: Unified CLI command (equivalent to the above)
+# Method 2 (unified CLI)
 mimicneoai cryptic -c /path/to/cryptic_configure.yaml
 ```
 
 ## Output Structure
 
+Pipeline outputs are written under:
+
+```text
+<output_dir>/Cryptic/<tumor_sample>/
+├── 00-clean
+├── 01-star
+├── 02-known
+├── 03-novel
+├── 04-salmon_quant
+├── 05-hla_typing
+├── 06-aeSEPs
+├── 07-hla_binding_pred
+└── 023-shared
 ```
-<output_dir>/<sample>/
-├─ 00.QC/
-├─ 01.alignment/
-├─ 02.sORF_discovery/
-├─ 03.salmon_tumor/
-├─ 04.salmon_control/
-├─ 05.hla_typing/
-├─ 06.sORF_encoded_peptides/
-└─ 07.binding_prediction/
-```
+
+Notable subfolders:
+- `04-salmon_quant/salmon_index`, `salmon_quant`, `salmon_quant_control`
+- `07-hla_binding_pred/<tumor_sample>/pvacbind`
 
 ## Notes
 
-* The pipeline is resumable: existing non-empty outputs are skipped.
-* If a step fails or is incomplete, delete that step’s folder and rerun.
-* Tumor/control pairs must be listed as `Tumor,Control`.
-
-
+- Tumor/control samples should be provided as `Tumor,Control` in `samples`.
+- The pipeline is resumable; existing non-empty outputs are skipped.
