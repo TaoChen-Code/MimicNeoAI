@@ -7,6 +7,7 @@ It ships with three production pipelines:
 - **Microbial pipeline** (`mimicneoai/microbial_pipeline`) – host‐read depletion, microbial profiling, microbial peptide extraction, HLA binding, immunogenicity.
 - **Cryptic pipeline** (`mimicneoai/cryptic_pipeline`) – lncRNA/novel transcript reconstruction, sORF discovery, expression quantification, HLA binding, immunogenicity.
 - **Mutation-derived pipeline** (`mimicneoai/mutation_derived_pipeline`) – QC, alignment, somatic variant calling/annotation, HLA typing, pVACseq-based neoantigen discovery.
+- **Immunogenicity prediction subtool** (`mimicneoai/immunogenicity_prediction`) – standalone peptide/HLA immunogenicity scoring.
 
 > If you use MimicNeoAI, please cite the preprint listed in **Citation** below.
 
@@ -34,6 +35,7 @@ Each pipeline has its own README with **installation**, **configuration**, and *
 - Microbial: [`mimicneoai/microbial_pipeline/README.md`](mimicneoai/microbial_pipeline/README.md)
 - Cryptic: [`mimicneoai/cryptic_pipeline/README.md`](mimicneoai/cryptic_pipeline/README.md)
 - Mutation-derived: [`mimicneoai/mutation_derived_pipeline/README.md`](mimicneoai/mutation_derived_pipeline/README.md)
+- Immunogenicity prediction: [`mimicneoai/immunogenicity_prediction/README.md`](mimicneoai/immunogenicity_prediction/README.md)
 
 Reference bundles and minimal test data:
 - **Zenodo**: https://doi.org/10.5281/zenodo.15582924
