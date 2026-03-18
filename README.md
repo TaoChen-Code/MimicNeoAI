@@ -18,10 +18,18 @@ It ships with three production pipelines:
 mimicneoai/
 ├─ configures/ # Example YAMLs for configuration and paths
 │ ├─ cryptic_configure.yaml # cryptic pipeline example
+│ ├─ immunogenicity_prediction_configure.yaml # immunogenicity prediction template
 │ ├─ microbial_configure.yaml # microbial pipeline example
 │ ├─ mutation_derived_configure.yaml # mutation-derived pipeline example
 │ └─ paths.yaml # common paths example
 ├─ cryptic_pipeline/ # cryptic (sORF) pipeline
+├─ example/ # minimal test data/examples for modules
+│ └─ immunogenicity_prediction/
+│   ├─ config/ # runnable example config (Microbial_Pred)
+│   ├─ input/ # example peptide/HLA input CSV
+│   ├─ models/ # example model weights and HLA fasta
+│   └─ output/ # example prediction output
+├─ immunogenicity_prediction/ # standalone + reusable immunogenicity module
 ├─ microbial_pipeline/ # microbial pipeline
 └─ mutation_derived_pipeline/ # mutation-derived pipeline
 ```
