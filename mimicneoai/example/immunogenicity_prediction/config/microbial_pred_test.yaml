@@ -1,0 +1,20 @@
+# Immunogenicity prediction example config (Microbial_Pred)
+path:
+  input_csv: "mimicneoai/example/immunogenicity_prediction/input/input_peptide_hla.csv"
+  output_csv: "mimicneoai/example/immunogenicity_prediction/output/predictions.csv"
+  model_path: "mimicneoai/example/immunogenicity_prediction/models/MimicNeoAI_Microbial_Pred.pth"
+  hla_fasta: "mimicneoai/example/immunogenicity_prediction/models/hla_prot.fasta"
+  export_onnx: ""
+
+args:
+  batch_size: 512
+  num_processes: 8
+  verbose: true
+  device: "auto"
+  export_onnx_only: false
+  onnx_opset: 17
+
+io:
+  peptide_col: "peptide"
+  hla_col: "hla"
+  score_col: "immunogenicity_score"

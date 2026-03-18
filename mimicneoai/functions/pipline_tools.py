@@ -4,7 +4,7 @@ import yaml
 import logging
 import subprocess
 from datetime import datetime, timedelta
-from typing import Any, Optional, Dict, List
+from typing import Any, Optional, Dict, List, Union
 from pathlib import Path
 
 
@@ -382,13 +382,35 @@ class tools:
         self.cp_configure(configure)
         return configure
 
-    def _abspath_like(self, base_dir: Path, v: Any) -> Any:
+    def _abspath_like(self, base: Path, v: Union[str, Path]):
         """
-        If v is a string path that begins with ../ or ./, make it absolute relative to base_dir.
+        Convert relative path-like strings to absolute paths w.r.t. `base`,
+        WITHOUT resolving symlinks (i.e., do NOT use Path.resolve() / realpath()).
         """
-        if isinstance(v, str) and (v.startswith("../") or v.startswith("./")):
-            return str((base_dir / v).resolve())
-        return v
+        if v is None:
+            return v
+
+        # keep non-string scalars as-is (e.g., int/bool)
+        if not isinstance(v, (str, Path)):
+            return v
+
+        s = str(v).strip()
+        if s == "":
+            return v
+
+        # keep the original quoting style in YAML for blast outfmt etc.
+        # e.g. OUTFMT: "'6 ...'"  -> we should NOT treat it as a path
+        if (s[0] in "\"'" and s[-1] == s[0]) and ("/" not in s and "\\" not in s):
+            return v
+
+        # If it's an absolute path already, just normalize (no symlink follow)
+        p = Path(s)
+        if p.is_absolute():
+            return os.path.normpath(str(p))
+
+        # Relative path: join with base, then abspath+normpath (no symlink follow)
+        joined = os.path.join(str(base), s)
+        return os.path.normpath(os.path.abspath(joined))
 
     def _map_paths_recursive(self, node: Any, conv) -> Any:
         """Recursively apply conv() to all leaf values in nested dict/list."""
