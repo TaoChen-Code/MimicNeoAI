@@ -1,5 +1,6 @@
 # coding=utf-8
 import os
+import shlex
 from typing import Tuple, Dict, Any, Optional, List
 from mimicneoai.functions.nodemon_pool import NoDaemonPool
 
@@ -84,6 +85,58 @@ class Pvacseq:
     # ------------------------------
     # pVACseq execution
     # ------------------------------
+    def generate_protein_fasta(
+        self,
+        run_sample_id: str,
+        sample: str,
+        output_vcf: str,
+        configure: Dict[str, Any],
+        pathes: Dict[str, Any],
+    ) -> str:
+        """
+        Reproduce the validated manual workflow under 07.binding_prediction:
+          1) bcftools sort the rm_mismatch VCF
+          2) tabix index
+          3) pvacseq generate_protein_fasta inside Apptainer
+        """
+        output_dir = os.path.join(configure["path"]["output_dir"], "")
+        step_name_pvacseq = configure["step_name"]["pvacseq"]
+        output_pvacseq = os.path.join(output_dir, sample, step_name_pvacseq, "")
+        os.makedirs(output_pvacseq, exist_ok=True)
+        self.tool.judge_then_exec(run_sample_id, f"mkdir -p {output_pvacseq}", output_pvacseq)
+
+        pvactools_sif = pathes["path"]["common"]["PVACTOOLS"]
+        bcftools = str(configure.get("others", {}).get("bcftools", "bcftools")).strip()
+
+        input_rm_mismatch_vcf = os.path.join(
+            output_vcf,
+            f"{sample}.shared.VEP.rm_mismatch.vcf",
+        )
+        sorted_vcfgz = os.path.join(
+            output_pvacseq,
+            f"{sample}.shared.VEP.rm_mismatch.sorted.vcf.gz",
+        )
+        protein_fasta = os.path.join(output_pvacseq, f"{sample}.protein.fasta")
+        manufacturability_tsv = f"{protein_fasta}.manufacturability.tsv"
+
+        cmd_sort_and_index = (
+            f"{shlex.quote(bcftools)} sort -Oz -o {shlex.quote(sorted_vcfgz)} "
+            f"{shlex.quote(input_rm_mismatch_vcf)} "
+            f"&& tabix -p vcf {shlex.quote(sorted_vcfgz)}"
+        )
+        self.tool.judge_then_exec(run_sample_id, cmd_sort_and_index, sorted_vcfgz)
+
+        bind_arg = f"--bind {output_vcf},{output_dir} "
+        cmd_generate_protein = (
+            f"cd {shlex.quote(output_pvacseq)} && "
+            f"apptainer exec {bind_arg}"
+            f"{pvactools_sif} pvacseq generate_protein_fasta "
+            f"-s {shlex.quote(sample)} --mutant-only --pass-only "
+            f"{shlex.quote(sorted_vcfgz)} 13 {shlex.quote(os.path.basename(protein_fasta))}"
+        )
+        self.tool.judge_then_exec(run_sample_id, cmd_generate_protein, manufacturability_tsv)
+        return protein_fasta
+
     def pvacseq(
         self,
         run_sample_id: str,
@@ -206,6 +259,8 @@ class Pvacseq:
         output_dir = os.path.join(configure["path"]["output_dir"], "")
         step_name_pvacseq = configure["step_name"]["pvacseq"]
         output_pvacseq = os.path.join(output_dir, sample, step_name_pvacseq, "")
+
+        self.generate_protein_fasta(run_sample_id, sample, output_vcf, configure, pathes)
 
         pool = NoDaemonPool(thread)
         for i in range(thread):
