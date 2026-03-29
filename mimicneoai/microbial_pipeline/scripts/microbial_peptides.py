@@ -217,6 +217,7 @@ def VectorContaminationRemoving(
     thread = int(configure["args"]["thread"])
     mem_perthread = configure["args"].get("mem_perthread", "1G")
 
+    pair = bool(configure["others"]["pair"])
     seq_type = str(configure["others"]["seq_type"])
 
     step_t2t    = configure["step_name"]["t2t"]
@@ -262,30 +263,38 @@ def VectorContaminationRemoving(
     merged_bam   = f"{bam_dir}{sample}_{seq_type}.vector_unmapped.merged.bam"
 
     # ------------------------------------------------------------------
-    # 5) BAM → FASTQ (PE / singleton / cat0)
+    # 5) BAM -> FASTQ
     # ------------------------------------------------------------------
-    cmd_bam2fq = (
-        f"samtools sort -n -@ {thread} -m {mem_perthread} {in_bam} | "
-        f"samtools fastq -@ {thread} - "
-        f"-1 {r1_fq} -2 {r2_fq} "
-        f"-s {se_fq} -0 {cat0_fq}"
-    )
-    tool.judge_then_exec(sample, cmd_bam2fq, r1_fq)
+    if pair:
+        cmd_bam2fq = (
+            f"samtools sort -n -@ {thread} -m {mem_perthread} {in_bam} | "
+            f"samtools fastq -@ {thread} - "
+            f"-1 {r1_fq} -2 {r2_fq} "
+            f"-s {se_fq} -0 {cat0_fq}"
+        )
+        tool.judge_then_exec(sample, cmd_bam2fq, r1_fq)
+    else:
+        cmd_bam2fq = (
+            f"samtools sort -n -@ {thread} -m {mem_perthread} {in_bam} | "
+            f"samtools fastq -@ {thread} - > {se_fq}"
+        )
+        tool.judge_then_exec(sample, cmd_bam2fq, se_fq)
 
     # ------------------------------------------------------------------
-    # 6) BWA → UniVec (PE)
+    # 6) BWA -> UniVec (PE)
     # ------------------------------------------------------------------
     pe_vec_bam = f"{bam_dir}{sample}_{seq_type}.paired.vector.bam"
-    cmd_bwa_pe = (
-        f"bwa mem -q -t {thread} "
-        f"-R '@RG\\tID:{sample}\\tSM:{sample}' "
-        f"{vector_fa} {r1_fq} {r2_fq} | "
-        f"samtools view -b -@ {thread} -o {pe_vec_bam} -"
-    )
-    tool.judge_then_exec(sample, cmd_bwa_pe, pe_vec_bam)
+    if pair:
+        cmd_bwa_pe = (
+            f"bwa mem -q -t {thread} "
+            f"-R '@RG\\tID:{sample}\\tSM:{sample}' "
+            f"{vector_fa} {r1_fq} {r2_fq} | "
+            f"samtools view -b -@ {thread} -o {pe_vec_bam} -"
+        )
+        tool.judge_then_exec(sample, cmd_bwa_pe, pe_vec_bam)
 
     # ------------------------------------------------------------------
-    # 7) BWA → UniVec (SE)
+    # 7) BWA -> UniVec (SE)
     # ------------------------------------------------------------------
     se_vec_bam = f"{bam_dir}{sample}_{seq_type}.single.vector.bam"
     cmd_bwa_se = (
@@ -310,7 +319,8 @@ def VectorContaminationRemoving(
         f"-o {se_unmap_bam} {se_vec_bam}"
     )
 
-    tool.judge_then_exec(sample, cmd_unmap_pe, pe_unmap_bam)
+    if pair:
+        tool.judge_then_exec(sample, cmd_unmap_pe, pe_unmap_bam)
     tool.judge_then_exec(sample, cmd_unmap_se, se_unmap_bam)
 
     # ------------------------------------------------------------------
