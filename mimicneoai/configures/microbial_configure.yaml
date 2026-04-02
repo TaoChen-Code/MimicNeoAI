@@ -30,6 +30,7 @@ others:
 
   QC: True                  # Run read quality control
   run_host_depletion: True      # Run host read depletion (hg38 + T2T)
+  remove_mouse_host: False      # If True, remove mm10 host reads after T2T; if False, keep original hg38+T2T behavior
   run_vector_decontamination: True   # Run vector (UniVec) decontamination
 
   run_pathseq: True             # Run GATK PathSeq taxonomic profiling

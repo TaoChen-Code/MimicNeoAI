@@ -32,6 +32,8 @@ database:
         FA:  "../database/ref/DNA/GRCh38/GRCh38_full_analysis_set_plus_decoy_hla.fa"
       T2T:
         FA:  "../database/ref/DNA/t2t/chm13v2.0.fa"
+      MM10:
+        FA:  "../database/ref/DNA/mm10/mm10.fa"
       Primary_HG38:
         FA:   "../database/ref/DNA/GRCh38_primary/GRCh38.primary_assembly.genome.fa"
         IMG:  "../database/ref/DNA/GRCh38_primary/GRCh38.primary_assembly.genome.fa.img"

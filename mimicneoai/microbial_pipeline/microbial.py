@@ -27,6 +27,7 @@ STEP_NAME = {
     "QC": "00.QC",
     "hg38": "01.HostSequencesRemovingStep1",
     "t2t": "02.HostSequencesRemovingStep2",
+    "mm10": "02b.HostSequencesRemovingStep3",
     "vector": "03.VectorContaminationRemoving",
     "pathseq": "04.MicrobialTaxaQuantificationStep1",
     "nucleic": "05.MicrobialTaxaQuantificationStep2",

@@ -10,10 +10,13 @@ from mimicneoai.microbial_pipeline.scripts.hla_binding_pred import pvacbind
 def HostSequencesRemoving(sample, configure, paths, tool):
     """
     Remove host sequences by aligning reads to hg38 then T2T, and collecting unmapped reads.
+    Optionally run an extra mm10 depletion stage after T2T.
 
     Pipeline (paired-end, strict):
       FASTQ -> bwa mem hg38 -> name-sorted BAM -> extract (-f 12) -> FASTQ (R1/R2 + single)
             -> bwa mem T2T  -> name-sorted BAM -> extract (-f 12) -> final unmapped BAM
+      If configured:
+            -> bwa mem mm10 -> name-sorted BAM -> extract (-f 12) -> final unmapped BAM
       Always: samtools flagstat on final unmapped BAM.
     """
     sample = str(sample)
@@ -30,13 +33,16 @@ def HostSequencesRemoving(sample, configure, paths, tool):
     pair     = bool(configure["others"]["pair"])
     seq_type = str(configure["others"]["seq_type"])
     QC       = bool(configure["others"]["QC"])
+    remove_mouse_host = bool(configure["others"].get("remove_mouse_host", False))
 
     host_fa_hg38 = paths["database"]["microbial"]["HOST"]["HG38"]["FA"]
     host_fa_t2t  = paths["database"]["microbial"]["HOST"]["T2T"]["FA"]
+    host_fa_mm10 = paths["database"]["microbial"]["HOST"]["MM10"]["FA"] if remove_mouse_host else None
 
     step_qc   = configure["step_name"]["QC"]
     step_hg38 = configure["step_name"]["hg38"]
     step_t2t  = configure["step_name"]["t2t"]
+    step_mm10 = configure["step_name"].get("mm10", "02b.HostSequencesRemovingStep3")
 
     # ------------------------------------------------------------------
     # 1) Utilities (centralize command construction)
@@ -81,6 +87,7 @@ def HostSequencesRemoving(sample, configure, paths, tool):
     # ------------------------------------------------------------------
     out_hg38_dir = f"{output_root}/{sample}/{step_hg38}/"
     out_t2t_dir  = f"{output_root}/{sample}/{step_t2t}/"
+    out_mm10_dir = f"{output_root}/{sample}/{step_mm10}/"
 
     # hg38 intermediate
     hg38_name_bam   = f"{out_hg38_dir}{sample}_{seq_type}.hg38.name_sorted.bam"
@@ -95,10 +102,25 @@ def HostSequencesRemoving(sample, configure, paths, tool):
 
     # T2T outputs
     t2t_name_bam    = f"{out_t2t_dir}{sample}_{seq_type}.hg38unmap.t2t.name_sorted.bam"
-    final_unmap_bam = f"{out_t2t_dir}{sample}_{seq_type}.hg38unmap.t2t.unmapped.bam"
+    t2t_unmap_bam   = f"{out_t2t_dir}{sample}_{seq_type}.hg38unmap.t2t.unmapped.bam"
+
+    # mm10 outputs (written under dedicated step directory)
+    t2t_unmap_for_mm10_r1   = f"{out_mm10_dir}{sample}_{seq_type}.hg38unmap.t2tunmap.mm10.input.R1.fq"
+    t2t_unmap_for_mm10_r2   = f"{out_mm10_dir}{sample}_{seq_type}.hg38unmap.t2tunmap.mm10.input.R2.fq"
+    t2t_unmap_for_mm10_anom = f"{out_mm10_dir}{sample}_{seq_type}.hg38unmap.t2tunmap.mm10.input.anomalous.fq"
+    t2t_unmap_for_mm10_single = f"{out_mm10_dir}{sample}_{seq_type}.hg38unmap.t2tunmap.mm10.input.singleton.fq"
+    t2t_unmap_for_mm10_se   = f"{out_mm10_dir}{sample}_{seq_type}.hg38unmap.t2tunmap.mm10.input.fq"
+    mm10_name_bam   = f"{out_mm10_dir}{sample}_{seq_type}.hg38unmap.t2tunmap.mm10.name_sorted.bam"
+    mm10_final_unmap_bam = (
+        f"{out_mm10_dir}{sample}_{seq_type}.hg38unmap.t2tunmap.mm10unmap.unmapped.bam"
+    )
+
+    final_unmap_bam = mm10_final_unmap_bam if remove_mouse_host else t2t_unmap_bam
 
     _mkdir(out_hg38_dir)
     _mkdir(out_t2t_dir)
+    if remove_mouse_host:
+        _mkdir(out_mm10_dir)
 
     # ------------------------------------------------------------------
     # 3) Decide whether to run full pipeline
@@ -175,9 +197,43 @@ def HostSequencesRemoving(sample, configure, paths, tool):
         t2t_flag = _unmapped_flag()
         cmd_extract_t2t_unmap = (
             f"samtools view -b -@ {thread} -f {t2t_flag} "
-            f"-o {final_unmap_bam} {t2t_name_bam}"
+            f"-o {t2t_unmap_bam} {t2t_name_bam}"
         )
-        tool.judge_then_exec(sample, cmd_extract_t2t_unmap, final_unmap_bam)
+        tool.judge_then_exec(sample, cmd_extract_t2t_unmap, t2t_unmap_bam)
+
+        if remove_mouse_host:
+            if pair:
+                cmd_t2t_bam2fq = (
+                    f"samtools fastq -@ {thread} {t2t_unmap_bam} "
+                    f"-1 {t2t_unmap_for_mm10_r1} "
+                    f"-2 {t2t_unmap_for_mm10_r2} "
+                    f"-0 {t2t_unmap_for_mm10_anom} "
+                    f"-s {t2t_unmap_for_mm10_single}"
+                )
+                tool.judge_then_exec(sample, cmd_t2t_bam2fq, t2t_unmap_for_mm10_r1)
+                mm10_fastqs = (t2t_unmap_for_mm10_r1, t2t_unmap_for_mm10_r2)
+            else:
+                cmd_t2t_bam2fq = f"samtools fastq -@ {thread} {t2t_unmap_bam} > {t2t_unmap_for_mm10_se}"
+                tool.judge_then_exec(sample, cmd_t2t_bam2fq, t2t_unmap_for_mm10_se)
+                mm10_fastqs = (t2t_unmap_for_mm10_se,)
+
+            fq_mm10_part = " ".join(mm10_fastqs)
+            cmd_align_sort_mm10 = (
+                f"bwa mem -q -t {thread} "
+                f"-R '{_rg()}' "
+                f"{host_fa_mm10} {fq_mm10_part} | "
+                f"samtools view -b -@ {thread} - | "
+                f"samtools sort -n -@ {thread} -m {mem_perthread} "
+                f"-o {mm10_name_bam} -"
+            )
+            tool.judge_then_exec(sample, cmd_align_sort_mm10, mm10_name_bam)
+
+            mm10_flag = _unmapped_flag()
+            cmd_extract_mm10_unmap = (
+                f"samtools view -b -@ {thread} -f {mm10_flag} "
+                f"-o {final_unmap_bam} {mm10_name_bam}"
+            )
+            tool.judge_then_exec(sample, cmd_extract_mm10_unmap, final_unmap_bam)
 
     # ------------------------------------------------------------------
     # 6) Always: stats for final output
@@ -193,8 +249,11 @@ def VectorContaminationRemoving(
     """
     Remove vector contamination (UniVec) from host-removed BAM.
 
-    Input BAM (fixed):
-      <output_dir>/<sample>/<step_t2t>/<sample>_<seq_type>.hg38unmap.t2t.unmapped.bam
+    Input BAM (dynamic):
+      - remove_mouse_host=False:
+        <output_dir>/<sample>/<step_t2t>/<sample>_<seq_type>.hg38unmap.t2t.unmapped.bam
+      - remove_mouse_host=True:
+        <output_dir>/<sample>/<step_mm10>/<sample>_<seq_type>.hg38unmap.t2tunmap.mm10unmap.unmapped.bam
 
     Output:
       <output_dir>/<sample>/<step_vector>/
@@ -219,16 +278,25 @@ def VectorContaminationRemoving(
 
     pair = bool(configure["others"]["pair"])
     seq_type = str(configure["others"]["seq_type"])
+    remove_mouse_host = bool(configure["others"].get("remove_mouse_host", False))
 
     step_t2t    = configure["step_name"]["t2t"]
+    step_mm10   = configure["step_name"].get("mm10", "02b.HostSequencesRemovingStep3")
     step_vector = configure["step_name"]["vector"]
 
     # ------------------------------------------------------------------
-    # 1) Input BAM (fixed name from HostSequencesRemoving)
+    # 1) Input BAM (from HostSequencesRemoving, based on remove_mouse_host)
     # ------------------------------------------------------------------
+    if remove_mouse_host:
+        host_step = step_mm10
+        host_chain = "hg38unmap.t2tunmap.mm10unmap"
+    else:
+        host_step = step_t2t
+        host_chain = "hg38unmap.t2t"
+
     in_bam = (
-        f"{output_root}/{sample}/{step_t2t}/"
-        f"{sample}_{seq_type}.hg38unmap.t2t.unmapped.bam"
+        f"{output_root}/{sample}/{host_step}/"
+        f"{sample}_{seq_type}.{host_chain}.unmapped.bam"
     )
 
     # ------------------------------------------------------------------
