@@ -199,6 +199,7 @@ def _run_one_sample(
         min_tpm_tumor = float(others.get("min_tpm_tumor", 5.0))
         max_tpm_ctrl = float(others.get("max_tpm_ctrl", 0.5))
         min_log2fc = float(others.get("min_log2fc", 4.0))
+        strandedness = str(others.get("strandedness", "reverse")).strip().lower()
 
         # ---------- 00 QC (tumor) ----------
         if do_qc:
@@ -260,6 +261,7 @@ def _run_one_sample(
                 "-o", DIR03_NOVEL,
                 "--shared-dir", SHARED,
                 "--threads", str(n_lncsorf),
+                "--strandedness", strandedness,
                 "--trinity-mode", str(others.get("trinity_mode", "apptainer")),
                 "--trinity-sif", TRINITY_SIF,
                 "--trinity-cpu", str(n_trinity_cpu),

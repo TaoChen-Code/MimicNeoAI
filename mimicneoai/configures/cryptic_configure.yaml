@@ -34,6 +34,7 @@ others:
   min_tpm_tumor: 5.0
   max_tpm_ctrl: 0.5
   min_log2fc: 4.0
+  strandedness: "reverse"  # StringTie strandedness: reverse(--rf) / forward(--fr) / none(no extra flag)
   # Algorithms for pVACbind (space-separated)
   algo: "BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC"
   mhcI_lengths: "8,9,10"

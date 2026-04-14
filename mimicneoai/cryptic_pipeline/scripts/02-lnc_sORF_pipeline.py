@@ -257,13 +257,29 @@ def step_sort_index(in_bam, out_bam, threads):
     return out_bam
 
 
-def step_stringtie_gffcompare(sorted_bam, ref_gtf, threads, out_dir):
+def step_stringtie_gffcompare(sorted_bam, ref_gtf, threads, out_dir, strandedness="reverse"):
     log(">> [1_1] StringTie + gffcompare")
     st_gtf = str(Path(out_dir) / "stringtie.gtf")
     comp_prefix = str(Path(out_dir) / "comp")
     comp_annot = comp_prefix + ".annotated.gtf"
+
+    strand = str(strandedness).strip().lower()
+    # StringTie strandedness:
+    # reverse -> --rf
+    # forward -> --fr
+    # none    -> no extra option
+    strand_args = []
+    if strand == "reverse":
+        strand_args = ["--rf"]
+    elif strand == "forward":
+        strand_args = ["--fr"]
+    elif strand == "none":
+        strand_args = []
+    else:
+        raise ValueError(f"Invalid strandedness: {strandedness}. Use reverse/forward/none")
+
     if not exists(st_gtf):
-        run(["stringtie", sorted_bam, "-G", ref_gtf, "-o", st_gtf, "-p", threads])
+        run(["stringtie", sorted_bam, "-G", ref_gtf, "-o", st_gtf, "-p", threads, *strand_args])
     if not exists(comp_annot):
         run(["gffcompare", "-r", ref_gtf, "-o", comp_prefix, st_gtf])
     nt, nx = qc_gtf_counts(st_gtf)
@@ -749,6 +765,12 @@ def parse_args():
                     help="Sample-level shared intermediate dir (used by both known/novel for 01.sort_index)")
 
     ap.add_argument("--threads", default="20")
+    ap.add_argument(
+        "--strandedness",
+        choices=["reverse", "forward", "none"],
+        default="reverse",
+        help="StringTie strandedness: reverse->--rf, forward->--fr, none->no extra option",
+    )
     ap.add_argument("--trinity-cpu", default="20")
     ap.add_argument("--trinity-mem", default="100G")
     ap.add_argument("--pid", default="0.95")
@@ -843,7 +865,13 @@ def main():
         assert exists(ref_gtf), f"ref gtf missing: {ref_gtf}"
 
         # [1_1] ST + gffcompare
-        st_gtf, comp_annot = step_stringtie_gffcompare(sorted_bam, ref_gtf, a.threads, d01_1)
+        st_gtf, comp_annot = step_stringtie_gffcompare(
+            sorted_bam,
+            ref_gtf,
+            a.threads,
+            d01_1,
+            strandedness=a.strandedness,
+        )
         out_paths["stringtie_gtf"] = st_gtf;
         out_paths["comp_annot"] = comp_annot
 
