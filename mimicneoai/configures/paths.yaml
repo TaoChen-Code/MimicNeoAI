@@ -53,6 +53,9 @@ database:
       DB_DIR: "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_protein_v2"
       CATALOG_PROT: "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_protein_seqid2taxid_v2.txt.gz"
       OUTFMT: "'6 qseqid qlen sseqid qseq sseq stitle pident length mismatch gapopen qstart qend sstart send evalue bitscore qcovhsp qcovs'"
+    DIAMOND:
+      DB: "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_protein_v2.dmnd"
+      OUTFMT: "6 qseqid qlen sseqid qseq sseq stitle pident length mismatch gapopen qstart qend sstart send evalue bitscore qcovhsp"
 
   neoantigen:
     HG38:

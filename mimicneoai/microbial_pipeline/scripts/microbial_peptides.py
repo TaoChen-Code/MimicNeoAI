@@ -7,6 +7,7 @@ from mimicneoai.microbial_pipeline.scripts.get_data_for_blastx import get_data
 from mimicneoai.microbial_pipeline.scripts.get_data_for_binding_pred import get_data_for_binding_pred
 from mimicneoai.microbial_pipeline.scripts.hla_binding_pred import pvacbind
 
+
 def HostSequencesRemoving(sample, configure, paths, tool):
     """
     Remove host sequences by aligning reads to hg38 then T2T, and collecting unmapped reads.
@@ -529,6 +530,49 @@ def MicrobialTaxasQuantification(sample, configure, paths, tool):
 
 
 
+def _parse_outfmt_fields(outfmt: str):
+    outfmt_clean = str(outfmt).strip().strip("'\"")
+    tokens = outfmt_clean.split()
+    if not tokens or tokens[0] != "6":
+        raise ValueError(f"OUTFMT must start with 6, got: {outfmt_clean}")
+    return tokens[1:]
+
+
+def _normalize_diamond_blastx_output(input_path: str, output_path: str, colnames, tool, sample: str):
+    df = pd.read_csv(input_path, sep="\t", header=None, names=colnames)
+
+    if "qcovhsp" not in df.columns:
+        raise ValueError("DIAMOND output must contain qcovhsp for coverage normalization.")
+
+    df["sseqid"] = (
+        df["sseqid"]
+        .astype(str)
+        .str.replace(r"^ref\|", "", regex=True)
+        .str.rstrip("|")
+        .map(lambda x: f"ref|{x}|")
+    )
+    df["qcovs"] = df["qcovhsp"]
+
+    pident = pd.to_numeric(df["pident"], errors="coerce")
+    pident100 = pident == 100.0
+    df.loc[pident100, "qseq"] = df.loc[pident100, "sseq"]
+
+    blastx_colnames = [
+        "qseqid", "qlen", "sseqid", "qseq", "sseq", "stitle", "pident",
+        "length", "mismatch", "gapopen", "qstart", "qend", "sstart",
+        "send", "evalue", "bitscore", "qcovhsp", "qcovs",
+    ]
+    missing = [c for c in blastx_colnames if c not in df.columns]
+    if missing:
+        raise ValueError(f"DIAMOND output missing required columns after normalization: {missing}")
+
+    df[blastx_colnames].to_csv(output_path, sep="\t", header=False, index=False)
+    tool.write_log(
+        f"[{sample}] Normalized DIAMOND output for BLASTX-compatible filtering: {output_path}",
+        "info",
+    )
+
+
 def MicrobialPeptidesIdentification(sample, configure, paths, tool):
     """Identify microbial peptides via BLASTX against a protein database.
 
@@ -548,9 +592,18 @@ def MicrobialPeptidesIdentification(sample, configure, paths, tool):
     thread = configure['args']['thread']
 
 
-    # BLAST database config
-    db_dir = paths['database']['microbial']['BLAST']['DB_DIR']
-    outfmt = paths['database']['microbial']['BLAST']['OUTFMT']
+    # Protein search config
+    search_engine = str(
+        configure.get("others", {}).get("microbial_peptide_search_engine", "blastx")
+    ).strip().lower()
+    if search_engine not in {"blastx", "diamond"}:
+        raise ValueError(
+            f"Unsupported microbial_peptide_search_engine: {search_engine}. "
+            "Use 'blastx' or 'diamond'."
+        )
+
+    blast_cfg = paths['database']['microbial']['BLAST']
+    diamond_cfg = paths['database']['microbial'].get('DIAMOND', {})
 
     # Ensure output directory exists
     tool.judge_then_exec(sample, f"mkdir -p {output_blastx}", output_blastx)
@@ -559,6 +612,8 @@ def MicrobialPeptidesIdentification(sample, configure, paths, tool):
     fa_gz = f"{output_nucleic}{sample}.pathseq_selected.fa.gz"
     fa_fa = f"{output_nucleic}{sample}.pathseq_selected.fa"
     blastx_out = f"{output_blastx}{sample}.blastx"
+    diamond_out = f"{output_blastx}{sample}.diamond.blastx"
+    normalized_diamond_out = f"{output_blastx}{sample}.normalized.diamond.blastx"
 
     # 1) Decompress the gzipped FASTA.
     #    This step uses exec_cmd instead of judge_then_exec because it is considered
@@ -566,22 +621,53 @@ def MicrobialPeptidesIdentification(sample, configure, paths, tool):
     cmd_unzip = f"zcat {fa_gz} > {fa_fa}"
     tool.exec_cmd(cmd_unzip, sample)
 
-    # 2) Run BLASTX using the uncompressed FASTA.
-    #    judge_then_exec is used here so that “blastx” appears in the main log entry.
-    cmd_blastx = (
-        f"blastx "
-        f"-query {fa_fa} "
-        f"-out {blastx_out} "
-        f"-db {db_dir} "
-        f"-outfmt {outfmt} "
-        f"-num_threads {thread} "
-    )
-    tool.judge_then_exec(sample, cmd_blastx, blastx_out)
+    # 2) Run protein search using the uncompressed FASTA.
+    if search_engine == "diamond":
+        diamond_db = diamond_cfg["DB"]
+        diamond_outfmt = diamond_cfg["OUTFMT"]
+        cmd_search = (
+            f"diamond blastx "
+            f"-d {diamond_db} "
+            f"-q {fa_fa} "
+            f"-o {diamond_out} "
+            f"-p {thread} "
+            f"--outfmt {diamond_outfmt} "
+        )
+        search_out = diamond_out
+        filter_input_file = f"{sample}.normalized.diamond.blastx"
+    else:
+        db_dir = blast_cfg['DB_DIR']
+        outfmt = blast_cfg['OUTFMT']
+        cmd_search = (
+            f"blastx "
+            f"-query {fa_fa} "
+            f"-out {blastx_out} "
+            f"-db {db_dir} "
+            f"-outfmt {outfmt} "
+            f"-num_threads {thread} "
+        )
+        search_out = blastx_out
+        filter_input_file = f"{sample}.blastx"
+
+    tool.judge_then_exec(sample, cmd_search, search_out)
+
+    if search_engine == "diamond" and (
+        not os.path.exists(normalized_diamond_out)
+        or os.path.getsize(normalized_diamond_out) == 0
+    ):
+        diamond_colnames = _parse_outfmt_fields(diamond_cfg["OUTFMT"])
+        _normalize_diamond_blastx_output(
+            input_path=diamond_out,
+            output_path=normalized_diamond_out,
+            colnames=diamond_colnames,
+            tool=tool,
+            sample=sample,
+        )
 
     # 3) Optionally remove the temporary uncompressed FASTA to save disk space.
     #    The removal is performed safely via Python rather than `rm -f`,
     #    with additional checks to avoid accidental deletion of unexpected files.
-    if os.path.exists(blastx_out) and os.path.getsize(blastx_out) > 0:
+    if os.path.exists(search_out) and os.path.getsize(search_out) > 0:
         if os.path.isfile(fa_fa):
             # Sanity check to ensure this is the expected temporary FASTA file.
             if fa_fa.endswith(".fa"):
@@ -599,20 +685,15 @@ def MicrobialPeptidesIdentification(sample, configure, paths, tool):
                     "warning",
                 )
 
-    # Load catalog table for validating BLASTX hits
-    catalog_path = paths['database']['microbial']['BLAST']['CATALOG_PROT']
+    # Load catalog table for validating protein search hits
+    catalog_path = blast_cfg['CATALOG_PROT']
     catalog_df = pd.read_csv(catalog_path, sep="\t", header=None)
     catalog_df.columns = ['prot_id', 'tax_id']
     catalog_df["tax_id"] = catalog_df["tax_id"].astype(str)
 
-    # Parse BLASTX column names from the configured outfmt string
+    # Parse BLASTX-compatible column names from the configured outfmt string
     # The outfmt string has the form: '6 qseqid qlen sseqid ... qcovhsp qcovs'
-    outfmt_cfg = paths['database']['microbial']['BLAST']['OUTFMT']
-    outfmt_clean = outfmt_cfg.strip().strip("'\"")  # remove outer quotes
-    tokens = outfmt_clean.split()
-    if tokens[0] != "6":
-        raise ValueError(f"BLAST OUTFMT must start with 6, got: {outfmt_clean}")
-    blast_colnames = tokens[1:]  # all field names after the leading "6"
+    blast_colnames = _parse_outfmt_fields(blast_cfg['OUTFMT'])
 
     # Load BLASTX filtering thresholds from the configuration file
     blastx_min_pident = float(configure['others']['blastx_min_percent_identity'])
@@ -625,7 +706,7 @@ def MicrobialPeptidesIdentification(sample, configure, paths, tool):
     start = datetime.now()
 
     get_data_for_binding_pred(
-        blast_file=f"{sample}.blastx",
+        blast_file=filter_input_file,
         colnames=blast_colnames,
         pvacbind_file=f"{sample}.peptide.fasta",
         output_blastx=output_blastx,
