@@ -624,7 +624,7 @@ def MicrobialPeptidesIdentification(sample, configure, paths, tool):
     # 2) Run protein search using the uncompressed FASTA.
     if search_engine == "diamond":
         diamond_db = diamond_cfg["DB"]
-        diamond_outfmt = diamond_cfg["OUTFMT"]
+        diamond_outfmt = str(diamond_cfg["OUTFMT"]).strip().strip("'\"")
         cmd_search = (
             f"diamond blastx "
             f"-d {diamond_db} "
