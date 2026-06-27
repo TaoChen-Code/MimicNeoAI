@@ -384,11 +384,19 @@ def train_one_model(
     lr: float,
     checkpoint_dir: Path,
     model_name: str,
-) -> Tuple[nn.Module, List[Dict[str, float]]]:
+) -> Tuple[nn.Module, List[Dict[str, float]], Dict[str, Path]]:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     trainer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.CrossEntropyLoss(reduction="none")
     history: List[Dict[str, float]] = []
+    best_values = {
+        "val_roc_auc": -float("inf"),
+        "val_average_precision": -float("inf"),
+    }
+    best_paths = {
+        "val_roc_auc": checkpoint_dir / f"{model_name}_best_val_roc_auc.pth",
+        "val_average_precision": checkpoint_dir / f"{model_name}_best_val_average_precision.pth",
+    }
     for epoch in range(epochs):
         model.train()
         loss_sum = 0.0
@@ -423,6 +431,21 @@ def train_one_model(
         }
         if val_loader is not None:
             row.update({f"val_{k}": v for k, v in evaluate(model, val_loader, device).items()})
+            for metric_name, best_path in best_paths.items():
+                metric_value = float(row.get(metric_name, float("nan")))
+                if np.isfinite(metric_value) and metric_value > best_values[metric_name]:
+                    best_values[metric_name] = metric_value
+                    torch.save(
+                        {
+                            "epoch": epoch,
+                            "model_state": model.state_dict(),
+                            "optimizer_state": trainer.state_dict(),
+                            "history": history + [row],
+                            "best_metric": metric_name,
+                            "best_value": metric_value,
+                        },
+                        best_path,
+                    )
         history.append(row)
         msg = (
             f"[{model_name}] epoch={epoch + 1}/{epochs} "
@@ -445,7 +468,7 @@ def train_one_model(
                 },
                 checkpoint_dir / f"{model_name}_epoch_{epoch}.pth",
             )
-    return model, history
+    return model, history, best_paths
 
 
 def old_notebook_kfold_indices(labels: Sequence[int], k: int) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
@@ -497,6 +520,12 @@ def main() -> None:
     parser.add_argument("--after-pca", default=DEFAULT_AFTER_PCA, type=Path)
     parser.add_argument("--feature-rscript", default=DEFAULT_FEATURE_RSCRIPT, type=Path)
     parser.add_argument("--init-from", default=None, type=Path)
+    parser.add_argument(
+        "--select-best-metric",
+        choices=["last", "val_roc_auc", "val_average_precision"],
+        default="last",
+        help="Checkpoint used for final validation/test prediction after training.",
+    )
     parser.add_argument("--epochs", default=200, type=int)
     parser.add_argument("--batch-size", default=256, type=int)
     parser.add_argument("--lr", default=5e-5, type=float)
@@ -581,7 +610,7 @@ def main() -> None:
                 load_initial_weights(model, args.init_from, device)
             train_loader = make_loader(train_x, train_y, train_idx, args.batch_size, shuffle=True)
             test_loader = make_loader(train_x, train_y, test_idx, args.batch_size, shuffle=False)
-            model, history = train_one_model(
+            model, history, _ = train_one_model(
                 model,
                 train_loader,
                 test_loader,
@@ -613,7 +642,7 @@ def main() -> None:
         shuffle=False,
         drop_last=False,
     )
-    final_model, final_history = train_one_model(
+    final_model, final_history, final_best_paths = train_one_model(
         final_model,
         final_train_loader,
         val_loader,
@@ -623,6 +652,11 @@ def main() -> None:
         args.outdir / "models" / "final_checkpoints",
         f"{args.antigen}_final",
     )
+    selected_checkpoint = None
+    if args.select_best_metric != "last":
+        selected_checkpoint = final_best_paths[args.select_best_metric]
+        log_step(f"[select] loading best checkpoint by {args.select_best_metric}: {selected_checkpoint}")
+        load_initial_weights(final_model, selected_checkpoint, device)
     torch.save(final_model.state_dict(), args.outdir / "models" / f"MimicNeoAI_{args.antigen}_final.pth")
     write_metrics(args.outdir / "metrics" / "final_history.tsv", final_history)
 
@@ -638,6 +672,7 @@ def main() -> None:
         "average_precision": float(average_precision_score(labels, probs)) if len(set(labels)) == 2 else float("nan"),
         "n_validation": len(labels),
         "elapsed_seconds": time.time() - t0,
+        "selected_checkpoint": str(selected_checkpoint) if selected_checkpoint is not None else "last",
     }
     write_metrics(args.outdir / "metrics" / "validation_metrics.tsv", [final_metrics])
     if test_x is not None and test_y is not None and test_kept is not None:
@@ -659,6 +694,7 @@ def main() -> None:
             "average_precision": float(average_precision_score(test_labels, test_probs)) if len(set(test_labels)) == 2 else float("nan"),
             "n_test": len(test_labels),
             "elapsed_seconds": time.time() - t0,
+            "selected_checkpoint": str(selected_checkpoint) if selected_checkpoint is not None else "last",
         }
         write_metrics(args.outdir / "metrics" / "test_metrics.tsv", [test_metrics])
         log_step("[test] " + json.dumps(test_metrics, indent=2))
