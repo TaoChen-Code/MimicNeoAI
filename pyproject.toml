@@ -66,5 +66,7 @@ mimicneoai = [
   "configures/*.yaml",
   "configures/*.yml",
   "immunogenicity_prediction/*.R",
-  "immunogenicity_prediction/resources/*"
+  "immunogenicity_prediction/resources/*",
+  "immunogenicity_prediction/resources/hla_pseudoseq/*.md",
+  "immunogenicity_prediction/resources/hla_pseudoseq/*.py"
 ]

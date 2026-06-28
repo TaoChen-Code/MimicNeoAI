@@ -3,16 +3,20 @@
 
 This script keeps the original notebook data representation and model path:
 25 peptide physicochemical features + peptide AAIndex/PCA indices + 12 zeros
-+ HLA protein AAIndex/PCA indices, padded to length 419.
++ HLA AAIndex/PCA indices. By default this reproduces the original full-length
+HLA input padded to length 419. NetMHC pseudo-sequence HLA inputs can be used
+with --hla-source netmhc-pseudoseq.
 """
 
 from __future__ import annotations
 
 import argparse
 import collections
+import concurrent.futures
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import random
 import re
@@ -40,6 +44,7 @@ except ImportError:
 AMINO = "ARNDCQEGHILKMFPSTWYV-"
 PADDING_LENGTH = 419
 X2_DIM = 25
+SEPARATOR_LENGTH = 12
 FEATURE_COLUMNS = [
     "aa_composition",
     "polarity",
@@ -50,6 +55,7 @@ FEATURE_COLUMNS = [
     "aliphatic_index",
     "isoelectric_point",
 ]
+ENCODING_CACHE_VERSION = "peptide_hla_tensor_v1"
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -58,6 +64,9 @@ DEFAULT_MODEL_FILE = SCRIPT_DIR / "model.py"
 DEFAULT_FEATURE_RSCRIPT = SCRIPT_DIR / "compute_peptide_features.R"
 DEFAULT_AFTER_PCA = SCRIPT_DIR / "resources" / "after_pca.txt"
 DEFAULT_HLA_FASTA = PACKAGE_ROOT / "example" / "immunogenicity_prediction" / "models" / "hla_prot.fasta"
+DEFAULT_HLA_PSEUDOSEQ_DIR = SCRIPT_DIR / "resources" / "hla_pseudoseq" / "local"
+DEFAULT_HLA_CLASS1_PSEUDOSEQ = DEFAULT_HLA_PSEUDOSEQ_DIR / "netmhcpan_class1_allele_to_pseudoseq.csv"
+DEFAULT_HLA_CLASS2_PSEUDOSEQ = DEFAULT_HLA_PSEUDOSEQ_DIR / "netmhciipan_class2_allele_to_pseudoseq.csv"
 
 
 def log_step(message: str) -> None:
@@ -166,6 +175,51 @@ def parse_hla_fasta(hla_fasta_path: Path) -> Dict[str, str]:
     return dict(zip(hla_df["HLA"], hla_df["protin"]))
 
 
+def parse_hla_pseudoseq_csv(paths: Sequence[Path]) -> Dict[str, str]:
+    hla2seq: Dict[str, str] = {}
+    missing = [str(path) for path in paths if not path.exists()]
+    if missing:
+        raise FileNotFoundError(
+            "Missing HLA pseudo-sequence CSV(s): "
+            + ", ".join(missing)
+            + ". Place local NetMHC-derived resources under "
+            + str(DEFAULT_HLA_PSEUDOSEQ_DIR)
+            + " or pass --hla-pseudoseq-csv."
+        )
+    for path in paths:
+        df = pd.read_csv(path)
+        required = {"allele", "pseudo_sequence"}
+        if not required.issubset(df.columns):
+            raise KeyError(f"{path} must contain columns: {sorted(required)}")
+        for row in df.itertuples(index=False):
+            allele = str(getattr(row, "allele")).strip()
+            seq = str(getattr(row, "pseudo_sequence")).strip().upper()
+            if not allele or not seq or seq.lower() == "nan":
+                continue
+            keys = {
+                allele,
+                allele.replace("HLA-", ""),
+                normalize_hla(allele),
+            }
+            for key in keys:
+                if key:
+                    hla2seq[key] = seq
+    return hla2seq
+
+
+def load_hla_sequences(
+    source: str,
+    hla_fasta: Path,
+    hla_pseudoseq_csv: Sequence[Path] | None,
+) -> Dict[str, str]:
+    if source == "fasta":
+        return parse_hla_fasta(hla_fasta)
+    if source == "netmhc-pseudoseq":
+        paths = list(hla_pseudoseq_csv or [DEFAULT_HLA_CLASS1_PSEUDOSEQ, DEFAULT_HLA_CLASS2_PSEUDOSEQ])
+        return parse_hla_pseudoseq_csv(paths)
+    raise ValueError(f"Unsupported HLA source: {source}")
+
+
 def standardize_input(df: pd.DataFrame, source: str) -> pd.DataFrame:
     rename = {}
     for col in df.columns:
@@ -197,11 +251,35 @@ def sha_for_peptides(peptides: Sequence[str]) -> str:
     return h.hexdigest()[:16]
 
 
+def sha_for_hla_sequences(hla2seq: Dict[str, str]) -> str:
+    h = hashlib.sha256()
+    for allele, seq in sorted(hla2seq.items()):
+        h.update(str(allele).encode("utf-8"))
+        h.update(b"\t")
+        h.update(str(seq).encode("utf-8"))
+        h.update(b"\n")
+    return h.hexdigest()[:16]
+
+
+def sha_for_dataframe_columns(df: pd.DataFrame, columns: Sequence[str]) -> str:
+    h = hashlib.sha256()
+    subset = df.loc[:, list(columns)].copy()
+    h.update("\t".join(columns).encode("utf-8"))
+    h.update(b"\n")
+    h.update(str(len(subset)).encode("utf-8"))
+    h.update(b"\n")
+    row_hashes = pd.util.hash_pandas_object(subset, index=False).to_numpy(dtype=np.uint64)
+    h.update(row_hashes.tobytes())
+    return h.hexdigest()[:16]
+
+
 def ensure_peptide_features(
     df: pd.DataFrame,
     cache_dir: Path,
     rscript_path: Path,
     peptide_col: str = "peptide",
+    feature_workers: int = 1,
+    feature_chunk_size: int = 250000,
 ) -> pd.DataFrame:
     cache_dir.mkdir(parents=True, exist_ok=True)
     unique = pd.DataFrame({peptide_col: sorted(df[peptide_col].dropna().astype(str).unique())})
@@ -210,10 +288,72 @@ def ensure_peptide_features(
     in_csv = cache_dir / f"peptide_features_{cache_key}.input.csv"
     if not out_csv.exists():
         unique.to_csv(in_csv, index=False)
-        cmd = ["Rscript", str(rscript_path), str(in_csv), str(out_csv), peptide_col]
-        log_step(f"[features] running: {' '.join(cmd)}")
         t0 = time.time()
-        subprocess.run(cmd, check=True)
+        if feature_workers <= 1 or len(unique) <= feature_chunk_size:
+            cmd = ["Rscript", str(rscript_path), str(in_csv), str(out_csv), peptide_col]
+            log_step(f"[features] running: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True)
+        else:
+            feature_workers = max(1, int(feature_workers))
+            feature_chunk_size = max(1, int(feature_chunk_size))
+            n_chunks = math.ceil(len(unique) / feature_chunk_size)
+            chunks_dir = cache_dir / f"peptide_features_{cache_key}.chunks"
+            chunks_dir.mkdir(parents=True, exist_ok=True)
+            jobs = []
+            for chunk_idx in range(n_chunks):
+                start = chunk_idx * feature_chunk_size
+                end = min(start + feature_chunk_size, len(unique))
+                chunk = unique.iloc[start:end].copy()
+                chunk_in = chunks_dir / f"chunk_{chunk_idx:04d}.input.csv"
+                chunk_out = chunks_dir / f"chunk_{chunk_idx:04d}.features.csv"
+                chunk.to_csv(chunk_in, index=False)
+                jobs.append((chunk_idx, chunk_in, chunk_out, len(chunk)))
+
+            log_step(
+                f"[features] running parallel Rscript workers={feature_workers} "
+                f"chunks={n_chunks} chunk_size={feature_chunk_size} rows={len(unique)}"
+            )
+            active: list[tuple[int, subprocess.Popen, Path, int]] = []
+            completed = 0
+            next_job = 0
+            while next_job < len(jobs) or active:
+                while next_job < len(jobs) and len(active) < feature_workers:
+                    chunk_idx, chunk_in, chunk_out, n_rows = jobs[next_job]
+                    cmd = ["Rscript", str(rscript_path), str(chunk_in), str(chunk_out), peptide_col]
+                    log_step(f"[features] start chunk={chunk_idx + 1}/{n_chunks} rows={n_rows}")
+                    proc = subprocess.Popen(cmd)
+                    active.append((chunk_idx, proc, chunk_out, n_rows))
+                    next_job += 1
+
+                still_active = []
+                for chunk_idx, proc, chunk_out, n_rows in active:
+                    rc = proc.poll()
+                    if rc is None:
+                        still_active.append((chunk_idx, proc, chunk_out, n_rows))
+                        continue
+                    if rc != 0:
+                        for _, other_proc, _, _ in still_active:
+                            other_proc.terminate()
+                        raise subprocess.CalledProcessError(rc, proc.args)
+                    if not chunk_out.exists():
+                        raise FileNotFoundError(f"Missing peptide feature chunk output: {chunk_out}")
+                    completed += 1
+                    log_step(f"[features] done chunk={chunk_idx + 1}/{n_chunks} completed={completed}/{n_chunks}")
+                active = still_active
+                if active:
+                    time.sleep(1)
+
+            header = True
+            with out_csv.open("w", encoding="utf-8", newline="") as out_handle:
+                for chunk_idx, _, chunk_out, _ in jobs:
+                    with chunk_out.open("r", encoding="utf-8") as in_handle:
+                        for line_no, line in enumerate(in_handle):
+                            if line_no == 0:
+                                if header:
+                                    out_handle.write(line)
+                                    header = False
+                                continue
+                            out_handle.write(line)
         log_step(f"[features] done: rows={len(unique)} elapsed={time.time() - t0:.1f}s")
     else:
         log_step(f"[features] cache hit: {out_csv.name} rows={len(unique)}")
@@ -238,37 +378,185 @@ def extract_feature_vector(row: pd.Series) -> List[float]:
     return features
 
 
-def encode_dataset(df: pd.DataFrame, hla2prot: Dict[str, str], vocab: Vocab) -> Tuple[torch.Tensor, torch.Tensor, pd.DataFrame]:
+def resolve_padding_length(
+    requested_padding_length: int,
+    hla_source: str,
+    combined_df: pd.DataFrame,
+    hla2seq: Dict[str, str],
+) -> int:
+    if requested_padding_length > 0:
+        return int(requested_padding_length)
+    if hla_source == "fasta":
+        return PADDING_LENGTH
+    max_peptide_len = int(combined_df["peptide"].astype(str).str.len().max())
+    max_hla_len = max(len(seq) for seq in hla2seq.values())
+    return X2_DIM + max_peptide_len + SEPARATOR_LENGTH + max_hla_len
+
+
+def _encode_dataframe_chunk(args):
+    chunk_df, hla2prot, vocab_map, padding_length = args
     encoded_rows: List[np.ndarray] = []
     labels: List[int] = []
     kept_indices: List[int] = []
-    reset_df = df.reset_index(drop=True)
-    for idx, row in tqdm(
-        reset_df.iterrows(),
-        total=len(reset_df),
-        desc="Encoding peptide-HLA pairs",
-        leave=False,
-    ):
-        hla_paratope = hla2prot.get(row["_norm_hla"])
+    missing_hla = 0
+
+    for idx, row in chunk_df.iterrows():
+        hla_paratope = hla2prot.get(str(row["_norm_hla"]))
         if hla_paratope is None:
+            missing_hla += 1
             continue
         feature_array = np.asarray(extract_feature_vector(row), dtype=np.float32)
-        peptide_encode = aaindex_vocab(row["peptide"], vocab.token_to_idx)
-        hla_encode = aaindex_vocab(hla_paratope, vocab.token_to_idx)
-        zero_array = np.zeros(12, dtype=np.float32)
+        peptide_encode = aaindex_vocab(str(row["peptide"]), vocab_map)
+        hla_encode = aaindex_vocab(hla_paratope, vocab_map)
+        zero_array = np.zeros(SEPARATOR_LENGTH, dtype=np.float32)
         merged = np.concatenate((feature_array, peptide_encode, zero_array, hla_encode), axis=0)
-        if merged.shape[0] > PADDING_LENGTH:
-            merged = merged[:PADDING_LENGTH]
-        pad_len = PADDING_LENGTH - merged.shape[0]
+        if merged.shape[0] > padding_length:
+            merged = merged[:padding_length]
+        pad_len = padding_length - merged.shape[0]
         encoded_rows.append(np.pad(merged, (0, pad_len), "constant").astype(np.float32))
         labels.append(int(row["label"]))
-        kept_indices.append(idx)
-    if not encoded_rows:
+        kept_indices.append(int(idx))
+
+    if encoded_rows:
+        encoded = np.stack(encoded_rows, axis=0)
+    else:
+        encoded = np.empty((0, padding_length), dtype=np.float32)
+    return encoded, labels, kept_indices, missing_hla
+
+
+def _split_dataframe_rows(df: pd.DataFrame, chunk_size: int) -> List[pd.DataFrame]:
+    if len(df) == 0:
+        return []
+    chunk_size = max(1, int(chunk_size))
+    return [df.iloc[start : start + chunk_size].copy() for start in range(0, len(df), chunk_size)]
+
+
+def encode_dataset(
+    df: pd.DataFrame,
+    hla2prot: Dict[str, str],
+    vocab: Vocab,
+    padding_length: int,
+    encode_workers: int = 1,
+    encode_chunk_size: int = 100000,
+) -> Tuple[torch.Tensor, torch.Tensor, pd.DataFrame]:
+    reset_df = df.reset_index(drop=True)
+    chunks = _split_dataframe_rows(reset_df, encode_chunk_size)
+    log_step(
+        f"[encode] rows={len(reset_df)} chunks={len(chunks)} "
+        f"workers={encode_workers} chunk_size={encode_chunk_size}"
+    )
+    worker_args = [(chunk, hla2prot, vocab.token_to_idx, padding_length) for chunk in chunks]
+
+    encoded_parts: List[np.ndarray] = []
+    labels: List[int] = []
+    kept_indices: List[int] = []
+    missing_hla = 0
+    if encode_workers <= 1 or len(chunks) <= 1:
+        iterator = tqdm(worker_args, total=len(worker_args), desc="Encoding peptide-HLA chunks", leave=False)
+        for args in iterator:
+            encoded, chunk_labels, chunk_indices, chunk_missing = _encode_dataframe_chunk(args)
+            if len(encoded):
+                encoded_parts.append(encoded)
+            labels.extend(chunk_labels)
+            kept_indices.extend(chunk_indices)
+            missing_hla += chunk_missing
+    else:
+        max_workers = max(1, int(encode_workers))
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as pool:
+            futures = [pool.submit(_encode_dataframe_chunk, args) for args in worker_args]
+            for future in tqdm(
+                futures,
+                total=len(futures),
+                desc=f"Encoding peptide-HLA chunks ({max_workers} workers)",
+                leave=False,
+            ):
+                encoded, chunk_labels, chunk_indices, chunk_missing = future.result()
+                if len(encoded):
+                    encoded_parts.append(encoded)
+                labels.extend(chunk_labels)
+                kept_indices.extend(chunk_indices)
+                missing_hla += chunk_missing
+
+    if missing_hla:
+        log_step(f"[encode] skipped rows with missing HLA sequence: {missing_hla}")
+    if not encoded_parts:
         raise RuntimeError("No rows could be encoded. Check HLA fasta coverage.")
-    encoded = torch.from_numpy(np.stack(encoded_rows, axis=0))
+    encoded = torch.from_numpy(np.concatenate(encoded_parts, axis=0))
     y = torch.tensor(labels, dtype=torch.long)
     kept = df.reset_index(drop=True).iloc[kept_indices].reset_index(drop=True)
+    kept.attrs["_kept_indices"] = kept_indices
     return encoded, y, kept
+
+
+def encode_dataset_cached(
+    df: pd.DataFrame,
+    hla2prot: Dict[str, str],
+    vocab: Vocab,
+    padding_length: int,
+    cache_dir: Path,
+    split_name: str,
+    hla_source: str,
+    hla_digest: str,
+    enabled: bool = True,
+    encode_workers: int = 1,
+    encode_chunk_size: int = 100000,
+) -> Tuple[torch.Tensor, torch.Tensor, pd.DataFrame]:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    encoded_columns = ["peptide", "_norm_hla", "label"] + FEATURE_COLUMNS
+    data_digest = sha_for_dataframe_columns(df, encoded_columns)
+    cache_key_payload = {
+        "version": ENCODING_CACHE_VERSION,
+        "split": split_name,
+        "data_digest": data_digest,
+        "hla_source": hla_source,
+        "hla_digest": hla_digest,
+        "padding_length": int(padding_length),
+        "vocab": AMINO,
+        "x2_dim": X2_DIM,
+        "separator_length": SEPARATOR_LENGTH,
+    }
+    key_hash = hashlib.sha256(
+        json.dumps(cache_key_payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+    cache_path = cache_dir / f"encoded_{split_name}_{key_hash}.pt"
+
+    reset_df = df.reset_index(drop=True)
+    if enabled and cache_path.exists():
+        try:
+            payload = torch.load(cache_path, map_location="cpu", weights_only=False)
+        except TypeError:
+            payload = torch.load(cache_path, map_location="cpu")
+        metadata = payload.get("metadata", {})
+        if metadata == cache_key_payload:
+            kept_indices = payload["kept_indices"]
+            kept = reset_df.iloc[kept_indices].reset_index(drop=True)
+            log_step(
+                f"[encode] cache hit split={split_name} file={cache_path.name} rows={len(kept_indices)}"
+            )
+            return payload["x"], payload["y"], kept
+        log_step(f"[encode] cache metadata mismatch, rebuilding split={split_name}: {cache_path.name}")
+
+    x, y, kept = encode_dataset(
+        reset_df,
+        hla2prot,
+        vocab,
+        padding_length,
+        encode_workers=encode_workers,
+        encode_chunk_size=encode_chunk_size,
+    )
+    if enabled:
+        kept_indices = [int(i) for i in kept.attrs.get("_kept_indices", kept.index.tolist())]
+        torch.save(
+            {
+                "x": x.cpu(),
+                "y": y.cpu(),
+                "kept_indices": kept_indices,
+                "metadata": cache_key_payload,
+            },
+            cache_path,
+        )
+        log_step(f"[encode] cache write split={split_name} file={cache_path.name} rows={len(kept_indices)}")
+    return x, y, kept
 
 
 def initialize_model(new_bilstm, after_pca_path: Path, device: torch.device) -> nn.Module:
@@ -384,10 +672,15 @@ def train_one_model(
     lr: float,
     checkpoint_dir: Path,
     model_name: str,
+    loss_reduction: str,
+    class_weights: torch.Tensor | None = None,
 ) -> Tuple[nn.Module, List[Dict[str, float]], Dict[str, Path]]:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     trainer = torch.optim.Adam(model.parameters(), lr=lr)
-    loss_fn = nn.CrossEntropyLoss(reduction="none")
+    loss_fn = nn.CrossEntropyLoss(
+        reduction="none",
+        weight=class_weights.to(device) if class_weights is not None else None,
+    )
     history: List[Dict[str, float]] = []
     best_values = {
         "val_roc_auc": -float("inf"),
@@ -415,7 +708,10 @@ def train_one_model(
             trainer.zero_grad()
             logits = model(x1, x2)
             loss = loss_fn(logits, labels)
-            loss.sum().backward()
+            if loss_reduction == "mean":
+                loss.mean().backward()
+            else:
+                loss.sum().backward()
             trainer.step()
             loss_sum += float(loss.sum().detach().cpu().item())
             correct += accuracy(logits, labels)
@@ -503,6 +799,65 @@ def make_loader(features: torch.Tensor, labels: torch.Tensor, indices: np.ndarra
     return data.DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=False)
 
 
+def make_training_loader(
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    kept_df: pd.DataFrame,
+    batch_size: int,
+    sampler_mode: str,
+    sampler_source_col: str,
+    outdir: Path,
+) -> data.DataLoader:
+    ds = data.TensorDataset(features, labels)
+    if sampler_mode == "shuffle":
+        return data.DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=False)
+
+    meta = kept_df.reset_index(drop=True).copy()
+    if len(meta) != len(labels):
+        raise ValueError(f"Sampler metadata rows ({len(meta)}) != labels ({len(labels)})")
+    meta["_label"] = labels.detach().cpu().numpy().astype(int)
+    if sampler_mode == "label_balanced":
+        group_cols = ["_label"]
+    elif sampler_mode == "source_label_balanced":
+        if sampler_source_col not in meta.columns:
+            raise KeyError(f"Missing sampler source column: {sampler_source_col}")
+        group_cols = [sampler_source_col, "_label"]
+    else:
+        raise ValueError(f"Unsupported train sampler: {sampler_mode}")
+
+    group_sizes = meta.groupby(group_cols, dropna=False).size().rename("n").reset_index()
+    meta = meta.merge(group_sizes, on=group_cols, how="left")
+    weights = (1.0 / meta["n"].astype(float)).to_numpy(dtype=np.float64)
+    sampler = data.WeightedRandomSampler(
+        weights=torch.as_tensor(weights, dtype=torch.double),
+        num_samples=len(weights),
+        replacement=True,
+    )
+    report_path = outdir / "metrics" / "train_sampler_groups.tsv"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    group_sizes.to_csv(report_path, sep="\t", index=False)
+    log_step(
+        f"[sampler] mode={sampler_mode} groups={len(group_sizes)} "
+        f"source_col={sampler_source_col} report={report_path}"
+    )
+    return data.DataLoader(ds, batch_size=batch_size, sampler=sampler, drop_last=False)
+
+
+def compute_class_weights(labels: torch.Tensor, mode: str) -> torch.Tensor | None:
+    if mode == "none":
+        return None
+    if mode != "balanced":
+        raise ValueError(f"Unsupported class weight mode: {mode}")
+    label_np = labels.detach().cpu().numpy().astype(int)
+    counts = np.bincount(label_np, minlength=2).astype(np.float64)
+    if np.any(counts == 0):
+        raise ValueError(f"Cannot compute balanced class weights with empty class: {counts.tolist()}")
+    weights = counts.sum() / (len(counts) * counts)
+    out = torch.tensor(weights, dtype=torch.float32)
+    log_step(f"[class_weight] mode=balanced counts={counts.astype(int).tolist()} weights={weights.tolist()}")
+    return out
+
+
 def write_metrics(path: Path, rows: List[Dict[str, float]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(path, sep="\t", index=False)
@@ -516,9 +871,39 @@ def main() -> None:
     parser.add_argument("--test-csv", "--test-table", dest="test_csv", default=None, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--model-file", default=DEFAULT_MODEL_FILE, type=Path)
+    parser.add_argument(
+        "--hla-source",
+        choices=["fasta", "netmhc-pseudoseq"],
+        default="fasta",
+        help="Use original full-length HLA fasta or local NetMHC pseudo-sequence CSV resources.",
+    )
     parser.add_argument("--hla-fasta", default=DEFAULT_HLA_FASTA, type=Path)
+    parser.add_argument(
+        "--hla-pseudoseq-csv",
+        action="append",
+        default=None,
+        type=Path,
+        help="NetMHC pseudo-sequence CSV with allele,pseudo_sequence columns. Can be passed multiple times.",
+    )
+    parser.add_argument(
+        "--padding-length",
+        default=0,
+        type=int,
+        help="Sequence padding length. 0 keeps 419 for fasta and auto-sizes for NetMHC pseudo-sequences.",
+    )
     parser.add_argument("--after-pca", default=DEFAULT_AFTER_PCA, type=Path)
     parser.add_argument("--feature-rscript", default=DEFAULT_FEATURE_RSCRIPT, type=Path)
+    parser.add_argument("--feature-workers", default=1, type=int)
+    parser.add_argument("--feature-chunk-size", default=250000, type=int)
+    parser.add_argument("--encode-workers", default=1, type=int)
+    parser.add_argument("--encode-chunk-size", default=100000, type=int)
+    parser.add_argument(
+        "--no-encoded-cache",
+        dest="encoded_cache",
+        action="store_false",
+        help="Disable cached encoded tensor reuse.",
+    )
+    parser.set_defaults(encoded_cache=True)
     parser.add_argument("--init-from", default=None, type=Path)
     parser.add_argument(
         "--select-best-metric",
@@ -529,6 +914,29 @@ def main() -> None:
     parser.add_argument("--epochs", default=200, type=int)
     parser.add_argument("--batch-size", default=256, type=int)
     parser.add_argument("--lr", default=5e-5, type=float)
+    parser.add_argument(
+        "--loss-reduction",
+        choices=["sum", "mean"],
+        default="sum",
+        help="Use sum to reproduce the original notebooks; use mean for batch-size-stable tuning.",
+    )
+    parser.add_argument(
+        "--class-weight-mode",
+        choices=["none", "balanced"],
+        default="none",
+        help="Optional class weights for CrossEntropyLoss.",
+    )
+    parser.add_argument(
+        "--train-sampler",
+        choices=["shuffle", "label_balanced", "source_label_balanced"],
+        default="shuffle",
+        help="Sampling strategy for the final training loader.",
+    )
+    parser.add_argument(
+        "--sampler-source-col",
+        default="dataset_source",
+        help="Metadata column used by --train-sampler source_label_balanced.",
+    )
     parser.add_argument("--kfold", default=5, type=int)
     parser.add_argument("--seed", default=2026, type=int)
     parser.add_argument("--device", default="auto")
@@ -550,8 +958,13 @@ def main() -> None:
     log_step(f"[env] device={device} cuda_available={torch.cuda.is_available()}")
     NewBiLSTM = load_new_bilstm(args.model_file)
     vocab = Vocab(list(AMINO), min_freq=1)
-    hla2prot = parse_hla_fasta(args.hla_fasta)
-    log_step(f"[resources] HLA alleles={len(hla2prot)} after_pca={args.after_pca}")
+    hla2prot = load_hla_sequences(args.hla_source, args.hla_fasta, args.hla_pseudoseq_csv)
+    hla_digest = sha_for_hla_sequences(hla2prot)
+    hla_lengths = sorted({len(seq) for seq in hla2prot.values()})
+    log_step(
+        f"[resources] hla_source={args.hla_source} HLA alleles={len(hla2prot)} "
+        f"hla_lengths={hla_lengths[:10]} hla_digest={hla_digest} after_pca={args.after_pca}"
+    )
 
     train_df = standardize_input(read_table_auto(args.train_csv), "train")
     val_df = standardize_input(read_table_auto(args.val_csv), "validation")
@@ -578,7 +991,15 @@ def main() -> None:
     if test_df is not None:
         split_frames.append(test_df.assign(_split="test"))
     combined = pd.concat(split_frames, ignore_index=True)
-    combined = ensure_peptide_features(combined, args.outdir / "cache", args.feature_rscript)
+    combined = ensure_peptide_features(
+        combined,
+        args.outdir / "cache",
+        args.feature_rscript,
+        feature_workers=args.feature_workers,
+        feature_chunk_size=args.feature_chunk_size,
+    )
+    padding_length = resolve_padding_length(args.padding_length, args.hla_source, combined, hla2prot)
+    log_step(f"[encode] padding_length={padding_length}")
     train_feat = combined[combined["_split"] == "train"].drop(columns=["_split"]).reset_index(drop=True)
     val_feat = combined[combined["_split"] == "validation"].drop(columns=["_split"]).reset_index(drop=True)
     test_feat = (
@@ -588,18 +1009,55 @@ def main() -> None:
     )
 
     log_step("[encode] training set")
-    train_x, train_y, train_kept = encode_dataset(train_feat, hla2prot, vocab)
+    train_x, train_y, train_kept = encode_dataset_cached(
+        train_feat,
+        hla2prot,
+        vocab,
+        padding_length,
+        args.outdir / "cache",
+        "train",
+        args.hla_source,
+        hla_digest,
+        enabled=args.encoded_cache,
+        encode_workers=args.encode_workers,
+        encode_chunk_size=args.encode_chunk_size,
+    )
     log_step("[encode] validation set")
-    val_x, val_y, val_kept = encode_dataset(val_feat, hla2prot, vocab)
+    val_x, val_y, val_kept = encode_dataset_cached(
+        val_feat,
+        hla2prot,
+        vocab,
+        padding_length,
+        args.outdir / "cache",
+        "validation",
+        args.hla_source,
+        hla_digest,
+        enabled=args.encoded_cache,
+        encode_workers=args.encode_workers,
+        encode_chunk_size=args.encode_chunk_size,
+    )
     if test_feat is not None:
         log_step("[encode] test set")
-        test_x, test_y, test_kept = encode_dataset(test_feat, hla2prot, vocab)
+        test_x, test_y, test_kept = encode_dataset_cached(
+            test_feat,
+            hla2prot,
+            vocab,
+            padding_length,
+            args.outdir / "cache",
+            "test",
+            args.hla_source,
+            hla_digest,
+            enabled=args.encoded_cache,
+            encode_workers=args.encode_workers,
+            encode_chunk_size=args.encode_chunk_size,
+        )
     else:
         test_x, test_y, test_kept = None, None, None
     log_step(
         f"[data] train rows={len(train_df)} encoded={len(train_kept)} "
         f"validation rows={len(val_df)} encoded={len(val_kept)} device={device}"
     )
+    class_weights = compute_class_weights(train_y, args.class_weight_mode)
 
     all_fold_rows: List[Dict[str, float]] = []
     if not args.skip_kfold:
@@ -619,6 +1077,8 @@ def main() -> None:
                 args.lr,
                 args.outdir / "models" / f"fold_{fold}",
                 f"{args.antigen}_fold_{fold}",
+                args.loss_reduction,
+                class_weights,
             )
             final_metrics = evaluate(model, test_loader, device)
             final_metrics.update({"fold": fold, "n_train": len(train_idx), "n_test": len(test_idx)})
@@ -630,11 +1090,14 @@ def main() -> None:
     if args.init_from is not None:
         log_step(f"[init] loading weights from {args.init_from}")
         load_initial_weights(final_model, args.init_from, device)
-    final_train_loader = data.DataLoader(
-        data.TensorDataset(train_x, train_y),
-        batch_size=args.batch_size,
-        shuffle=True,
-        drop_last=False,
+    final_train_loader = make_training_loader(
+        train_x,
+        train_y,
+        train_kept,
+        args.batch_size,
+        args.train_sampler,
+        args.sampler_source_col,
+        args.outdir,
     )
     val_loader = data.DataLoader(
         data.TensorDataset(val_x, val_y),
@@ -651,6 +1114,8 @@ def main() -> None:
         args.lr,
         args.outdir / "models" / "final_checkpoints",
         f"{args.antigen}_final",
+        args.loss_reduction,
+        class_weights,
     )
     selected_checkpoint = None
     if args.select_best_metric != "last":

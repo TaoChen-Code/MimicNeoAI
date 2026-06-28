@@ -1,7 +1,8 @@
 import re
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from pathlib import Path
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -19,6 +20,11 @@ from mimicneoai.immunogenicity_prediction.model import Vocab, build_model, load_
 AMINO = "ARNDCQEGHILKMFPSTWYV-"
 PADDING_LENGTH = 419
 X2_DIM = 25
+SEPARATOR_LENGTH = 12
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_HLA_PSEUDOSEQ_DIR = SCRIPT_DIR / "resources" / "hla_pseudoseq" / "local"
+DEFAULT_HLA_CLASS1_PSEUDOSEQ = DEFAULT_HLA_PSEUDOSEQ_DIR / "netmhcpan_class1_allele_to_pseudoseq.csv"
+DEFAULT_HLA_CLASS2_PSEUDOSEQ = DEFAULT_HLA_PSEUDOSEQ_DIR / "netmhciipan_class2_allele_to_pseudoseq.csv"
 
 R_FEATURE_CODE = """
 calculate_features <- function(data, peptide_col) {
@@ -67,10 +73,14 @@ calculate_features <- function(data, peptide_col) {
 @dataclass
 class InferenceConfig:
     model_path: str
-    hla_fasta_path: str
+    hla_fasta_path: str = ""
+    hla_source: str = "fasta"
+    hla_pseudoseq_csv: Tuple[str, ...] = ()
+    padding_length: int = 0
     peptide_col: str = "peptide"
     hla_col: str = "hla"
     output_score_col: str = "immunogenicity_score"
+    output_status_col: str = "immunogenicity_status"
     batch_size: int = 512
     device: str = "auto"
     num_processes: int = 1
@@ -147,6 +157,53 @@ def parse_hla_fasta(hla_fasta_path: str) -> Dict[str, str]:
     hla_df["HLA"] = hla_df["HLA"].astype(str).str.split(":").str[:2].str.join(":")
     hla_df = hla_df.drop_duplicates(subset="HLA", keep="first").reset_index(drop=True)
     return dict(zip(hla_df["HLA"], hla_df["protin"]))
+
+
+def parse_hla_pseudoseq_csv(paths: Sequence[str | Path]) -> Dict[str, str]:
+    hla2seq: Dict[str, str] = {}
+    path_objs = [Path(path) for path in paths]
+    missing = [str(path) for path in path_objs if not path.exists()]
+    if missing:
+        raise FileNotFoundError(
+            "Missing HLA pseudo-sequence CSV(s): "
+            + ", ".join(missing)
+            + ". Place local NetMHC-derived resources under "
+            + str(DEFAULT_HLA_PSEUDOSEQ_DIR)
+            + " or configure hla_pseudoseq_csv."
+        )
+    for path in path_objs:
+        df = pd.read_csv(path)
+        required = {"allele", "pseudo_sequence"}
+        if not required.issubset(df.columns):
+            raise KeyError(f"{path} must contain columns: {sorted(required)}")
+        for row in df.itertuples(index=False):
+            allele = str(getattr(row, "allele")).strip()
+            seq = str(getattr(row, "pseudo_sequence")).strip().upper()
+            if not allele or not seq or seq.lower() == "nan":
+                continue
+            keys = {
+                allele,
+                allele.replace("HLA-", ""),
+                normalize_hla(allele),
+            }
+            for key in keys:
+                if key:
+                    hla2seq[key] = seq
+    return hla2seq
+
+
+def load_hla_sequences(cfg: InferenceConfig) -> Dict[str, str]:
+    if cfg.hla_source == "fasta":
+        if not cfg.hla_fasta_path:
+            raise ValueError("hla_fasta_path is required when hla_source='fasta'.")
+        return parse_hla_fasta(cfg.hla_fasta_path)
+    if cfg.hla_source == "netmhc-pseudoseq":
+        paths = cfg.hla_pseudoseq_csv or (
+            str(DEFAULT_HLA_CLASS1_PSEUDOSEQ),
+            str(DEFAULT_HLA_CLASS2_PSEUDOSEQ),
+        )
+        return parse_hla_pseudoseq_csv(paths)
+    raise ValueError(f"Unsupported HLA source: {cfg.hla_source}")
 
 
 def calculate_peptide_features(df: pd.DataFrame, peptide_col: str) -> pd.DataFrame:
@@ -280,7 +337,7 @@ def _encode_chunk_worker(args):
         hla_encode = aaindex_vocab(hla_paratope, vocab_map)
         feature_array = np.asarray(features_chunk[i], dtype=np.float32)
 
-        zero_array = np.zeros(12, dtype=np.float32)
+        zero_array = np.zeros(SEPARATOR_LENGTH, dtype=np.float32)
         merged = np.concatenate((feature_array, peptide_encode, zero_array, hla_encode), axis=0)
 
         if merged.shape[0] > padding_length:
@@ -348,6 +405,21 @@ def parallel_encode(
     return encoded_tensor, flags
 
 
+def resolve_padding_length(
+    requested_padding_length: int,
+    hla_source: str,
+    peptides: Sequence[str],
+    hla2prot: Dict[str, str],
+) -> int:
+    if requested_padding_length > 0:
+        return int(requested_padding_length)
+    if hla_source == "fasta":
+        return PADDING_LENGTH
+    max_peptide_len = max((len(str(peptide)) for peptide in peptides), default=0)
+    max_hla_len = max((len(seq) for seq in hla2prot.values()), default=0)
+    return X2_DIM + max_peptide_len + SEPARATOR_LENGTH + max_hla_len
+
+
 def run_inference(input_df: pd.DataFrame, cfg: InferenceConfig) -> pd.DataFrame:
     if cfg.peptide_col not in input_df.columns or cfg.hla_col not in input_df.columns:
         raise KeyError(f"Input must contain columns '{cfg.peptide_col}' and '{cfg.hla_col}'.")
@@ -392,26 +464,33 @@ def run_inference(input_df: pd.DataFrame, cfg: InferenceConfig) -> pd.DataFrame:
 
     device = pick_device(cfg.device)
     vocab = Vocab(list(AMINO), min_freq=1)
-    hla2prot = parse_hla_fasta(cfg.hla_fasta_path)
+    hla2prot = load_hla_sequences(cfg)
 
     features_np = extract_feature_vector(infer_df, cfg.num_processes)
     peptides = infer_df[cfg.peptide_col].tolist()
     hlas = infer_df["_norm_hla"].tolist()
+    padding_length = resolve_padding_length(cfg.padding_length, cfg.hla_source, peptides, hla2prot)
 
     t_enc = time.time()
     if cfg.verbose:
-        print("[Immunogenicity] Encoding peptide/HLA pairs...")
+        print(
+            "[Immunogenicity] Encoding peptide/HLA pairs... "
+            f"hla_source={cfg.hla_source} padding_length={padding_length}"
+        )
     encoded_all, flags_all = parallel_encode(
         features_np=features_np,
         peptides=peptides,
         hlas=hlas,
         hla2prot=hla2prot,
         vocab_map=vocab.token_to_idx,
-        padding_length=PADDING_LENGTH,
+        padding_length=padding_length,
         num_processes=cfg.num_processes,
     )
     if cfg.verbose:
         print(f"[Immunogenicity] Encoding done in {time.time() - t_enc:.2f}s")
+        missing_hla_count = len(flags_all) - int(sum(flags_all))
+        if missing_hla_count:
+            print(f"[Immunogenicity] Missing HLA sequence rows: {missing_hla_count}")
 
     model = build_model(vocab_size=len(vocab), pad_idx=vocab["<pad>"])
     load_model_weights(model, cfg.model_path, device)
@@ -419,6 +498,10 @@ def run_inference(input_df: pd.DataFrame, cfg: InferenceConfig) -> pd.DataFrame:
     model.eval()
 
     probs_out: List[float] = []
+    status_out: List[str] = []
+    missing_hla_status = (
+        "missing_hla_pseudoseq" if cfg.hla_source == "netmhc-pseudoseq" else "missing_hla_fasta"
+    )
     t_inf = time.time()
     if cfg.verbose:
         print("[Immunogenicity] Running model inference...")
@@ -434,12 +517,18 @@ def run_inference(input_df: pd.DataFrame, cfg: InferenceConfig) -> pd.DataFrame:
             probs = torch.softmax(logits, dim=1).cpu().numpy()
 
             for j, flag in enumerate(batch_flags):
-                probs_out.append(float(probs[j, 1]) if flag else 0.5)
+                if flag:
+                    probs_out.append(float(probs[j, 1]))
+                    status_out.append("ok")
+                else:
+                    probs_out.append(float("nan"))
+                    status_out.append(missing_hla_status)
 
     infer_df[cfg.output_score_col] = probs_out
+    infer_df[cfg.output_status_col] = status_out
 
     scored = work_df.merge(
-        infer_df[[cfg.peptide_col, "_norm_hla", cfg.output_score_col]],
+        infer_df[[cfg.peptide_col, "_norm_hla", cfg.output_score_col, cfg.output_status_col]],
         on=[cfg.peptide_col, "_norm_hla"],
         how="left",
     )
@@ -457,6 +546,7 @@ def export_model_to_onnx(
     onnx_path: str,
     device_name: str = "cpu",
     opset_version: int = 17,
+    padding_length: int = PADDING_LENGTH,
 ) -> None:
     device = pick_device(device_name)
     vocab = Vocab(list(AMINO), min_freq=1)
@@ -465,7 +555,7 @@ def export_model_to_onnx(
     model.to(device)
     model.eval()
 
-    x1_len = PADDING_LENGTH - X2_DIM
+    x1_len = int(padding_length) - X2_DIM
     dummy_x1 = torch.zeros((1, x1_len), dtype=torch.long, device=device)
     dummy_x2 = torch.zeros((1, X2_DIM), dtype=torch.float32, device=device)
 
