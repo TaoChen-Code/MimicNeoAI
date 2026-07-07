@@ -226,7 +226,8 @@ class Pvacseq:
             f"{input_vcf} {sample} {HLA} {algoIandII} "
             f"{output_pvacseq} -e1 {e1} -e2 {e2} "
             f"--iedb-install-directory /opt/iedb "
-            f"-t {running_thread} --fasta-size 100000"
+            f"-t {running_thread} --fasta-size 100000 "
+            f"< /dev/null"
         )
 
         # Target file to watch (kept consistent with upstream)
