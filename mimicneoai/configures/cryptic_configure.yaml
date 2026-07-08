@@ -40,6 +40,13 @@ others:
   mhcI_lengths: "8,9,10"
   mhcII_lengths: "15"
 
+  # Binding prediction backend. Default keeps the legacy pVACbind workflow.
+  binding_prediction_backend: "pvactools"  # pvactools | mimicneoai
+  binding_prediction_algorithms: "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL"
+  binding_prediction_workers: 8
+  binding_prediction_max_task_rows: 5000000
+  binding_prediction_force_large_samples: false
+
 samples:
   - Sample_001_T,Sample_001_N
   - Sample_002_T,Sample_002_N

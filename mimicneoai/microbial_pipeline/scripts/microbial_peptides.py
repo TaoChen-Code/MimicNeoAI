@@ -1,11 +1,19 @@
 # coding=utf-8
 import os
+import shlex
+import sys
 from datetime import datetime
+from importlib.resources import files
 from mimicneoai.functions.utils import format_java_heap
 import pandas as pd
 from mimicneoai.microbial_pipeline.scripts.get_data_for_blastx import get_data
 from mimicneoai.microbial_pipeline.scripts.get_data_for_binding_pred import get_data_for_binding_pred
 from mimicneoai.microbial_pipeline.scripts.hla_binding_pred import pvacbind
+
+
+def _script_path(rel_name: str) -> str:
+    pkg_path = files("mimicneoai.microbial_pipeline.scripts")
+    return str(pkg_path / rel_name)
 
 
 def HostSequencesRemoving(sample, configure, paths, tool):
@@ -724,7 +732,7 @@ def MicrobialPeptidesIdentification(sample, configure, paths, tool):
 
 
 def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
-    """Run pVACbind for peptide–MHC binding prediction on BLASTX-derived peptides.
+    """Run peptide-MHC binding prediction on BLASTX-derived peptides.
 
     Args:
         sample (str): Sample ID.
@@ -735,6 +743,7 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
     output_path = configure['path']['output_dir'] + "/"
     step_name_blastx   = configure['step_name']['blastx']
     step_name_pvacbind = configure['step_name']['pvacbind']
+    step_name_hla      = configure['step_name']['hla']
 
     output_blastx   = output_path + f'{sample}/{step_name_blastx}/'
     output_pvacbind = output_path + f'{sample}/{step_name_pvacbind}/'
@@ -742,5 +751,43 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
     # Only run if peptide FASTA exists
     peptide_fa = f"{output_blastx}/{sample}.peptide.fasta"
     if os.path.exists(peptide_fa):
-        tool.judge_then_exec(sample, f"mkdir -p {output_pvacbind}", output_pvacbind)
-        pvacbind(sample, configure, paths, tool)
+        backend = str(configure.get("others", {}).get("binding_prediction_backend", "pvactools")).strip().lower()
+        if backend == "pvactools":
+            tool.judge_then_exec(sample, f"mkdir -p {output_pvacbind}", output_pvacbind)
+            pvacbind(sample, configure, paths, tool)
+        elif backend == "mimicneoai":
+            output_mimicneoai = output_path + f"{sample}/08.MicrobialPeptidesBindingPrediction_mimicneoai/"
+            output_hla = output_path + f"{sample}/{step_name_hla}/"
+            hla_file = f"{output_hla}{sample}/result/{sample}_final.result.txt"
+            others = configure.get("others", {})
+            cmd = [
+                sys.executable,
+                _script_path("hla_binding_pred_mimicneoai.py"),
+                "-s",
+                sample,
+                "--pep-fasta",
+                peptide_fa,
+                "--hla-file",
+                hla_file,
+                "-o",
+                output_mimicneoai,
+                "-t",
+                str(int(others.get("binding_prediction_workers", configure.get("args", {}).get("hla_binding_threads", 5)))),
+                "--algorithms",
+                str(others.get(
+                    "binding_prediction_algorithms",
+                    "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign "
+                    "NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL",
+                )),
+                "--mhc-i-lengths",
+                str(others.get("mhcI_lengths", "8,9,10")),
+                "--mhc-ii-lengths",
+                str(others.get("mhcII_lengths", "15")),
+                "--max-task-rows",
+                str(int(others.get("binding_prediction_max_task_rows", 5000000))),
+            ]
+            if bool(others.get("binding_prediction_force_large_samples", False)):
+                cmd.append("--force-large-samples")
+            tool.exec_cmd(" ".join(shlex.quote(item) for item in cmd), sample, pipline="microbial")
+        else:
+            raise ValueError(f"Unsupported binding_prediction_backend: {backend}")

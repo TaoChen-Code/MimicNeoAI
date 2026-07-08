@@ -49,6 +49,13 @@ others:
   # Algorithms for pVACbind (space-separated)
   algo: "BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC"
 
+  # Binding prediction backend. Default keeps the legacy pVACseq workflow.
+  binding_prediction_backend: "pvactools"  # pvactools | mimicneoai
+  binding_prediction_algorithms: "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL"
+  binding_prediction_workers: 8
+  binding_prediction_max_task_rows: 5000000
+  binding_prediction_force_large_samples: false
+
 # Sample List (Example entries)
 samples:
   - Sample_001_T,Sample_001_N

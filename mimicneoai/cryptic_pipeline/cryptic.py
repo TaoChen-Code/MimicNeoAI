@@ -336,27 +336,52 @@ def _run_one_sample(
 
         # ---------- 07 HLA binding prediction (pvacbind) ----------
         if do_pvacbind:
-            algos = others.get(
-                "algo",
-                "BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI "
-                "MHCnuggetsII NNalign NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan "
-                "NetMHCpanEL PickPocket SMM SMMPMBEC",
-            )
+            backend = str(others.get("binding_prediction_backend", "pvactools")).strip().lower()
             e1_lengths = others.get("mhcI_lengths", "8,9,10")
             e2_lengths = others.get("mhcII_lengths", "15")
-
-            _run_cmd(tool, sample, [
-                sys.executable, _script_path("07-hla_binding_pred.py"),
-                "-s", tumor_sample,
-                "--pep-fasta", AESEPs_PEP,
-                "--hla-file", HLA_FINAL_TXT,
-                "-o", DIR07,
-                "--pvactools", PVACTOOLS_SIF,
-                "-t", str(n_pvacbind),
-                "--algos", algos,
-                "--e1-lengths", e1_lengths,
-                "--e2-lengths", e2_lengths,
-            ])
+            if backend == "pvactools":
+                algos = others.get(
+                    "algo",
+                    "BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI "
+                    "MHCnuggetsII NNalign NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan "
+                    "NetMHCpanEL PickPocket SMM SMMPMBEC",
+                )
+                _run_cmd(tool, sample, [
+                    sys.executable, _script_path("07-hla_binding_pred.py"),
+                    "-s", tumor_sample,
+                    "--pep-fasta", AESEPs_PEP,
+                    "--hla-file", HLA_FINAL_TXT,
+                    "-o", DIR07,
+                    "--pvactools", PVACTOOLS_SIF,
+                    "-t", str(n_pvacbind),
+                    "--algos", algos,
+                    "--e1-lengths", e1_lengths,
+                    "--e2-lengths", e2_lengths,
+                ])
+            elif backend == "mimicneoai":
+                algos = others.get(
+                    "binding_prediction_algorithms",
+                    "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign "
+                    "NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL",
+                )
+                outdir_mimicneoai = os.path.join(OPT, "07-hla_binding_pred_mimicneoai")
+                cmd = [
+                    sys.executable, _script_path("07-hla_binding_pred_mimicneoai.py"),
+                    "-s", tumor_sample,
+                    "--pep-fasta", AESEPs_PEP,
+                    "--hla-file", HLA_FINAL_TXT,
+                    "-o", outdir_mimicneoai,
+                    "-t", str(int(others.get("binding_prediction_workers", n_pvacbind))),
+                    "--algorithms", algos,
+                    "--mhc-i-lengths", e1_lengths,
+                    "--mhc-ii-lengths", e2_lengths,
+                    "--max-task-rows", str(int(others.get("binding_prediction_max_task_rows", 5000000))),
+                ]
+                if bool(others.get("binding_prediction_force_large_samples", False)):
+                    cmd.append("--force-large-samples")
+                _run_cmd(tool, sample, cmd)
+            else:
+                raise ValueError(f"Unsupported binding_prediction_backend: {backend}")
 
         tool.write_log(f"[DONE] Completed cryptic pipeline: {OPT}", "info")
 

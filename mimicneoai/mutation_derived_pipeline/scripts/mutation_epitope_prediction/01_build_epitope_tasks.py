@@ -38,6 +38,17 @@ MHC_II_ALGORITHMS = {
     "NetMHCIIpan",
     "NetMHCIIpanEL",
 }
+DEFAULT_ALGORITHMS = (
+    "MHCflurry",
+    "MHCflurryEL",
+    "MHCnuggetsI",
+    "MHCnuggetsII",
+    "NNalign",
+    "NetMHCpan",
+    "NetMHCpanEL",
+    "NetMHCIIpan",
+    "NetMHCIIpanEL",
+)
 
 try:
     from mimicneoai.mutation_derived_pipeline.scripts.mutation_epitope_prediction.hla_parser import (
@@ -81,7 +92,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Flanking length used for pVACtools protein FASTA generation.",
     )
     parser.add_argument("--extended-length", type=int, default=27)
-    parser.add_argument("--algorithms", required=True)
+    parser.add_argument(
+        "--algorithms",
+        default=",".join(DEFAULT_ALGORITHMS),
+        help=(
+            "Comma- or space-separated predictor names. Defaults exclude "
+            "SMM, SMMPMBEC, and PickPocket because they are retained mainly "
+            "for legacy pVACseq compatibility."
+        ),
+    )
     parser.add_argument(
         "--pvacseq-merged",
         default=None,
@@ -171,8 +190,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     write_tsv(outdir / "epitope_windows.tsv", epitope_rows)
 
     hlas = parse_hlahd_result(Path(args.hla_file))
-    mhc_i_peptides = sorted({str(row["mt_epitope_seq"]) for row in epitope_rows if row["mhc_class"] == "MHC-I"})
-    mhc_ii_peptides = sorted({str(row["mt_epitope_seq"]) for row in epitope_rows if row["mhc_class"] == "MHC-II"})
+    prediction_peptide_rows = build_prediction_peptide_rows(epitope_rows)
+    write_tsv(outdir / "prediction_peptides.tsv", prediction_peptide_rows)
+
+    mhc_i_peptides = sorted(
+        {
+            str(row["peptide"])
+            for row in prediction_peptide_rows
+            if row["mhc_class"] == "MHC-I" and row["peptide"]
+        }
+    )
+    mhc_ii_peptides = sorted(
+        {
+            str(row["peptide"])
+            for row in prediction_peptide_rows
+            if row["mhc_class"] == "MHC-II" and row["peptide"]
+        }
+    )
     tasks = build_binding_tasks(mhc_i_peptides, list(hlas.mhc_i), mhc_i_algorithms, "MHC-I")
     tasks.extend(build_binding_tasks(mhc_ii_peptides, list(hlas.mhc_ii), mhc_ii_algorithms, "MHC-II"))
     task_rows = [
@@ -194,8 +228,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         "missing_fasta_pair_count": len(missing_annotation),
         "epitope_window_rows": len(epitope_rows),
         "extended_peptide_rows": len(extended_rows),
-        "unique_mhc_i_peptides": len(mhc_i_peptides),
-        "unique_mhc_ii_peptides": len(mhc_ii_peptides),
+        "prediction_peptide_rows": len(prediction_peptide_rows),
+        "unique_mhc_i_prediction_peptides": len(mhc_i_peptides),
+        "unique_mhc_ii_prediction_peptides": len(mhc_ii_peptides),
         "mhc_i_alleles": list(hlas.mhc_i),
         "mhc_ii_alleles": list(hlas.mhc_ii),
         "algorithms": algorithms,
@@ -310,6 +345,57 @@ def epitope_row(event_id: str, pvacseq_index: str, annotation: dict[str, object]
         "extended_mt_epitope_seq": window.extended_peptide or "",
         "extended_length": len(window.extended_peptide or ""),
     }
+
+
+def build_prediction_peptide_rows(epitope_rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Build unique MT/WT peptide rows that need binding prediction.
+
+    The task table itself is intentionally de-duplicated by peptide-HLA-algorithm.
+    This companion table records whether a peptide came from MT, WT, or both, so
+    later merge code can reconstruct MT/WT evidence and fold-change values.
+    """
+
+    peptide_meta: dict[tuple[str, str, int], dict[str, object]] = {}
+    for row in epitope_rows:
+        mhc_class = str(row["mhc_class"])
+        peptide_length = int(row["peptide_length"])
+        event_id = str(row["event_id"])
+        for source_type, column in (("MT", "mt_epitope_seq"), ("WT", "wt_epitope_seq")):
+            if source_type == "WT" and str(row.get("variant_type", "")) == "FS":
+                continue
+            peptide = str(row.get(column, "") or "")
+            if not peptide:
+                continue
+            key = (mhc_class, peptide, peptide_length)
+            item = peptide_meta.setdefault(
+                key,
+                {
+                    "mhc_class": mhc_class,
+                    "peptide_length": peptide_length,
+                    "peptide": peptide,
+                    "source_types": set(),
+                    "event_ids": set(),
+                },
+            )
+            item["source_types"].add(source_type)
+            item["event_ids"].add(event_id)
+
+    rows: list[dict[str, object]] = []
+    for mhc_class, peptide, peptide_length in sorted(peptide_meta):
+        item = peptide_meta[(mhc_class, peptide, peptide_length)]
+        source_types = sorted(item["source_types"])
+        event_ids = sorted(item["event_ids"])
+        rows.append(
+            {
+                "mhc_class": mhc_class,
+                "peptide_length": peptide_length,
+                "peptide": peptide,
+                "source_types": ",".join(source_types),
+                "event_count": len(event_ids),
+                "event_ids": ";".join(event_ids),
+            }
+        )
+    return rows
 
 
 def compare_with_pvacseq_merged(pvacseq_merged: Path, epitope_rows: list[dict[str, object]]) -> tuple[list[dict[str, object]], dict[str, object]]:

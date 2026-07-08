@@ -46,6 +46,13 @@ others:
   run_binding_prediction: True       # Run peptide–HLA binding prediction
 
   algo: "BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC"
+
+  # Binding prediction backend. Default keeps the legacy pVACbind workflow.
+  binding_prediction_backend: "pvactools"  # pvactools | mimicneoai
+  binding_prediction_algorithms: "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL"
+  binding_prediction_workers: 8
+  binding_prediction_max_task_rows: 5000000
+  binding_prediction_force_large_samples: false
 # Sample List (Note: Numeric sample IDs require quotes)
 samples:
 - Sample_1

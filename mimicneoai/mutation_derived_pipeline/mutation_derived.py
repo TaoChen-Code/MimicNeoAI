@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
+import sys
 import traceback
 from multiprocessing import Manager
 from pathlib import Path
@@ -26,6 +28,15 @@ from mimicneoai.mutation_derived_pipeline.scripts.variants_calling import (
     variants_calling_start,
 )
 from mimicneoai.functions.nodemon_pool import NoDaemonPool
+
+
+MIMICNEOAI_BINDING_SCRIPT = (
+    Path(__file__).resolve().parent
+    / "scripts"
+    / "mutation_epitope_prediction"
+    / "run_mimicneoai_binding_prediction.py"
+)
+
 # -------- Constants --------
 FLAG = "Neoantigen"
 STEP_NAME = {
@@ -126,14 +137,51 @@ def _start_one_sample(
             step_name_vep = configure["step_name"]["annotation"]
             step_name_hla = configure["step_name"]["hla"]
 
-            binding_pred_runner = Pvacseq(tool)
-
             tumor_sample = sample.split(",")[0]
             output_vep = f"{output_dir}/{tumor_sample}/{step_name_vep}/"
             output_hla = f"{output_dir}/{tumor_sample}/{step_name_hla}/"
-            binding_pred_runner.run_pvacseq_parallel(
-                sample, tumor_sample, output_vep, output_hla, configure, paths
-            )
+            backend = str(configure.get("others", {}).get("binding_prediction_backend", "pvactools")).strip().lower()
+            if backend == "pvactools":
+                binding_pred_runner = Pvacseq(tool)
+                binding_pred_runner.run_pvacseq_parallel(
+                    sample, tumor_sample, output_vep, output_hla, configure, paths
+                )
+            elif backend == "mimicneoai":
+                others = configure.get("others", {})
+                input_vcf = f"{output_vep}/{tumor_sample}.shared.VEP.rm_mismatch.vcf"
+                hla_file = f"{output_hla}/{tumor_sample}/result/{tumor_sample}_final.result.txt"
+                outdir = f"{output_dir}/{tumor_sample}/07.binding_prediction_mimicneoai"
+                cmd = [
+                    sys.executable,
+                    str(MIMICNEOAI_BINDING_SCRIPT),
+                    "-s",
+                    tumor_sample,
+                    "--input-vcf",
+                    input_vcf,
+                    "--hla-file",
+                    hla_file,
+                    "--pvactools-sif",
+                    str(paths["path"]["common"]["PVACTOOLS"]),
+                    "-o",
+                    outdir,
+                    "--mhc-i-lengths",
+                    str(others.get("mhc_i_epitope_lengths", "8,9,10,11")),
+                    "--mhc-ii-lengths",
+                    str(others.get("mhc_ii_epitope_lengths", "15")),
+                    "--algorithms",
+                    str(others.get(
+                        "binding_prediction_algorithms",
+                        "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign "
+                        "NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL",
+                    )),
+                    "--workers",
+                    str(int(others.get("binding_prediction_workers", configure.get("args", {}).get("hla_binding_threads", 5)))),
+                ]
+                if "bcftools" in others:
+                    cmd.extend(["--bcftools", str(others["bcftools"])])
+                tool.exec_cmd(" ".join(shlex.quote(item) for item in cmd), sample, pipline="mutation")
+            else:
+                raise ValueError(f"Unsupported binding_prediction_backend: {backend}")
 
     except Exception:
         tool.write_log(f"Worker crashed:\n{traceback.format_exc()}", "error")

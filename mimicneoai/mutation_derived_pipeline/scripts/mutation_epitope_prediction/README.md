@@ -20,33 +20,44 @@ test a MimicNeoAI-native prediction workflow:
 This package must not import or vendor pVACtools source code. pVACtools should
 be invoked as an external tool, typically through the validated Apptainer image.
 
-Prototype output directory layout:
+Development and validation output directory layout:
 
 ```text
-07.binding_prediction_v2/
+07.binding_prediction_mimicneoai/
   00_input_vcf/
   01_pvactools_sources/
   02_epitope_tasks/
-  bp/
-  logs/
+  03_binding_predictions/
+  04_merged_epitopes/
+  archive/
 ```
 
-Planned CLI steps:
+CLI steps:
 
 ```text
 00_prepare_pvacseq_sources.py
 01_build_epitope_tasks.py
-02_predict_and_merge.py
+02_split_binding_tasks.py
+run_mimicneoai_binding_prediction.py
+02_merge_binding_predictions.py
 ```
 
-For the prototype layout, run step 00 with the parent output directory:
+The one-command wrapper is the preferred entry point during validation:
 
 ```text
-07.binding_prediction_v2/
+run_mimicneoai_binding_prediction.py \
+  -s <sample> \
+  --input-vcf <vep.vcf.gz> \
+  --hla-file <HLA-HD result.txt> \
+  --pvactools-sif <pvactools.sif> \
+  -o <sample>/07.binding_prediction_mimicneoai
 ```
 
-Run step 01 with:
+The wrapper records pVACtools and predictor metadata, peptide lengths, worker
+counts, MT/WT task counts, merged row counts, and the frameshift WT-field rule
+in `<sample>.binding_prediction_mimicneoai.summary.json`.
 
-```text
--o 07.binding_prediction_v2/02_epitope_tasks
-```
+Default predictors intentionally exclude legacy-only default runs for
+SMM/SMMPMBEC/PickPocket/NetMHC. pVACseq-compatible output columns for those
+methods remain available in the merged table schema and are left blank unless
+the corresponding algorithms are explicitly added and supported.
