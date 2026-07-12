@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -332,9 +333,9 @@ def build_workflow_summary(args: argparse.Namespace, paths: dict[str, Path], sta
         "output_dir": str(paths["root"]),
         "pvactools_boundary": "pVACtools is used only for VCF annotation conversion and WT/MT protein FASTA source generation.",
         "pvactools_sif": args.pvactools_sif,
-        "pvactools_version": capture_command([args.apptainer, "exec", str(args.pvactools_sif), "pvacseq", "--version"]),
-        "netmhcpan_version": capture_command([args.netmhcpan_bin]),
-        "netmhciipan_version": capture_command([args.netmhciipan_bin]),
+        "pvactools_version": capture_pvactools_version(args.apptainer, args.pvactools_sif),
+        "netmhcpan_version": version_from_path("NetMHCpan", args.netmhcpan_bin),
+        "netmhciipan_version": version_from_path("NetMHCIIpan", args.netmhciipan_bin),
         "algorithms": [item for item in args.algorithms.replace(",", " ").split() if item],
         "mhc_i_lengths": args.mhc_i_lengths,
         "mhc_ii_lengths": args.mhc_ii_lengths,
@@ -369,6 +370,23 @@ def capture_command(command: list[str]) -> str:
         return f"unavailable: {exc}"
     text = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
     return text[:2000]
+
+
+def capture_pvactools_version(apptainer: str, sif_path: str) -> str:
+    queried = capture_command([apptainer, "exec", sif_path, "pvacseq", "--version"])
+    if not queried.startswith("unavailable:"):
+        return queried.splitlines()[0]
+    match = re.search(r"pvactools[-_](\d+(?:\.\d+)+)", Path(sif_path).name, re.IGNORECASE)
+    if match:
+        return f"pVACtools {match.group(1)} (from SIF filename; runtime query unavailable)"
+    return queried
+
+
+def version_from_path(tool_name: str, executable: str) -> str:
+    match = re.search(rf"{re.escape(tool_name)}[-_](\d+(?:\.\d+)+)", executable, re.IGNORECASE)
+    if match:
+        return f"{tool_name} {match.group(1)}"
+    return str(Path(executable))
 
 
 def format_command(command: list[str]) -> str:

@@ -164,7 +164,10 @@ def unsupported_reason(task: BindingTask) -> str:
         "HLA-F*01:01",
     }:
         return "unsupported_allele_by_predictor"
-    if task.algorithm == "MHCnuggetsI" and task.hla_allele == "HLA-F*01:01":
+    if task.algorithm == "MHCnuggetsI" and task.hla_allele in {
+        "HLA-F*01:01",
+        "HLA-G*01:01",
+    }:
         return "unsupported_allele_by_predictor"
     if task.algorithm == "NNalign" and not iedb_nnalign_supports(task.hla_allele):
         return "unsupported_allele_by_predictor"

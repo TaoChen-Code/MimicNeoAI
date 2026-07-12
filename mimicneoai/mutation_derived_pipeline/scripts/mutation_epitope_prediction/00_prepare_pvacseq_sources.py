@@ -15,6 +15,7 @@ values as stable identifiers.
 from __future__ import annotations
 
 import argparse
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -78,6 +79,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     pvactools_sources_dir = outdir / "01_pvactools_sources"
     input_vcf_dir.mkdir(parents=True, exist_ok=True)
     pvactools_sources_dir.mkdir(parents=True, exist_ok=True)
+    restore_sorted_vcf_for_resume(args.sample, input_vcf_dir, pvactools_sources_dir)
 
     bind_paths = [Path(p) for p in args.bind]
     for auto_bind in (input_vcf.parent, outdir, input_vcf_dir, pvactools_sources_dir):
@@ -137,6 +139,18 @@ def move_if_needed(source: Path, target: Path) -> Path:
         return target
     source.replace(target)
     return target
+
+
+def restore_sorted_vcf_for_resume(sample: str, input_vcf_dir: Path, sources_dir: Path) -> None:
+    """Make an organized sorted VCF visible to the reusable pVACtools step."""
+
+    filename = f"{sample}.shared.VEP.rm_mismatch.sorted.vcf.gz"
+    for suffix in ("", ".tbi"):
+        organized = input_vcf_dir / f"{filename}{suffix}"
+        source = sources_dir / f"{filename}{suffix}"
+        if source.exists() or not organized.exists():
+            continue
+        shutil.copy2(organized, source)
 
 
 if __name__ == "__main__":
