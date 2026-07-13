@@ -524,7 +524,7 @@ def format_mutation_position(epitope: dict[str, str], window_start: int) -> str:
 
 
 def deleted_amino_acid_count(amino_acid_change: str) -> int:
-    """Return the deleted residue count from pVACtools-style AA change strings."""
+    """Return the deleted residue count from an amino-acid change string."""
 
     if "/" not in amino_acid_change:
         return 1

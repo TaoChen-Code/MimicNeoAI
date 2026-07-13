@@ -88,7 +88,7 @@ def normalize_hla_allele(allele: str) -> str:
 
 
 def _strip_hla_prefix(allele: str) -> str:
-    """Strip ``HLA-`` for class-II pVACtools-style allele labels."""
+    """Strip the optional ``HLA-`` prefix from class-II allele labels."""
 
     return allele[4:] if allele.startswith("HLA-") else allele
 

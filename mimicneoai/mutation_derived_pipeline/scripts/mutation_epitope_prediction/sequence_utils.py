@@ -28,6 +28,17 @@ class EpitopeWindow:
     end: int
     wt_peptide: Optional[str] = None
     extended_peptide: Optional[str] = None
+    extended_start: Optional[int] = None
+    extended_end: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class ExtendedPeptide:
+    """A contiguous MT protein segment and its zero-based coordinates."""
+
+    sequence: str
+    start: int
+    end: int
 
 
 def read_pvacseq_protein_pairs(fasta_file: Path) -> list[ProteinPair]:
@@ -75,24 +86,17 @@ def generate_epitope_windows(
     extended_length: int,
     variant_type: str = "",
 ) -> list[EpitopeWindow]:
-    """Generate pVACseq-like altered epitope windows for one WT/MT protein pair.
+    """Generate mutation-covering epitope windows for one WT/MT protein pair.
 
-    pVACseq ultimately keeps rows where the MT epitope differs from the matched
-    WT epitope. This is slightly different from a pure coordinate-overlap rule,
-    especially for in-frame indels. We therefore slide across the MT
-    subsequence and retain windows that are changed relative to the same
-    coordinate in WT, or windows without a same-coordinate WT counterpart.
+    Retained windows must overlap the altered protein region and differ from
+    their matched WT sequence. In-frame deletions additionally require a
+    junction-aware WT comparison because MT and WT coordinates diverge.
     """
 
     mutation_start, mutation_end = locate_mutation_region(
         protein_pair.wt_sequence,
         protein_pair.mt_sequence,
-    )
-    extended_peptide = make_extended_peptide(
-        protein_pair.mt_sequence,
-        mutation_start,
-        mutation_end,
-        extended_length,
+        variant_type=variant_type,
     )
     windows: list[EpitopeWindow] = []
     mt_len = len(protein_pair.mt_sequence)
@@ -104,22 +108,39 @@ def generate_epitope_windows(
                 _generate_inframe_deletion_windows(
                     protein_pair=protein_pair,
                     length=length,
-                    extended_peptide=extended_peptide,
+                    extended_length=extended_length,
+                    mutation_start=mutation_start,
+                    mutation_end=mutation_end,
                 )
             )
             continue
         for start in range(0, mt_len - length + 1):
             end = start + length
+            if not window_covers_mutation(start, end, mutation_start, mutation_end):
+                continue
             mt_peptide = protein_pair.mt_sequence[start:end]
             if contains_invalid_amino_acid(mt_peptide):
                 continue
             wt_peptide = None
-            if protein_pair.wt_sequence is not None and len(protein_pair.wt_sequence) >= end:
+            if (
+                variant_type.upper() != "FS"
+                and protein_pair.wt_sequence is not None
+                and len(protein_pair.wt_sequence) >= end
+            ):
                 wt_peptide = protein_pair.wt_sequence[start:end]
                 if contains_invalid_amino_acid(wt_peptide):
                     continue
                 if wt_peptide == mt_peptide:
                     continue
+            extension = make_candidate_extended_peptide(
+                sequence=protein_pair.mt_sequence,
+                peptide_start=start,
+                peptide_end=end,
+                mutation_start=mutation_start,
+                mutation_end=mutation_end,
+                extended_length=extended_length,
+                variant_type=variant_type,
+            )
             windows.append(
                 EpitopeWindow(
                     event_id=protein_pair.event_id,
@@ -129,7 +150,9 @@ def generate_epitope_windows(
                     start=start,
                     end=end,
                     wt_peptide=wt_peptide,
-                    extended_peptide=extended_peptide,
+                    extended_peptide=extension.sequence,
+                    extended_start=extension.start,
+                    extended_end=extension.end,
                 )
             )
     return windows
@@ -139,9 +162,11 @@ def _generate_inframe_deletion_windows(
     *,
     protein_pair: ProteinPair,
     length: int,
-    extended_peptide: str,
+    extended_length: int,
+    mutation_start: int,
+    mutation_end: int,
 ) -> list[EpitopeWindow]:
-    """Generate in-frame deletion windows using pVACtools-style WT matching."""
+    """Generate in-frame deletion windows using junction-aware WT matching."""
 
     if protein_pair.wt_sequence is None:
         return []
@@ -155,6 +180,9 @@ def _generate_inframe_deletion_windows(
 
     for mt_position in sorted(mt_windows):
         start = mt_position - 1
+        end = start + length
+        if not window_covers_mutation(start, end, mutation_start, mutation_end):
+            continue
         mt_peptide = mt_windows[mt_position]
         if contains_invalid_amino_acid(mt_peptide):
             continue
@@ -194,6 +222,15 @@ def _generate_inframe_deletion_windows(
         if best_wt is None or contains_invalid_amino_acid(best_wt) or best_wt == mt_peptide:
             continue
 
+        extension = make_candidate_extended_peptide(
+            sequence=protein_pair.mt_sequence,
+            peptide_start=start,
+            peptide_end=end,
+            mutation_start=mutation_start,
+            mutation_end=mutation_end,
+            extended_length=extended_length,
+            variant_type="inframe_del",
+        )
         windows.append(
             EpitopeWindow(
                 event_id=protein_pair.event_id,
@@ -201,9 +238,11 @@ def _generate_inframe_deletion_windows(
                 peptide_type="MT",
                 length=length,
                 start=start,
-                end=start + length,
+                end=end,
                 wt_peptide=best_wt,
-                extended_peptide=extended_peptide,
+                extended_peptide=extension.sequence,
+                extended_start=extension.start,
+                extended_end=extension.end,
             )
         )
 
@@ -241,7 +280,11 @@ def _consecutive_matches_from_right(first: str, second: str) -> int:
     return count
 
 
-def locate_mutation_region(wt_sequence: Optional[str], mt_sequence: str) -> tuple[int, int]:
+def locate_mutation_region(
+    wt_sequence: Optional[str],
+    mt_sequence: str,
+    variant_type: str = "",
+) -> tuple[int, int]:
     """Infer the changed amino-acid interval between WT and MT sequences."""
 
     if wt_sequence is None:
@@ -251,6 +294,11 @@ def locate_mutation_region(wt_sequence: Optional[str], mt_sequence: str) -> tupl
     max_prefix = min(len(wt_sequence), len(mt_sequence))
     while prefix < max_prefix and wt_sequence[prefix] == mt_sequence[prefix]:
         prefix += 1
+
+    if variant_type.upper() == "FS":
+        # Every translated residue after the frameshift breakpoint belongs to
+        # the novel reading frame. Do not trim a coincidentally matching suffix.
+        return (prefix, len(mt_sequence))
 
     wt_suffix = len(wt_sequence)
     mt_suffix = len(mt_sequence)
@@ -266,25 +314,32 @@ def window_covers_mutation(window_start: int, window_end: int, mutation_start: i
 
     if mutation_start == mutation_end:
         # In-frame deletions are represented as a zero-length interval in the
-        # mutant sequence. Match pVACseq's junction-oriented behavior: keep
-        # windows crossing the deletion junction, but do not include windows
-        # ending exactly at the junction or starting immediately to its right.
-        return window_start < mutation_start - 1 and window_end > mutation_start
+        # mutant sequence. A valid peptide must include residues on both sides
+        # of the new deletion junction.
+        return window_start < mutation_start and window_end > mutation_start
     return window_start < mutation_end and window_end > mutation_start
 
 
 def contains_invalid_amino_acid(sequence: str) -> bool:
-    """Return True for amino acids pVACtools excludes from FASTA/peptides."""
+    """Return True when a sequence contains unsupported amino acids."""
 
     return any(character in sequence for character in ("*", "X", "?", "U"))
 
 
-def make_extended_peptide(sequence: str, mutation_start: int, mutation_end: int, extended_length: int) -> str:
-    """Create a mutation-centered extended peptide from a protein fragment."""
+def make_event_context_peptide(
+    sequence: str,
+    mutation_start: int,
+    mutation_end: int,
+    extended_length: int,
+    variant_type: str = "",
+) -> ExtendedPeptide:
+    """Create one mutation-centered context sequence for an event."""
 
     if extended_length <= 0 or len(sequence) <= extended_length:
-        return sequence
-    if mutation_end > mutation_start:
+        return ExtendedPeptide(sequence=sequence, start=0, end=len(sequence))
+    if variant_type.upper() == "FS":
+        center = mutation_start
+    elif mutation_end > mutation_start:
         center = (mutation_start + mutation_end - 1) // 2
     else:
         center = mutation_start
@@ -293,7 +348,93 @@ def make_extended_peptide(sequence: str, mutation_start: int, mutation_end: int,
     if end > len(sequence):
         end = len(sequence)
         start = max(0, end - extended_length)
-    return sequence[start:end]
+    return ExtendedPeptide(sequence=sequence[start:end], start=start, end=end)
+
+
+def make_candidate_extended_peptide(
+    *,
+    sequence: str,
+    peptide_start: int,
+    peptide_end: int,
+    mutation_start: int,
+    mutation_end: int,
+    extended_length: int,
+    variant_type: str = "",
+) -> ExtendedPeptide:
+    """Extend one MT epitope while retaining the complete epitope sequence."""
+
+    sequence_length = len(sequence)
+    if not (0 <= peptide_start < peptide_end <= sequence_length):
+        raise ValueError(
+            f"Invalid peptide coordinates {peptide_start}-{peptide_end} "
+            f"for MT sequence length {sequence_length}"
+        )
+
+    peptide = sequence[peptide_start:peptide_end]
+    if contains_invalid_amino_acid(peptide):
+        raise ValueError(f"MT epitope contains an invalid amino acid: {peptide}")
+
+    invalid_positions = [
+        index
+        for index, amino_acid in enumerate(sequence)
+        if amino_acid in {"*", "X", "?", "U"}
+    ]
+    valid_start = max(
+        (index + 1 for index in invalid_positions if index < peptide_start),
+        default=0,
+    )
+    valid_end = min(
+        (index for index in invalid_positions if index >= peptide_end),
+        default=sequence_length,
+    )
+
+    peptide_length = peptide_end - peptide_start
+    available_length = valid_end - valid_start
+    target_length = min(max(int(extended_length), peptide_length), available_length)
+    if available_length <= target_length:
+        extension = ExtendedPeptide(
+            sequence=sequence[valid_start:valid_end],
+            start=valid_start,
+            end=valid_end,
+        )
+    else:
+        latest_sequence_start = valid_end - target_length
+        earliest_start = max(valid_start, peptide_end - target_length)
+        latest_start = min(peptide_start, latest_sequence_start)
+        if earliest_start > latest_start:
+            raise ValueError(
+                f"Cannot place peptide {peptide_start}-{peptide_end} inside "
+                f"an extension of length {target_length}"
+            )
+
+        if variant_type.upper() == "FS":
+            anchor = (peptide_start + peptide_end - 1) // 2
+        elif mutation_end > mutation_start:
+            anchor = (mutation_start + mutation_end - 1) // 2
+        else:
+            anchor = mutation_start
+        ideal_start = anchor - target_length // 2
+        start = min(max(ideal_start, earliest_start), latest_start)
+        end = start + target_length
+        extension = ExtendedPeptide(sequence=sequence[start:end], start=start, end=end)
+
+    if peptide not in extension.sequence:
+        raise ValueError(
+            f"Extended peptide does not contain MT epitope: peptide={peptide} "
+            f"extension={extension.sequence}"
+        )
+    return extension
+
+
+def make_extended_peptide(sequence: str, mutation_start: int, mutation_end: int, extended_length: int) -> str:
+    """Backward-compatible string wrapper for event-level context generation."""
+
+    return make_event_context_peptide(
+        sequence,
+        mutation_start,
+        mutation_end,
+        extended_length,
+    ).sequence
 
 
 def _parse_pvacseq_record_id(record_id: str) -> tuple[str, str]:
@@ -369,7 +510,7 @@ def _get_wildtype_subsequence(
     wildtype_amino_acid_length: int,
     flanking_length: int,
 ) -> tuple[int, str]:
-    """Mirror pVACtools FastaGenerator.get_wildtype_subsequence."""
+    """Extract a mutation-centered WT subsequence with protein-end adjustment."""
 
     peptide_sequence_length = min(2 * flanking_length + wildtype_amino_acid_length, len(full_wildtype_sequence))
     if position < flanking_length:
@@ -385,7 +526,7 @@ def _get_wildtype_subsequence(
 
 
 def _strip_stop_suffix(amino_acid: str) -> str:
-    """Strip pVACtools stop codon suffix conventions from an AA change part."""
+    """Remove stop-codon suffix notation from an amino-acid change part."""
 
     if "*" in amino_acid:
         return amino_acid.split("*", 1)[0]

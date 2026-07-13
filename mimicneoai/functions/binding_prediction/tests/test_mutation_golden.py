@@ -36,6 +36,8 @@ from mimicneoai.mutation_derived_pipeline.scripts.mutation_epitope_prediction.se
     ProteinPair,
     generate_epitope_windows,
     locate_mutation_region,
+    make_candidate_extended_peptide,
+    window_covers_mutation,
 )
 
 
@@ -92,6 +94,115 @@ class MutationWindowGoldenTest(unittest.TestCase):
                     observed = [len(selected), min(w.start for w in selected), max(w.start for w in selected)]
                     self.assertEqual(observed, expected)
                     self.assertTrue(all(w.peptide != w.wt_peptide for w in selected))
+                    self.assertTrue(
+                        all(w.peptide in (w.extended_peptide or "") for w in selected)
+                    )
+                    mutation_start, mutation_end = event["mutation_region"]
+                    self.assertTrue(
+                        all(
+                            window_covers_mutation(
+                                window.start,
+                                window.end,
+                                mutation_start,
+                                mutation_end,
+                            )
+                            for window in selected
+                        )
+                    )
+
+    def test_inframe_indel_windows_use_altered_sequence_or_junction(self) -> None:
+        events = {
+            event["variant_type"]: event
+            for event in self.fixture["events"]
+            if event["variant_type"] in {"inframe_ins", "inframe_del"}
+        }
+
+        insertion = events["inframe_ins"]
+        insertion_pair = ProteinPair(
+            event_id=insertion["name"],
+            wt_sequence=insertion["wt_sequence"],
+            mt_sequence=insertion["mt_sequence"],
+        )
+        insertion_windows = generate_epitope_windows(
+            insertion_pair,
+            epitope_lengths=(8,),
+            extended_length=27,
+            variant_type="inframe_ins",
+        )
+        insertion_start, insertion_end = insertion["mutation_region"]
+        self.assertTrue(insertion_windows)
+        self.assertTrue(
+            all(
+                window.start < insertion_end and window.end > insertion_start
+                for window in insertion_windows
+            )
+        )
+        self.assertFalse(any(window.start >= insertion_end for window in insertion_windows))
+
+        deletion = events["inframe_del"]
+        deletion_pair = ProteinPair(
+            event_id=deletion["name"],
+            wt_sequence=deletion["wt_sequence"],
+            mt_sequence=deletion["mt_sequence"],
+        )
+        deletion_windows = generate_epitope_windows(
+            deletion_pair,
+            epitope_lengths=(8,),
+            extended_length=27,
+            variant_type="inframe_del",
+        )
+        junction, _ = deletion["mutation_region"]
+        self.assertTrue(deletion_windows)
+        self.assertTrue(
+            all(window.start < junction and window.end > junction for window in deletion_windows)
+        )
+        self.assertTrue(any(window.start == junction - 1 for window in deletion_windows))
+
+    def test_candidate_extensions_cover_missense_and_frameshift_epitopes(self) -> None:
+        missense = make_candidate_extended_peptide(
+            sequence="A" * 11 + "LPASQSALQSQQPPQ" + "C" * 20,
+            peptide_start=11,
+            peptide_end=26,
+            mutation_start=25,
+            mutation_end=26,
+            extended_length=27,
+            variant_type="missense",
+        )
+        self.assertEqual(len(missense.sequence), 27)
+        self.assertIn("LPASQSALQSQQPPQ", missense.sequence)
+
+        frameshift = make_candidate_extended_peptide(
+            sequence="ACDEFGHIK" + "Y" * 40,
+            peptide_start=30,
+            peptide_end=45,
+            mutation_start=9,
+            mutation_end=49,
+            extended_length=27,
+            variant_type="FS",
+        )
+        self.assertEqual(len(frameshift.sequence), 27)
+        self.assertIn(("ACDEFGHIK" + "Y" * 40)[30:45], frameshift.sequence)
+
+        terminated_sequence = "ACDEFGHIK" + "Y" * 12 + "*"
+        terminated = make_candidate_extended_peptide(
+            sequence=terminated_sequence,
+            peptide_start=9,
+            peptide_end=21,
+            mutation_start=9,
+            mutation_end=21,
+            extended_length=27,
+            variant_type="FS",
+        )
+        self.assertEqual(terminated.sequence, terminated_sequence[:-1])
+        self.assertNotIn("*", terminated.sequence)
+
+    def test_frameshift_region_keeps_coincidentally_matching_suffix(self) -> None:
+        wt_sequence = "ACDEFGHIKLMNPQRSTVWY"
+        mt_sequence = "ACDEFGHIKYYYYYYYYYYY"
+        self.assertEqual(
+            locate_mutation_region(wt_sequence, mt_sequence, variant_type="FS"),
+            (9, len(mt_sequence)),
+        )
 
     def test_frameshift_wt_is_not_scheduled_for_prediction(self) -> None:
         rows = [
@@ -174,6 +285,31 @@ class MutationWindowGoldenTest(unittest.TestCase):
                         event["mt_sequence"],
                     ]
                 )
+            converter_rows.append(
+                {
+                    "index": "UNSUPPORTED.1",
+                    "chromosome_name": "1",
+                    "start": "2001",
+                    "stop": "2001",
+                    "reference": "A",
+                    "variant": "T",
+                    "gene_name": "STARTLOST",
+                    "transcript_name": "ENST_UNSUPPORTED",
+                    "hgvsc": "c.1A>T",
+                    "hgvsp": "p.Met1?",
+                    "variant_type": "start_lost",
+                    "protein_position": "1",
+                    "amino_acid_change": "M/-",
+                }
+            )
+            fasta_lines.extend(
+                [
+                    ">WT.UNSUPPORTED.1",
+                    "MACDEFGHIKLMNPQRSTVWY",
+                    ">MT.UNSUPPORTED.1",
+                    "ACDEFGHIKLMNPQRSTVWY",
+                ]
+            )
             write_tsv(converter_path, converter_rows)
             fasta_path.write_text("\n".join(fasta_lines) + "\n")
 
@@ -201,8 +337,14 @@ class MutationWindowGoldenTest(unittest.TestCase):
                 0,
             )
             summary = json.loads((outdir / "summary.json").read_text())
+            self.assertEqual(summary["converter_annotation_rows"], 6)
             self.assertEqual(summary["variant_annotation_rows"], 5)
+            self.assertEqual(summary["unsupported_variant_annotation_rows"], 1)
+            self.assertEqual(summary["unsupported_variant_type_counts"], {"start_lost": 1})
             self.assertEqual(summary["fasta_pair_status"], {"fasta_pair_found": 5})
+            self.assertEqual(summary["extension_mapping_failures"], 0)
+            self.assertEqual(summary["fs_wt_epitope_nonempty_rows"], 0)
+            self.assertTrue((outdir / "unsupported_variant_annotations.tsv").exists())
 
             with (outdir / "epitope_windows.tsv").open(newline="") as handle:
                 windows = list(csv.DictReader(handle, delimiter="\t"))
@@ -221,23 +363,15 @@ class MutationWindowGoldenTest(unittest.TestCase):
                 for row in windows
                 if row["variant_type"] == "FS"
             }
-            fs_wt_peptides = {
-                row["wt_epitope_seq"]
-                for row in windows
-                if row["variant_type"] == "FS" and row["wt_epitope_seq"]
-            }
-            non_fs_peptides = {
-                peptide
-                for row in windows
-                if row["variant_type"] != "FS"
-                for peptide in (row["mt_epitope_seq"], row["wt_epitope_seq"])
-                if peptide
-            }
-            fs_only_wt_peptides = fs_wt_peptides - fs_mt_peptides - non_fs_peptides
             scheduled = {row["peptide"]: row["source_types"] for row in prediction_peptides}
             self.assertTrue(fs_mt_peptides.issubset(scheduled))
-            self.assertTrue(fs_only_wt_peptides)
-            self.assertTrue(fs_only_wt_peptides.isdisjoint(scheduled))
+            self.assertFalse(
+                any(
+                    row["wt_epitope_seq"]
+                    for row in windows
+                    if row["variant_type"] == "FS"
+                )
+            )
 
             with (outdir / "binding_tasks.tsv").open(newline="") as handle:
                 tasks = list(csv.DictReader(handle, delimiter="\t"))

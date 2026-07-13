@@ -5,7 +5,7 @@ construction stages. It should produce:
 
 - stable variant/transcript annotation table;
 - mutation-covering MT/WT epitope windows;
-- extended peptide table;
+- event-level MT context and candidate-specific extended peptides;
 - de-duplicated peptide-HLA-algorithm prediction task table.
 """
 
@@ -50,6 +50,10 @@ DEFAULT_ALGORITHMS = (
     "NetMHCIIpanEL",
 )
 
+# Peptide generation is restricted to coding changes with an explicit mutant
+# protein sequence. Other consequences are excluded from downstream tasks.
+SUPPORTED_VARIANT_TYPES = frozenset({"missense", "FS", "inframe_ins", "inframe_del"})
+
 try:
     from mimicneoai.mutation_derived_pipeline.scripts.mutation_epitope_prediction.hla_parser import (
         parse_hlahd_result,
@@ -58,7 +62,9 @@ try:
         build_protein_pair_from_converter_row,
         generate_epitope_windows,
         locate_mutation_region,
+        make_event_context_peptide,
         read_pvacseq_protein_pairs,
+        window_covers_mutation,
     )
     from mimicneoai.mutation_derived_pipeline.scripts.mutation_epitope_prediction.task_utils import (
         build_binding_tasks,
@@ -69,7 +75,9 @@ except ImportError:  # pragma: no cover - supports direct script execution befor
         build_protein_pair_from_converter_row,
         generate_epitope_windows,
         locate_mutation_region,
+        make_event_context_peptide,
         read_pvacseq_protein_pairs,
+        window_covers_mutation,
     )
     from task_utils import build_binding_tasks  # type: ignore
 
@@ -122,9 +130,28 @@ def main(argv: Optional[list[str]] = None) -> int:
     algorithms = parse_str_list(args.algorithms)
     mhc_i_algorithms, mhc_ii_algorithms, unknown_algorithms = split_algorithms_by_mhc_class(algorithms)
 
-    annotation_rows, index_to_event = build_variant_annotation(Path(args.converter_tsv))
+    converter_annotation_rows, _ = build_variant_annotation(Path(args.converter_tsv))
+    annotation_rows = [
+        row
+        for row in converter_annotation_rows
+        if str(row.get("variant_type", "")) in SUPPORTED_VARIANT_TYPES
+    ]
+    unsupported_annotation_rows = [
+        row
+        for row in converter_annotation_rows
+        if str(row.get("variant_type", "")) not in SUPPORTED_VARIANT_TYPES
+    ]
+    index_to_event = {
+        str(row["pvacseq_index"]): str(row["event_id"])
+        for row in annotation_rows
+    }
     annotation_by_index = {str(row["pvacseq_index"]): row for row in annotation_rows}
     write_tsv(outdir / "variant_annotation.tsv", annotation_rows)
+    if unsupported_annotation_rows:
+        write_tsv(
+            outdir / "unsupported_variant_annotations.tsv",
+            unsupported_annotation_rows,
+        )
     write_tsv(
         outdir / "index_event_map.tsv",
         [{"pvacseq_index": k, "event_id": v} for k, v in sorted(index_to_event.items())],
@@ -149,32 +176,46 @@ def main(argv: Optional[list[str]] = None) -> int:
         else:
             pair_status["fasta_pair_found"] += 1
         annotation = annotation_by_index[pvacseq_index]
-        mutation_start, mutation_end = locate_mutation_region(pair.wt_sequence, pair.mt_sequence)
+        variant_type = str(annotation.get("variant_type", ""))
+        mutation_start, mutation_end = locate_mutation_region(
+            pair.wt_sequence,
+            pair.mt_sequence,
+            variant_type=variant_type,
+        )
         all_lengths = tuple(sorted(set(mhc_i_lengths + mhc_ii_lengths)))
         windows = generate_epitope_windows(
             pair,
             all_lengths,
             args.extended_length,
-            variant_type=str(annotation.get("variant_type", "")),
+            variant_type=variant_type,
         )
         if not windows:
             pair_status["no_window"] += 1
             continue
 
-        extended_peptide = windows[0].extended_peptide or ""
+        event_context = make_event_context_peptide(
+            pair.mt_sequence,
+            mutation_start,
+            mutation_end,
+            args.extended_length,
+            variant_type=variant_type,
+        )
         extended_rows.append(
             {
                 "event_id": event_id,
                 "pvacseq_index": pvacseq_index,
                 "gene_name": annotation.get("gene_name", ""),
                 "transcript_name": annotation.get("transcript_name", ""),
-                "variant_type": annotation.get("variant_type", ""),
+                "variant_type": variant_type,
                 "amino_acid_change": annotation.get("amino_acid_change", ""),
                 "protein_position": annotation.get("protein_position", ""),
                 "mutation_start_0based": mutation_start,
                 "mutation_end_0based": mutation_end,
-                "extended_mt_epitope_seq": extended_peptide,
-                "extended_length": len(extended_peptide),
+                "sequence_role": "event_context",
+                "event_context_mt_sequence": event_context.sequence,
+                "event_context_length": len(event_context.sequence),
+                "event_context_start_0based": event_context.start,
+                "event_context_end_0based": event_context.end,
                 "mt_protein_fragment_length": len(pair.mt_sequence),
                 "wt_protein_fragment_length": len(pair.wt_sequence) if pair.wt_sequence else "",
             }
@@ -188,6 +229,22 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     write_tsv(outdir / "extended_peptides.tsv", extended_rows)
     write_tsv(outdir / "epitope_windows.tsv", epitope_rows)
+
+    extension_mapping_failures = sum(
+        not extension_contains_window(row)
+        for row in epitope_rows
+    )
+    fs_wt_epitope_nonempty_rows = sum(
+        str(row.get("variant_type", "")).upper() == "FS"
+        and bool(str(row.get("wt_epitope_seq", "")))
+        for row in epitope_rows
+    )
+    if extension_mapping_failures or fs_wt_epitope_nonempty_rows:
+        raise RuntimeError(
+            "Epitope construction invariant failed: "
+            f"extension_mapping_failures={extension_mapping_failures}, "
+            f"fs_wt_epitope_nonempty_rows={fs_wt_epitope_nonempty_rows}"
+        )
 
     hlas = parse_hlahd_result(Path(args.hla_file))
     prediction_peptide_rows = build_prediction_peptide_rows(epitope_rows)
@@ -222,12 +279,20 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     summary: dict[str, object] = {
         "sample": args.sample,
+        "converter_annotation_rows": len(converter_annotation_rows),
         "variant_annotation_rows": len(annotation_rows),
+        "supported_variant_types": sorted(SUPPORTED_VARIANT_TYPES),
+        "unsupported_variant_annotation_rows": len(unsupported_annotation_rows),
+        "unsupported_variant_type_counts": dict(
+            Counter(str(row.get("variant_type", "")) for row in unsupported_annotation_rows)
+        ),
         "protein_pairs": len(protein_pairs),
         "fasta_pair_status": dict(pair_status),
         "missing_fasta_pair_count": len(missing_annotation),
         "epitope_window_rows": len(epitope_rows),
         "extended_peptide_rows": len(extended_rows),
+        "extension_mapping_failures": extension_mapping_failures,
+        "fs_wt_epitope_nonempty_rows": fs_wt_epitope_nonempty_rows,
         "prediction_peptide_rows": len(prediction_peptide_rows),
         "unique_mhc_i_prediction_peptides": len(mhc_i_peptides),
         "unique_mhc_ii_prediction_peptides": len(mhc_ii_peptides),
@@ -325,6 +390,19 @@ def make_event_id(row: dict[str, str]) -> str:
 def epitope_row(event_id: str, pvacseq_index: str, annotation: dict[str, object], window, mhc_class: str, mutation_start: int, mutation_end: int) -> dict[str, object]:
     """Convert an EpitopeWindow object into a TSV row."""
 
+    covers_mutation = window_covers_mutation(
+        window.start,
+        window.end,
+        mutation_start,
+        mutation_end,
+    )
+    if not covers_mutation:
+        raise ValueError(
+            f"Epitope window does not cover the altered region: "
+            f"event={event_id} peptide={window.peptide} "
+            f"window={window.start}-{window.end} mutation={mutation_start}-{mutation_end}"
+        )
+
     return {
         "event_id": event_id,
         "pvacseq_index": pvacseq_index,
@@ -341,10 +419,37 @@ def epitope_row(event_id: str, pvacseq_index: str, annotation: dict[str, object]
         "window_end_0based": window.end,
         "mutation_start_0based": mutation_start,
         "mutation_end_0based": mutation_end,
-        "covers_mutation": "YES",
+        "covers_mutation": "YES" if covers_mutation else "NO",
         "extended_mt_epitope_seq": window.extended_peptide or "",
         "extended_length": len(window.extended_peptide or ""),
+        "extended_start_0based": window.extended_start if window.extended_start is not None else "",
+        "extended_end_0based": window.extended_end if window.extended_end is not None else "",
     }
+
+
+def extension_contains_window(row: dict[str, object]) -> bool:
+    """Validate candidate extension containment using coordinates and sequence."""
+
+    try:
+        window_start = int(row["window_start_0based"])
+        window_end = int(row["window_end_0based"])
+        extended_start = int(row["extended_start_0based"])
+        extended_end = int(row["extended_end_0based"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+    peptide = str(row.get("mt_epitope_seq", ""))
+    extension = str(row.get("extended_mt_epitope_seq", ""))
+    if not peptide or not extension:
+        return False
+    if extended_start > window_start or extended_end < window_end:
+        return False
+    if extended_end - extended_start != len(extension):
+        return False
+
+    relative_start = window_start - extended_start
+    relative_end = relative_start + len(peptide)
+    return extension[relative_start:relative_end] == peptide
 
 
 def build_prediction_peptide_rows(epitope_rows: list[dict[str, object]]) -> list[dict[str, object]]:
