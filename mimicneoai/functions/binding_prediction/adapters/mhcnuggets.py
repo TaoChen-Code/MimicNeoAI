@@ -24,7 +24,7 @@ CLASS_BY_ALGORITHM = {
 
 
 class MhcnuggetsAdapter(PredictorAdapter):
-    """Run MHCnuggets using binding-affinity models."""
+    """Run MHCnuggets with the same model-selection behavior as pVACtools."""
 
     supported_algorithms = frozenset(CLASS_BY_ALGORITHM)
     default_chunk_size = 3000
@@ -88,6 +88,7 @@ class MhcnuggetsAdapter(PredictorAdapter):
                     missing_peptides.append(peptide)
                     continue
                 rank = rank_by_peptide.get(normalized_peptide, "")
+                percentile = human_proteome_percentile(rank)
                 predictions.append(
                     BindingPrediction(
                         peptide=peptide,
@@ -96,9 +97,9 @@ class MhcnuggetsAdapter(PredictorAdapter):
                         mhc_class=job.mhc_class,
                         peptide_length=job.peptide_length,
                         ic50=row.get("ic50", ""),
-                        ic50_type="MHCnuggets BA IC50(nM)",
-                        percentile=rank,
-                        percentile_type="MHCnuggets human_proteome_rank" if rank else "",
+                        ic50_type="MHCnuggets mapped IC50(nM)",
+                        percentile=percentile,
+                        percentile_type="MHCnuggets human_proteome_percentile" if percentile else "",
                         raw_rank=rank,
                         raw_rank_type="MHCnuggets human_proteome_rank" if rank else "",
                         status="partial_ok" if rank_error else "ok",
@@ -142,7 +143,6 @@ def build_mhcnuggets_command(job: PredictionJob, rank_output: bool, config) -> l
         format_mhcnuggets_allele(job.hla_allele),
         "-o",
         str(job.raw_path),
-        "-M",
     ]
     if rank_output:
         cmd.extend(["-r", "True"])
@@ -175,6 +175,14 @@ def read_mhcnuggets_rank_output(output_path: Path) -> dict[str, str]:
             if peptide:
                 result[peptide] = row.get("human_proteome_rank", "")
     return result
+
+
+def human_proteome_percentile(rank: str) -> str:
+    """Convert MHCnuggets' 0-1 human-proteome rank to pVACtools' 0-100 scale."""
+
+    if str(rank).strip() == "":
+        return ""
+    return f"{float(rank) * 100:.12g}"
 
 
 def mhcnuggets_rank_path(output_path: Path) -> Path:
