@@ -64,6 +64,18 @@ class NonmutationScaleGateTest(unittest.TestCase):
                 self.assertTrue(summary["task_table_materialized"])
                 self.assertEqual(summary["binding_task_rows"], summary["estimated_binding_task_rows"])
 
+    def test_existing_intermediates_are_reused_on_resume(self) -> None:
+        outdir = self.root / "resume"
+        first = self.run_tasks_only(outdir, max_task_rows=1_000_000)
+        second = self.run_tasks_only(outdir, max_task_rows=1_000_000)
+
+        self.assertFalse(first["epitope_windows_reused"])
+        self.assertFalse(first["binding_tasks_reused"])
+        self.assertTrue(second["epitope_windows_reused"])
+        self.assertTrue(second["binding_tasks_reused"])
+        self.assertEqual(first["epitope_window_rows"], second["epitope_window_rows"])
+        self.assertEqual(first["binding_task_rows"], second["binding_task_rows"])
+
 
 if __name__ == "__main__":
     unittest.main()
