@@ -88,6 +88,18 @@ class PipelineBackendContractTest(unittest.TestCase):
         ):
             mutation_derived._start_one_sample("TUMOR,NORMAL", config, paths, tool)
 
+    def test_mutation_runtime_tmp_directory_is_created(self) -> None:
+        tmp_dir = self.root / "nested" / "mutation-tmp"
+        config = {"path": {"tmp_dir": str(tmp_dir)}}
+
+        mutation_derived._prepare_runtime_directories(config)
+
+        self.assertTrue(tmp_dir.is_dir())
+        self.assertEqual(config["path"]["tmp_dir"], str(tmp_dir.resolve()))
+
+        with self.assertRaisesRegex(ValueError, "tmp_dir must be set"):
+            mutation_derived._prepare_runtime_directories({"path": {"tmp_dir": ""}})
+
     def test_cryptic_default_and_native_dispatch(self) -> None:
         config = self.cryptic_config()
         paths = self.cryptic_paths()
