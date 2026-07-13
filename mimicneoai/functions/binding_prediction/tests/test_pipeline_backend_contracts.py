@@ -34,6 +34,10 @@ class PipelineBackendContractTest(unittest.TestCase):
                 self.assertIn("binding_prediction_algorithms", config["others"])
         mutation = yaml.safe_load((CONFIG_DIR / "mutation_derived_configure.yaml").read_text())
         self.assertNotIn("binding_prediction_max_task_rows", mutation["others"])
+        self.assertEqual(
+            mutation["others"]["binding_prediction_step_name"],
+            "07.binding_prediction_mimicneoai",
+        )
         for filename in ("cryptic_configure.yaml", "microbial_configure.yaml"):
             config = yaml.safe_load((CONFIG_DIR / filename).read_text())
             self.assertEqual(config["others"]["binding_prediction_max_task_rows"], 5_000_000)
@@ -65,6 +69,7 @@ class PipelineBackendContractTest(unittest.TestCase):
         config["others"].update(
             {
                 "binding_prediction_backend": "mimicneoai",
+                "binding_prediction_step_name": "07.binding_prediction_mimicneoai_test",
                 "binding_prediction_workers": 3,
             }
         )
@@ -73,8 +78,15 @@ class PipelineBackendContractTest(unittest.TestCase):
             mutation_derived._start_one_sample("TUMOR,NORMAL", config, paths, tool)
         command = tool.exec_cmd.call_args.args[0]
         self.assertIn("run_mimicneoai_binding_prediction.py", command)
-        self.assertIn("07.binding_prediction_mimicneoai", command)
+        self.assertIn("07.binding_prediction_mimicneoai_test", command)
         self.assertIn("--workers 3", command)
+
+        config["others"]["binding_prediction_step_name"] = "../invalid"
+        with (
+            patch.object(mutation_derived, "_variants_calling_and_annotation"),
+            self.assertRaisesRegex(ValueError, "single directory name"),
+        ):
+            mutation_derived._start_one_sample("TUMOR,NORMAL", config, paths, tool)
 
     def test_cryptic_default_and_native_dispatch(self) -> None:
         config = self.cryptic_config()

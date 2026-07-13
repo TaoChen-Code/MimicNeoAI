@@ -51,6 +51,7 @@ others:
 
   # Binding prediction backend. Default keeps the legacy pVACseq workflow.
   binding_prediction_backend: "pvactools"  # pvactools | mimicneoai
+  binding_prediction_step_name: "07.binding_prediction_mimicneoai"
   binding_prediction_algorithms: "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL"
   binding_prediction_workers: 8
 

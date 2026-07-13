@@ -48,6 +48,7 @@ STEP_NAME = {
     "annotation": "05.annotation",
     "hla": "06.hlatyping",
     "pvacseq": "07.binding_prediction",
+    "mimicneoai_binding": "07.binding_prediction_mimicneoai",
 }
 
 # -------- Worker helpers --------
@@ -151,7 +152,18 @@ def _start_one_sample(
                 others = configure.get("others", {})
                 input_vcf = f"{output_vep}/{tumor_sample}.shared.VEP.rm_mismatch.vcf"
                 hla_file = f"{output_hla}/{tumor_sample}/result/{tumor_sample}_final.result.txt"
-                outdir = f"{output_dir}/{tumor_sample}/07.binding_prediction_mimicneoai"
+                binding_step_value = others.get("binding_prediction_step_name")
+                if binding_step_value is None:
+                    binding_step_value = configure.get("step_name", {}).get(
+                        "mimicneoai_binding",
+                        STEP_NAME["mimicneoai_binding"],
+                    )
+                binding_step = str(binding_step_value).strip()
+                if not binding_step or Path(binding_step).name != binding_step:
+                    raise ValueError(
+                        "binding_prediction_step_name must be a single directory name"
+                    )
+                outdir = f"{output_dir}/{tumor_sample}/{binding_step}"
                 cmd = [
                     sys.executable,
                     str(MIMICNEOAI_BINDING_SCRIPT),
