@@ -91,6 +91,31 @@ def read_gtf_tx2gene(gtf):
     return tx2g
 
 
+def gtf_attr_value(attr, key, default="."):
+    m = re.search(rf'{re.escape(key)} "([^"]+)"', attr)
+    return m.group(1) if m else default
+
+
+def iter_gtf_rows(gtf, feature=None):
+    with open(gtf, "r") as fh:
+        for line in fh:
+            if line.startswith("#"):
+                continue
+            row = line.rstrip("\n").split("\t")
+            if len(row) < 9:
+                continue
+            if feature is not None and row[2] != feature:
+                continue
+            yield row, line.rstrip("\n")
+
+
+def write_sorted_bed6(records, out_bed):
+    records = sorted(records, key=lambda x: (x[0], int(x[1]), int(x[2])))
+    with open(out_bed, "w") as fo:
+        for row in records:
+            fo.write("\t".join(map(str, row)) + "\n")
+
+
 def write_fa_with_ann(in_fa, ann_map, out_fa):
     with open(in_fa, "r") as fi, open(out_fa, "w") as fo:
         for line in fi:
@@ -293,36 +318,47 @@ def step_stringtie_gffcompare(sorted_bam, ref_gtf, threads, out_dir, strandednes
 
 def step_pick_novel(comp_annot, out_dir, class_codes="u|i|x"):
     log(f">> [1_2] Select novel ({class_codes}) and export BED")
+    ensure_dir(out_dir)
     novel_ids = str(Path(out_dir) / "novel.tx.ids")
     novel_gtf = str(Path(out_dir) / "novel_lncRNA.gtf")
     novel_bed = str(Path(out_dir) / "novel_lncRNA.transcripts.bed")
     if not exists(novel_ids):
-        awk = rf'''$0!~/^#/ && $3=="transcript" && $0~/class_code "({class_codes})"/ {{ if (match($9,/transcript_id "([^"]+)"/,m)) print m[1] }}'''
-        run(["bash", "-lc", f"awk -F'\t' '{awk}' {comp_annot} | sort -u > {novel_ids}"])
+        keep_codes = set(class_codes.split("|"))
+        ids = {
+            gtf_attr_value(row[8], "transcript_id")
+            for row, _ in iter_gtf_rows(comp_annot, feature="transcript")
+            if gtf_attr_value(row[8], "class_code") in keep_codes
+            and gtf_attr_value(row[8], "transcript_id") != "."
+        }
+        with open(novel_ids, "w") as fo:
+            for tid in sorted(ids):
+                fo.write(tid + "\n")
     n_ids = sum(1 for _ in open(novel_ids)) if exists(novel_ids) else 0
     log(f"   novel.ids: {n_ids}")
     qc_add("Step [1_2] novel.tx.ids", {"novel_transcripts": n_ids}, novel_ids)
 
     if exists(novel_ids) and not exists(novel_gtf):
-        run(["bash", "-lc",
-             f"awk -F'\t' 'NR==FNR{{keep[$1]=1;next}} $0!~/^#/ && $3==\"transcript\" {{ if (match($9,/transcript_id \"([^\"]+)\"/,m) && keep[m[1]]) print }}' {novel_ids} {comp_annot} > {novel_gtf}"])
+        keep = {line.strip() for line in open(novel_ids) if line.strip()}
+        with open(novel_gtf, "w") as fo:
+            for row, raw in iter_gtf_rows(comp_annot, feature="transcript"):
+                if gtf_attr_value(row[8], "transcript_id") in keep:
+                    fo.write(raw + "\n")
     if exists(novel_gtf):
         nt, nx = qc_gtf_counts(novel_gtf)
         log(f"   novel.gtf: transcripts={nt}, exons={nx}")
         qc_add("Step [1_2] novel_lncRNA.gtf", {"transcripts": nt, "exons": nx}, novel_gtf)
 
     if exists(novel_gtf) and not exists(novel_bed):
-        awk = r'''BEGIN{OFS="\t"}
-          $3=="transcript"{
-            tid=cc=rg=cr=".";
-            if(match($9,/transcript_id "([^"]+)"/,m)) tid=m[1];
-            if(match($9,/class_code "([^"]+)"/,m))    cc=m[1];
-            if(match($9,/ref_gene_id "([^"]+)"/,m))   rg=m[1];
-            if(match($9,/cmp_ref "([^"]+)"/,m))       cr=m[1];
-            name = tid"|"cc"|"rg"|"cr;
-            print $1, $4-1, $5, name, ".", $7
-          }'''
-        run(["bash", "-lc", f"awk -F'\t' '{awk}' {novel_gtf} | sort -k1,1 -k2,2n -k3,3n > {novel_bed}"])
+        records = []
+        for row, _ in iter_gtf_rows(novel_gtf, feature="transcript"):
+            attr = row[8]
+            tid = gtf_attr_value(attr, "transcript_id")
+            cc = gtf_attr_value(attr, "class_code")
+            rg = gtf_attr_value(attr, "ref_gene_id")
+            cr = gtf_attr_value(attr, "cmp_ref")
+            name = f"{tid}|{cc}|{rg}|{cr}"
+            records.append((row[0], int(row[3]) - 1, row[4], name, ".", row[6]))
+        write_sorted_bed6(records, novel_bed)
     if exists(novel_bed):
         lines = qc_bed_lines(novel_bed)
         log(f"   novel.bed lines: {lines}")
@@ -548,13 +584,11 @@ def step_gtf_to_bed_transcripts(gtf, out_bed):
     """Export transcript records from GTF to transcript-level BED (0-based, half-open)."""
     log(">> [4k] Generate lncRNA transcript BED from ref_lnc_gtf")
     if not exists(out_bed):
-        awk = r'''BEGIN{OFS="\t"}
-            $0!~/^#/ && $3=="transcript"{
-              strand=$7; start=$4-1; end=$5;
-              tid="."; if(match($9,/transcript_id "([^"]+)"/,m)) tid=m[1];
-              print $1, start, end, tid, ".", strand
-            }'''
-        run(["bash", "-lc", f"awk -F'\t' '{awk}' {gtf} | sort -k1,1 -k2,2n -k3,3n > {out_bed}"])
+        records = []
+        for row, _ in iter_gtf_rows(gtf, feature="transcript"):
+            tid = gtf_attr_value(row[8], "transcript_id")
+            records.append((row[0], int(row[3]) - 1, row[4], tid, ".", row[6]))
+        write_sorted_bed6(records, out_bed)
     lines = qc_bed_lines(out_bed) if Path(out_bed).exists() else 0
     log(f"   lncRNA.transcripts.bed lines: {lines}")
     qc_add("Step [4k] lncRNA.transcripts.bed", {"lines": lines}, out_bed)
