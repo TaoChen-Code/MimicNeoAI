@@ -223,7 +223,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         len(hla.mhc_ii),
         len(mhc_ii_algorithms),
     )
+    task_materialization_skipped_by_scale = (
+        estimated_task_rows > args.max_task_rows
+        and not args.force_large_samples
+        and not args.windows_only
+    )
     if args.windows_only:
+        task_summary = {"binding_task_rows": 0, "estimated_binding_task_rows": estimated_task_rows}
+        binding_tasks_reused = False
+    elif task_materialization_skipped_by_scale:
         task_summary = {"binding_task_rows": 0, "estimated_binding_task_rows": estimated_task_rows}
         binding_tasks_reused = False
     elif task_path.exists() and task_path.stat().st_size > 0:
@@ -243,22 +251,38 @@ def main(argv: Optional[list[str]] = None) -> int:
         task_summary["estimated_binding_task_rows"] = estimated_task_rows
         binding_tasks_reused = False
 
+    task_manifest_path = task_dir / "binding_tasks.manifest.json"
+    task_manifest = {
+        "sample": args.sample,
+        "estimated_binding_task_rows": estimated_task_rows,
+        "binding_task_rows": int(task_summary["binding_task_rows"]),
+        "max_task_rows": args.max_task_rows,
+        "force_large_samples": args.force_large_samples,
+        "task_table_materialized": not args.windows_only and not task_materialization_skipped_by_scale,
+        "task_materialization_skipped_by_scale": task_materialization_skipped_by_scale,
+        "binding_tasks_path": str(task_path),
+        "preexisting_binding_tasks_ignored": task_materialization_skipped_by_scale and task_path.exists(),
+        "unique_mhc_i_peptides": len(mhc_i_peptides),
+        "unique_mhc_ii_peptides": len(mhc_ii_peptides),
+        "mhc_i_alleles": len(hla.mhc_i),
+        "mhc_ii_alleles": len(hla.mhc_ii),
+        "mhc_i_algorithms": mhc_i_algorithms,
+        "mhc_ii_algorithms": mhc_ii_algorithms,
+    }
+    with task_manifest_path.open("w") as handle:
+        json.dump(task_manifest, handle, indent=2, ensure_ascii=False)
+
     prediction_path = pred_dir / "binding_predictions.long.tsv"
     prediction_paths: list[Path] = []
     binding_task_rows = int(task_summary["binding_task_rows"])
-    prediction_skipped_by_scale = (
-        binding_task_rows > args.max_task_rows
-        and not args.force_large_samples
-        and not args.skip_prediction
-        and not args.windows_only
-    )
+    prediction_skipped_by_scale = task_materialization_skipped_by_scale
     skip_reason = ""
     if args.windows_only:
         merged_out = combined_dir / f"{args.sample}.merged.all_epitopes.tsv"
     elif prediction_skipped_by_scale:
         merged_out = combined_dir / f"{args.sample}.merged.all_epitopes.tsv"
         skip_reason = (
-            f"binding_task_rows ({binding_task_rows}) exceeds max_task_rows "
+            f"estimated_binding_task_rows ({estimated_task_rows}) exceeds max_task_rows "
             f"({args.max_task_rows}); set --force-large-samples to run prediction."
         )
         print(f"[nonmutation_binding] skip prediction: {skip_reason}", flush=True)
@@ -327,6 +351,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         "unknown_algorithms": unknown_algorithms,
         "binding_task_rows": binding_task_rows,
         "estimated_binding_task_rows": task_summary["estimated_binding_task_rows"],
+        "binding_tasks_manifest": str(task_manifest_path),
+        "task_table_materialized": task_manifest["task_table_materialized"],
+        "task_materialization_skipped_by_scale": task_materialization_skipped_by_scale,
         "algorithm_batches": [list(batch) for batch in build_algorithm_batches(mhc_i_algorithms + mhc_ii_algorithms)],
         "max_runner_task_rows": args.max_runner_task_rows,
         "max_task_rows": args.max_task_rows,
