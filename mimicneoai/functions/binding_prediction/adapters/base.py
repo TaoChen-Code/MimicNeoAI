@@ -12,6 +12,7 @@ from typing import Iterable, Optional, Sequence
 
 from mimicneoai.functions.binding_prediction.schema import (
     BindingPrediction,
+    PREDICTION_FIELDS,
     PredictionJob,
     write_prediction_rows,
 )
@@ -57,6 +58,42 @@ class PredictorAdapter:
 
     def chunk_size(self) -> int:
         return self.config.chunk_size or self.default_chunk_size
+
+
+def reusable_normalized_output(job: PredictionJob, resume: bool) -> bool:
+    """Return whether a normalized chunk exactly matches the current job.
+
+    Chunk paths are stable across reruns. File existence alone is therefore not
+    sufficient when task inputs change inside an existing output directory.
+    """
+
+    path = job.normalized_path
+    if not resume or not path.exists() or path.stat().st_size == 0:
+        return False
+    expected = {
+        (peptide, algorithm, job.hla_allele, job.mhc_class, str(job.peptide_length))
+        for peptide in job.peptides
+        for algorithm in (job.output_algorithms or (job.algorithm,))
+    }
+    observed = set()
+    try:
+        with path.open(newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            if not set(PREDICTION_FIELDS).issubset(reader.fieldnames or []):
+                return False
+            for row in reader:
+                observed.add(
+                    (
+                        (row.get("peptide") or "").strip(),
+                        (row.get("algorithm") or "").strip(),
+                        (row.get("hla_allele") or "").strip(),
+                        (row.get("mhc_class") or "").strip(),
+                        (row.get("peptide_length") or "").strip(),
+                    )
+                )
+    except (OSError, csv.Error):
+        return False
+    return observed == expected
 
 
 def predictor_env(config: Optional[AdapterConfig] = None, extra: Optional[dict[str, str]] = None) -> dict[str, str]:

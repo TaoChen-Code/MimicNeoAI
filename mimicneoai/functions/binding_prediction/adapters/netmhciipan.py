@@ -7,6 +7,7 @@ from mimicneoai.functions.binding_prediction.schema import BindingPrediction, Pr
 from .base import (
     PredictorAdapter,
     ensure_job_dirs,
+    reusable_normalized_output,
     parse_netmhc_stdout_table,
     run_logged_command,
     write_error_predictions,
@@ -22,7 +23,7 @@ class NetMHCIIpanAdapter(PredictorAdapter):
     default_chunk_size = 30000
 
     def run_job(self, job: PredictionJob):
-        if self.config.resume and job.normalized_path.exists() and job.normalized_path.stat().st_size > 0:
+        if reusable_normalized_output(job, self.config.resume):
             return job.normalized_path
         ensure_job_dirs(job)
         try:

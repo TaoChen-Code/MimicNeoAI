@@ -15,6 +15,7 @@ values as stable identifiers.
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -79,6 +80,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     pvactools_sources_dir = outdir / "01_pvactools_sources"
     input_vcf_dir.mkdir(parents=True, exist_ok=True)
     pvactools_sources_dir.mkdir(parents=True, exist_ok=True)
+    source_manifest_path = pvactools_sources_dir / f"{args.sample}.source_inputs.manifest.json"
+    source_signature = {
+        "sample": args.sample,
+        "input_vcf": file_identity(input_vcf),
+        "flank_length": args.flank_length,
+        "mutant_only": args.mutant_only,
+        "pass_only": pass_only,
+        "pvactools_sif": optional_file_identity(Path(args.pvactools_sif)),
+    }
+    validate_source_manifest(source_manifest_path, source_signature)
     restore_sorted_vcf_for_resume(args.sample, input_vcf_dir, pvactools_sources_dir)
 
     bind_paths = [Path(p) for p in args.bind]
@@ -117,6 +128,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # command needs the sorted VCF in its working directory only while running.
     sorted_vcf_gz = move_if_needed(fasta_outputs.sorted_vcf_gz, input_vcf_dir / fasta_outputs.sorted_vcf_gz.name)
     sorted_vcf_tbi = move_if_needed(fasta_outputs.sorted_vcf_tbi, input_vcf_dir / fasta_outputs.sorted_vcf_tbi.name)
+    write_source_manifest(source_manifest_path, source_signature)
 
     print("[DONE] pVACtools source preparation finished", flush=True)
     print(f"converter_tsv={converter_outputs.converter_tsv}", flush=True)
@@ -124,7 +136,42 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"manufacturability_tsv={fasta_outputs.manufacturability_tsv}", flush=True)
     print(f"sorted_vcf_gz={sorted_vcf_gz}", flush=True)
     print(f"sorted_vcf_tbi={sorted_vcf_tbi}", flush=True)
+    print(f"source_manifest={source_manifest_path}", flush=True)
     return 0
+
+
+def file_identity(path: Path) -> dict[str, object]:
+    resolved = path.resolve()
+    stat = resolved.stat()
+    return {"path": str(resolved), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def optional_file_identity(path: Path) -> dict[str, object]:
+    if path.exists():
+        return file_identity(path)
+    return {"path": str(path)}
+
+
+def validate_source_manifest(path: Path, signature: dict[str, object]) -> None:
+    """Reject stale pVACtools source reuse when a prior signature is present."""
+
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    try:
+        with path.open() as handle:
+            manifest = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Invalid source manifest {path}: {exc}") from exc
+    if manifest.get("input_signature") != signature:
+        raise RuntimeError(
+            "pVACtools source inputs differ from the existing output manifest. "
+            "Use a new output directory rather than reusing stale converter/FASTA files."
+        )
+
+
+def write_source_manifest(path: Path, signature: dict[str, object]) -> None:
+    with path.open("w") as handle:
+        json.dump({"input_signature": signature}, handle, indent=2, ensure_ascii=False)
 
 
 def move_if_needed(source: Path, target: Path) -> Path:

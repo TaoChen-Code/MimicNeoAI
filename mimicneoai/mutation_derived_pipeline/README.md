@@ -94,3 +94,6 @@ Notable subfolders:
 
 - This pipeline currently runs matched tumor-normal mode only.
 - The pipeline is resumable; existing non-empty outputs are skipped.
+- `others.binding_prediction_backend` defaults to `pvactools`. The optional
+  `mimicneoai` backend writes `07.binding_prediction_mimicneoai`; see the
+  [native binding backend documentation](../functions/binding_prediction/README.md).

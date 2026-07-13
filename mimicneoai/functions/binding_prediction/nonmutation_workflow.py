@@ -201,7 +201,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     combined_dir.mkdir(parents=True, exist_ok=True)
 
     epitope_windows_path = task_dir / "epitope_windows.tsv"
-    if epitope_windows_path.exists() and epitope_windows_path.stat().st_size > 0:
+    epitope_windows_manifest_path = task_dir / "epitope_windows.manifest.json"
+    epitope_windows_signature = {
+        "peptide_fasta": file_identity(Path(args.pep_fasta)),
+        "mhc_i_lengths": list(mhc_i_lengths),
+        "mhc_ii_lengths": list(mhc_ii_lengths),
+    }
+    if (
+        epitope_windows_path.exists()
+        and epitope_windows_path.stat().st_size > 0
+        and manifest_signature_matches(epitope_windows_manifest_path, epitope_windows_signature)
+    ):
         window_summary, mhc_i_peptides, mhc_ii_peptides = read_epitope_windows_summary(epitope_windows_path)
         epitope_windows_reused = True
     else:
@@ -211,10 +221,21 @@ def main(argv: Optional[list[str]] = None) -> int:
             mhc_i_lengths,
             mhc_ii_lengths,
         )
+        write_json(
+            epitope_windows_manifest_path,
+            {"input_signature": epitope_windows_signature, **window_summary},
+        )
         epitope_windows_reused = False
 
     hla = parse_hlahd_result(Path(args.hla_file))
     task_path = task_dir / "binding_tasks.tsv"
+    task_manifest_path = task_dir / "binding_tasks.manifest.json"
+    task_signature = {
+        "epitope_windows": file_identity(epitope_windows_path),
+        "hla_file": file_identity(Path(args.hla_file)),
+        "mhc_i_algorithms": mhc_i_algorithms,
+        "mhc_ii_algorithms": mhc_ii_algorithms,
+    }
     estimated_task_rows = estimate_binding_task_rows(
         len(mhc_i_peptides),
         len(hla.mhc_i),
@@ -234,7 +255,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     elif task_materialization_skipped_by_scale:
         task_summary = {"binding_task_rows": 0, "estimated_binding_task_rows": estimated_task_rows}
         binding_tasks_reused = False
-    elif task_path.exists() and task_path.stat().st_size > 0:
+    elif (
+        task_path.exists()
+        and task_path.stat().st_size > 0
+        and manifest_signature_matches(task_manifest_path, task_signature)
+        and read_json(task_manifest_path).get("task_table_materialized") is True
+    ):
         task_summary = read_binding_task_summary(task_path)
         task_summary["estimated_binding_task_rows"] = estimated_task_rows
         binding_tasks_reused = True
@@ -251,7 +277,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         task_summary["estimated_binding_task_rows"] = estimated_task_rows
         binding_tasks_reused = False
 
-    task_manifest_path = task_dir / "binding_tasks.manifest.json"
     task_manifest = {
         "sample": args.sample,
         "estimated_binding_task_rows": estimated_task_rows,
@@ -268,9 +293,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         "mhc_ii_alleles": len(hla.mhc_ii),
         "mhc_i_algorithms": mhc_i_algorithms,
         "mhc_ii_algorithms": mhc_ii_algorithms,
+        "input_signature": task_signature,
     }
-    with task_manifest_path.open("w") as handle:
-        json.dump(task_manifest, handle, indent=2, ensure_ascii=False)
+    write_json(task_manifest_path, task_manifest)
 
     prediction_path = pred_dir / "binding_predictions.long.tsv"
     prediction_paths: list[Path] = []
@@ -378,6 +403,39 @@ def parse_int_list(value: str) -> tuple[int, ...]:
     if not values:
         raise ValueError("At least one peptide length is required.")
     return values
+
+
+def file_identity(path: Path) -> dict[str, object]:
+    """Return a fast identity used to validate reusable intermediates."""
+
+    resolved = path.resolve()
+    stat = resolved.stat()
+    return {
+        "path": str(resolved),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def read_json(path: Path) -> dict[str, object]:
+    if not path.exists() or path.stat().st_size == 0:
+        return {}
+    try:
+        with path.open() as handle:
+            value = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def write_json(path: Path, value: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as handle:
+        json.dump(value, handle, indent=2, ensure_ascii=False)
+
+
+def manifest_signature_matches(path: Path, signature: dict[str, object]) -> bool:
+    return read_json(path).get("input_signature") == signature
 
 
 def parse_str_list(value: str) -> list[str]:

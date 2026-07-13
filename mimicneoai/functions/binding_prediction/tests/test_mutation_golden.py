@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from typing import List, Optional
 
-from mimicneoai.functions.binding_prediction.adapters.base import AdapterConfig
+from mimicneoai.functions.binding_prediction.adapters.base import AdapterConfig, reusable_normalized_output
 from mimicneoai.functions.binding_prediction.adapters.mhcnuggets import (
     MhcnuggetsAdapter,
     build_mhcnuggets_command,
@@ -21,11 +21,13 @@ from mimicneoai.functions.binding_prediction.allele_support import (
     allele_key,
     catalog_from_lines,
 )
-from mimicneoai.functions.binding_prediction.runner import unsupported_reason
+from mimicneoai.functions.binding_prediction.runner import merge_predictions, unsupported_reason
 from mimicneoai.functions.binding_prediction.schema import (
     PREDICTION_FIELDS,
+    BindingPrediction,
     BindingTask,
     PredictionJob,
+    write_prediction_rows,
 )
 from mimicneoai.mutation_derived_pipeline.scripts.mutation_epitope_prediction.hla_parser import (
     parse_hlahd_result,
@@ -38,6 +40,9 @@ from mimicneoai.mutation_derived_pipeline.scripts.mutation_epitope_prediction.se
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "mutation_golden"
+PREP_MODULE = importlib.import_module(
+    "mimicneoai.mutation_derived_pipeline.scripts.mutation_epitope_prediction.00_prepare_pvacseq_sources"
+)
 TASK_MODULE = importlib.import_module(
     "mimicneoai.mutation_derived_pipeline.scripts.mutation_epitope_prediction.01_build_epitope_tasks"
 )
@@ -113,6 +118,18 @@ class MutationWindowGoldenTest(unittest.TestCase):
         self.assertNotIn("LMNPQASTV", by_peptide)
         self.assertEqual(by_peptide["ACDEFGHIK"], "MT")
         self.assertEqual(by_peptide["ACDEYGHIK"], "WT")
+
+    def test_pvactools_source_manifest_rejects_changed_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            manifest = Path(tempdir) / "source.manifest.json"
+            signature = {"sample": "TEST", "input_vcf": {"size": 10}}
+            PREP_MODULE.write_source_manifest(manifest, signature)
+            PREP_MODULE.validate_source_manifest(manifest, signature)
+            with self.assertRaisesRegex(RuntimeError, "source inputs differ"):
+                PREP_MODULE.validate_source_manifest(
+                    manifest,
+                    {"sample": "TEST", "input_vcf": {"size": 11}},
+                )
 
     def test_step01_builds_golden_fixture_end_to_end(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
@@ -294,6 +311,21 @@ class HlaAndAdapterContractTest(unittest.TestCase):
             with self.subTest(task=task):
                 self.assertEqual(bool(unsupported_reason(task, support)), expected_skipped)
 
+    def test_skipped_task_is_retained_in_normalized_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            output = Path(tempdir) / "predictions.tsv"
+            task = BindingTask("ACDEFGHIK", "HLA-A*99:99", "NetMHCpan", "MHC-I")
+            summary = merge_predictions(
+                [],
+                output,
+                [(task, "unsupported_allele_by_predictor")],
+            )
+            with output.open(newline="") as handle:
+                rows = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(summary["status_counts"], {"skipped": 1})
+            self.assertEqual(rows[0]["status"], "skipped")
+            self.assertEqual(rows[0]["error"], "unsupported_allele_by_predictor")
+
     def test_predictor_allele_spellings_share_one_support_key(self) -> None:
         self.assertEqual(allele_key("HLA-A*02:01"), allele_key("HLA-A0201"))
         self.assertEqual(allele_key("DRB1*11:01"), allele_key("DRB1_1101"))
@@ -343,8 +375,20 @@ class HlaAndAdapterContractTest(unittest.TestCase):
                 outdir=tempdir,
             )
             job.normalized_path.parent.mkdir(parents=True)
-            sentinel = "already-complete\n"
-            job.normalized_path.write_text(sentinel)
+            write_prediction_rows(
+                job.normalized_path,
+                [
+                    BindingPrediction(
+                        peptide="ACDEFGHIK",
+                        hla_allele="HLA-A*02:01",
+                        algorithm="MHCnuggetsI",
+                        mhc_class="MHC-I",
+                        peptide_length=9,
+                        ic50="100",
+                    )
+                ],
+            )
+            sentinel = job.normalized_path.read_text()
             adapter = MhcnuggetsAdapter(
                 AdapterConfig(
                     resume=True,
@@ -355,8 +399,81 @@ class HlaAndAdapterContractTest(unittest.TestCase):
             self.assertEqual(adapter.run_job(job), job.normalized_path)
             self.assertEqual(job.normalized_path.read_text(), sentinel)
 
+            changed_job = PredictionJob(
+                algorithm="MHCnuggetsI",
+                mhc_class="MHC-I",
+                hla_allele="HLA-A*02:01",
+                peptide_length=9,
+                chunk_index=1,
+                peptides=("LMNPQRSTV",),
+                outdir=tempdir,
+            )
+            self.assertFalse(reusable_normalized_output(changed_job, resume=True))
+
 
 class MergeGoldenTest(unittest.TestCase):
+    def test_pvacseq_output_profile_remains_fixed(self) -> None:
+        self.assertEqual(len(MERGE_MODULE.PVACSEQ_COLUMNS), 111)
+        self.assertEqual(len(MERGE_MODULE.PVACSEQ_COLUMNS), len(set(MERGE_MODULE.PVACSEQ_COLUMNS)))
+
+    def test_el_predictions_do_not_enter_ic50_or_fold_summaries(self) -> None:
+        epitope = {
+            "event_id": "event",
+            "pvacseq_index": "SNV.EL",
+            "variant_type": "missense",
+            "mhc_class": "MHC-I",
+            "peptide_length": "9",
+            "window_start_0based": "0",
+            "window_end_0based": "9",
+            "mutation_start_0based": "4",
+            "mutation_end_0based": "5",
+            "mt_epitope_seq": "ACDEFGHIK",
+            "wt_epitope_seq": "ACDEYGHIK",
+        }
+        annotation = {"amino_acid_change": "Y/F", "variant_type": "missense"}
+        predictions = {
+            ("ACDEFGHIK", "HLA-A*02:01", "MHCflurry", "MHC-I", 9): {
+                "ic50": "100",
+                "percentile": "2",
+                "status": "ok",
+            },
+            ("ACDEYGHIK", "HLA-A*02:01", "MHCflurry", "MHC-I", 9): {
+                "ic50": "400",
+                "percentile": "4",
+                "status": "ok",
+            },
+            ("ACDEFGHIK", "HLA-A*02:01", "MHCflurryEL", "MHC-I", 9): {
+                "ic50": "1",
+                "score": "0.9",
+                "percentile": "0.1",
+                "status": "ok",
+            },
+            ("ACDEYGHIK", "HLA-A*02:01", "MHCflurryEL", "MHC-I", 9): {
+                "ic50": "2",
+                "score": "0.8",
+                "percentile": "0.2",
+                "status": "ok",
+            },
+        }
+        algorithms = ["MHCflurry", "MHCflurryEL"]
+        output_fields = MERGE_MODULE.PVACSEQ_COLUMNS
+        row, _ = MERGE_MODULE.build_output_row(
+            epitope,
+            annotation,
+            "HLA-A*02:01",
+            algorithms,
+            predictions,
+            {("SNV.EL", "MHC-I", 9): 0},
+            output_fields,
+        )
+        self.assertEqual(row["Best MT IC50 Score Method"], "MHCflurry")
+        self.assertEqual(row["Best MT IC50 Score"], "100")
+        self.assertEqual(row["Corresponding Fold Change"], "4")
+        self.assertEqual(row["Best MT Percentile Method"], "MHCflurryEL")
+        self.assertEqual(row["Best MT Percentile"], "0.1")
+        self.assertEqual(row["MHCflurryEL Presentation MT Score"], "0.9")
+        self.assertNotIn("MHCflurryEL Fold Change", row)
+
     def test_best_median_fold_change_and_fs_wt_blank(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)

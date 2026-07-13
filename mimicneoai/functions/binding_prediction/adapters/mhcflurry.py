@@ -10,6 +10,7 @@ from mimicneoai.functions.binding_prediction.schema import BindingPrediction, Pr
 from .base import (
     PredictorAdapter,
     ensure_job_dirs,
+    reusable_normalized_output,
     run_logged_command,
     write_error_predictions,
     write_ok_predictions,
@@ -23,7 +24,7 @@ class MhcflurryAdapter(PredictorAdapter):
     default_chunk_size = 50000
 
     def run_job(self, job: PredictionJob) -> Path:
-        if self.config.resume and job.normalized_path.exists() and job.normalized_path.stat().st_size > 0:
+        if reusable_normalized_output(job, self.config.resume):
             return job.normalized_path
         ensure_job_dirs(job)
         try:

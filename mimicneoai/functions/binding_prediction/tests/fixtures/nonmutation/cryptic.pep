@@ -1,0 +1,6 @@
+>cryptic_short_orf
+ACDEFGH
+>cryptic_orf_1
+ACDEFGHIKLMNPQRST
+>cryptic_orf_1_duplicate_source
+ACDEFGHIKLMNPQRST

@@ -84,3 +84,6 @@ Pipeline outputs are written under:
 
 - The pipeline is resumable; existing non-empty outputs are skipped.
 - If a step fails mid-way, delete the incomplete step directory and rerun.
+- `others.binding_prediction_backend` defaults to `pvactools`. The optional
+  `mimicneoai` backend estimates task scale before materializing the task table;
+  see the [native binding backend documentation](../functions/binding_prediction/README.md).

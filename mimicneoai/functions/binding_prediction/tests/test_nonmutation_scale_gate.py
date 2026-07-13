@@ -18,7 +18,13 @@ class NonmutationScaleGateTest(unittest.TestCase):
         self.hla_file = self.root / "sample_final.result.txt"
         self.hla_file.write_text("A\tA*02:01\nDRB1\tDRB1*11:01\n")
 
-    def run_tasks_only(self, outdir: Path, max_task_rows: int, force: bool = False) -> dict[str, object]:
+    def run_tasks_only(
+        self,
+        outdir: Path,
+        max_task_rows: int,
+        force: bool = False,
+        algorithms: str = "MHCflurry,MHCnuggetsII",
+    ) -> dict[str, object]:
         args = [
             "-s",
             "TEST",
@@ -29,7 +35,7 @@ class NonmutationScaleGateTest(unittest.TestCase):
             "-o",
             str(outdir),
             "--algorithms",
-            "MHCflurry,MHCnuggetsII",
+            algorithms,
             "--max-task-rows",
             str(max_task_rows),
             "--skip-prediction",
@@ -75,6 +81,25 @@ class NonmutationScaleGateTest(unittest.TestCase):
         self.assertTrue(second["binding_tasks_reused"])
         self.assertEqual(first["epitope_window_rows"], second["epitope_window_rows"])
         self.assertEqual(first["binding_task_rows"], second["binding_task_rows"])
+
+    def test_changed_inputs_invalidate_only_affected_intermediates(self) -> None:
+        outdir = self.root / "signature_change"
+        first = self.run_tasks_only(outdir, max_task_rows=1_000_000)
+
+        self.peptide_fasta.write_text(">source_1\nACDEFGHIKLMNPQRSTVWYACDEFGHIK\n")
+        second = self.run_tasks_only(outdir, max_task_rows=1_000_000)
+        self.assertFalse(second["epitope_windows_reused"])
+        self.assertFalse(second["binding_tasks_reused"])
+        self.assertGreater(second["epitope_window_rows"], first["epitope_window_rows"])
+
+        third = self.run_tasks_only(
+            outdir,
+            max_task_rows=1_000_000,
+            algorithms="MHCflurry,MHCflurryEL,MHCnuggetsII",
+        )
+        self.assertTrue(third["epitope_windows_reused"])
+        self.assertFalse(third["binding_tasks_reused"])
+        self.assertGreater(third["binding_task_rows"], second["binding_task_rows"])
 
 
 if __name__ == "__main__":

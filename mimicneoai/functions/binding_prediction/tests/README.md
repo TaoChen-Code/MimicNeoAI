@@ -7,6 +7,8 @@ PYTHONPATH=. python -m unittest discover -v \
   mimicneoai/functions/binding_prediction/tests
 ```
 
-The suite does not invoke external binding predictors. It covers mutation peptide
-window construction, WT/MT handling, HLA-II pairing, normalized predictor fields,
-wide-table summary metrics, resume behavior, and the oversized-task scale gate.
+The suite does not invoke external binding predictors. It covers all three
+pipeline backend branches, mutation peptide windows, cryptic and microbial FASTA
+fixtures, WT/MT handling, HLA-II pairing, normalized status fields, EL versus
+IC50 summary semantics, input-aware resume behavior, and the oversized-task
+scale gate.

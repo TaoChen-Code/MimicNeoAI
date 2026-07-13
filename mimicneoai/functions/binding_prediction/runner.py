@@ -134,6 +134,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "algorithms": sorted({task.algorithm for task in tasks}),
             "supported_algorithms": SUPPORTED_ALGORITHMS,
             "allele_support_matrix": allele_support.summary(),
+            "predictor_runtime": predictor_runtime_summary(config),
         }
     )
     with summary_path.open("w") as handle:
@@ -147,6 +148,25 @@ def parse_algorithm_filter(value: str) -> Optional[set[str]]:
     if not value.strip():
         return None
     return {item.strip() for item in value.replace(",", " ").split() if item.strip()}
+
+
+def predictor_runtime_summary(config: AdapterConfig) -> dict[str, object]:
+    """Record the configured predictor executables used by this runner."""
+
+    return {
+        "mhcflurry_predict_bin": config.mhcflurry_predict_bin,
+        "mhcnuggets_python_bin": config.mhcnuggets_python_bin,
+        "mhcnuggets_script": config.mhcnuggets_script,
+        "mhcnuggets_cwd": config.mhcnuggets_cwd,
+        "netmhcpan_bin": config.netmhcpan_bin,
+        "netmhciipan_bin": config.netmhciipan_bin,
+        "iedb_mhci_script": config.iedb_mhci_script,
+        "iedb_mhci_cwd": config.iedb_mhci_cwd,
+        "iedb_mhcii_script": config.iedb_mhcii_script,
+        "iedb_mhcii_cwd": config.iedb_mhcii_cwd,
+        "python_bin": config.python_bin,
+        "iedb_mhcii_python_bin": config.iedb_mhcii_python_bin,
+    }
 
 
 def filter_unsupported_tasks(

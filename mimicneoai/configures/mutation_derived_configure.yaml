@@ -53,8 +53,6 @@ others:
   binding_prediction_backend: "pvactools"  # pvactools | mimicneoai
   binding_prediction_algorithms: "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL"
   binding_prediction_workers: 8
-  binding_prediction_max_task_rows: 5000000
-  binding_prediction_force_large_samples: false
 
 # Sample List (Example entries)
 samples:
