@@ -188,7 +188,8 @@ def pvacbind_one_chunk(sample, chunk_idx, chunk_fa, hla_csv,
         f"{chunk_fa} {sample} {hla_csv} {algos_all} {out_dir} "
         f"-e1 {e1_lengths} -e2 {e2_lengths} "
         f"--iedb-install-directory /opt/iedb "
-        f"-t 1 --fasta-size 100000"
+        f"-t 1 --fasta-size 100000 "
+        f"< /dev/null"
     )
     run_cmd(cmd)
 

@@ -214,7 +214,8 @@ def pvacbind(sample, configure, pathes, tool):
             f"{chunk_fa} {sample} {HLA} {algoIandII} "
             f"{out_dir_i} -e1 8,9,10 -e2 15 "
             f"--iedb-install-directory /opt/iedb "
-            f"-t 1 --fasta-size 100000"
+            f"-t 1 --fasta-size 100000 "
+            f"< /dev/null"
         )
         tasks.append((cmd_i, target_i, f"chunk_{i}"))
 
