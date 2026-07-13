@@ -3,6 +3,7 @@ import os
 import shlex
 from typing import Tuple, Dict, Any, Optional, List
 from mimicneoai.functions.nodemon_pool import NoDaemonPool
+from mimicneoai.functions.pipline_tools import raise_for_failed_samples
 
 class Pvacseq:
     """
@@ -194,7 +195,7 @@ class Pvacseq:
         hlaI, hlaII = self.get_hlahd_results(sample, output_hla)
         if not hlaI and not hlaII:
             self.tool.write_log("HLA-HD results are all Not_typed or missing!", "error")
-            return output_pvacseq
+            raise RuntimeError("HLA-HD results are all Not_typed or missing")
 
         # Build combined HLA string without trailing commas
         HLA = ",".join([x for x in [hlaI, hlaII] if x]).strip(",")
@@ -264,15 +265,22 @@ class Pvacseq:
         self.generate_protein_fasta(run_sample_id, sample, output_vcf, configure, pathes)
 
         pool = NoDaemonPool(thread)
+        async_results = []
         for i in range(thread):
             chunk = str(i)
-            pool.apply_async(
-                self.pvacseq,
-                (run_sample_id, sample, output_vcf, output_hla, configure, pathes, chunk),
-                error_callback=self.tool.print_pool_error
+            async_results.append(
+                (
+                    f"{sample}:chunk_{chunk}",
+                    pool.apply_async(
+                        self.pvacseq,
+                        (run_sample_id, sample, output_vcf, output_hla, configure, pathes, chunk),
+                        error_callback=self.tool.print_pool_error,
+                    ),
+                )
             )
         pool.close()
         pool.join()
+        raise_for_failed_samples(async_results)
 
         # Merge chunk outputs
         self.merge_chunk_results(sample, output_pvacseq, thread)

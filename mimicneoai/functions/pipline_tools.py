@@ -8,6 +8,26 @@ from typing import Any, Optional, Dict, List, Union
 from pathlib import Path
 
 
+def raise_for_failed_samples(async_results) -> None:
+    """Raise after all submitted sample jobs have finished if any job failed."""
+
+    failures = []
+    for sample, result in async_results:
+        try:
+            result.get()
+        except Exception as exc:
+            failures.append((str(sample), exc))
+
+    if failures:
+        details = "; ".join(
+            f"{sample}: {type(exc).__name__}: {exc}"
+            for sample, exc in failures
+        )
+        raise RuntimeError(
+            f"{len(failures)} sample pipeline job(s) failed: {details}"
+        )
+
+
 class tools:
     def __init__(self, sys_path: str, log_type: str, log_lock):
         """
@@ -119,25 +139,39 @@ class tools:
             self.status(self.run_cmds_allSamples, sample, f"{cmd_name}", "run", "", cmd)
 
         start = datetime.now()
-        with open(self.cmd_log, "a") as logfile:
-            result = subprocess.call(
+        try:
+            with open(self.cmd_log, "a") as logfile:
+                result = subprocess.call(
+                    f"set -o pipefail\n{cmd}",
+                    shell=True,
+                    executable="/bin/bash",
+                    stdout=logfile,
+                    stderr=logfile,
+                    env=(env if env is not None else self.default_env),
+                )
+            run_time = self.print_time(datetime.now() - start)
+            if result:
+                self.status(
+                    self.failed_cmds_allSamples,
+                    sample,
+                    f"{cmd_name}",
+                    "failed",
+                    run_time,
+                    cmd,
+                )
+                raise subprocess.CalledProcessError(result, cmd)
+
+            self.status(
+                self.done_cmds_allSamples,
+                sample,
+                f"{cmd_name}",
+                "done",
+                run_time,
                 cmd,
-                shell=True,
-                stdout=logfile,
-                stderr=logfile,
-                env=(env if env is not None else self.default_env),
             )
-        end = datetime.now()
-
-        # Update status
-        if sample in self.run_cmds_allSamples and f"{cmd_name}" in self.run_cmds_allSamples[sample]:
-            self.run_cmds_allSamples[sample].remove(f"{cmd_name}")
-
-        run_time = self.print_time(end - start)
-        if result:
-            self.status(self.failed_cmds_allSamples, sample, f"{cmd_name}", "failed", run_time, cmd)
-        else:
-            self.status(self.done_cmds_allSamples, sample, f"{cmd_name}", "done", run_time, cmd)
+        finally:
+            if sample in self.run_cmds_allSamples and cmd_name in self.run_cmds_allSamples[sample]:
+                self.run_cmds_allSamples[sample].remove(cmd_name)
 
     def judge_then_exec(
         self,
@@ -185,8 +219,9 @@ class tools:
         try:
             with open(self.cmd_log, "a") as logfile:
                 result = subprocess.run(
-                    cmd,
+                    f"set -o pipefail\n{cmd}",
                     shell=True,
+                    executable="/bin/bash",
                     stdout=logfile,
                     stderr=logfile,
                     timeout=timeout,
@@ -197,17 +232,20 @@ class tools:
 
             if result.returncode != 0:
                 self.status(self.failed_cmds_allSamples, sample, f"{cmd_name}", "failed", run_time, cmd)
-            else:
-                self.status(self.done_cmds_allSamples, sample, f"{cmd_name}", "done", run_time, cmd)
+                raise subprocess.CalledProcessError(result.returncode, cmd)
+
+            self.status(self.done_cmds_allSamples, sample, f"{cmd_name}", "done", run_time, cmd)
 
         except subprocess.TimeoutExpired:
             end = datetime.now()
             run_time = self.print_time(end - start)
             self.status(self.failed_cmds_allSamples, sample, f"{cmd_name}", "timeout", run_time, cmd)
             self.logger.error(f"Command for sample '{sample}' exceeded timeout of {timeout} seconds.")
-
-        if sample in self.run_cmds_allSamples and f"{cmd_name} timeout={timeout}" in self.run_cmds_allSamples[sample]:
-            self.run_cmds_allSamples[sample].remove(f"{cmd_name} timeout={timeout}")
+            raise
+        finally:
+            running_label = f"{cmd_name} timeout={timeout}"
+            if sample in self.run_cmds_allSamples and running_label in self.run_cmds_allSamples[sample]:
+                self.run_cmds_allSamples[sample].remove(running_label)
 
     def judge_then_exec_with_time(
         self,
@@ -314,6 +352,14 @@ class tools:
             self.logger.info(f"all done cmds:\n{done_message}")
         if failed_message:
             self.logger.error(f"all failed cmds:\n{failed_message}")
+
+    def has_failures(self) -> bool:
+        """Return True when any sample has a recorded command failure."""
+
+        return any(
+            len(self.failed_cmds_allSamples[sample]) != 0
+            for sample in self.failed_cmds_allSamples.keys()
+        )
 
     # ---------------------------
     # Misc utilities

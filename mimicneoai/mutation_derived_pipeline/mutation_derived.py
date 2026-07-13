@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 
 from mimicneoai.functions.fastp import fastp
 from mimicneoai.functions.hlatyping import hlahd
-from mimicneoai.functions.pipline_tools import tools
+from mimicneoai.functions.pipline_tools import raise_for_failed_samples, tools
 from mimicneoai.mutation_derived_pipeline.scripts.annotation import annotation_vcf
 from mimicneoai.mutation_derived_pipeline.scripts.hla_binding_pred import Pvacseq
 from mimicneoai.mutation_derived_pipeline.scripts.variants_calling import (
@@ -75,9 +75,8 @@ def _variants_calling_and_annotation(
         key = f"{seq_type}_{species}"
         func = funcs.get(key)
         if func is None:
-            tool.write_log(f"No variant-calling function for key='{key}'", "error")
-        else:
-            func(sample, tool, configure, paths)
+            raise ValueError(f"No variant-calling function for key='{key}'")
+        func(sample, tool, configure, paths)
 
     # VEP-based annotation
     if do_annotation:
@@ -115,7 +114,9 @@ def _start_one_sample(
                 f"Got False for sample='{sample}'. Worker will exit.",
                 "error",
             )
-            return
+            raise ValueError(
+                f"tumor_with_matched_normal must be True for sample '{sample}'"
+            )
 
         # 1) Read QC
         if do_qc:
@@ -185,6 +186,7 @@ def _start_one_sample(
 
     except Exception:
         tool.write_log(f"Worker crashed:\n{traceback.format_exc()}", "error")
+        raise
 
 
 def _run_pipeline(
@@ -195,15 +197,22 @@ def _run_pipeline(
     tool: tools,
 ) -> None:
     """Execute the pipeline across samples using a non-daemon process pool."""
+    async_results = []
     with NoDaemonPool(processes=pool_size) as pool:
         for sample in samples:
-            pool.apply_async(
-                _start_one_sample,
-                (sample, configure, paths, tool),
-                error_callback=tool.print_pool_error,
+            async_results.append(
+                (
+                    sample,
+                    pool.apply_async(
+                        _start_one_sample,
+                        (sample, configure, paths, tool),
+                        error_callback=tool.print_pool_error,
+                    ),
+                )
             )
         pool.close()
         pool.join()
+    raise_for_failed_samples(async_results)
 
 
 def _peek_output_dir(cfg_path: str) -> Optional[str]:
@@ -274,10 +283,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     tool_obj.sharing_variable(mgr, samples)
 
     pool_size = int(configure["args"]["pool_size"])
-    _run_pipeline(samples, pool_size, configure, paths, tool_obj)
+    exit_code = 0
+    try:
+        _run_pipeline(samples, pool_size, configure, paths, tool_obj)
+    except Exception:
+        exit_code = 1
+        tool_obj.write_log(
+            f"Pipeline completed with failed sample(s):\n{traceback.format_exc()}",
+            "error",
+        )
+    finally:
+        tool_obj.summary()
 
-    tool_obj.summary()
-    return 0
+    if tool_obj.has_failures():
+        exit_code = 1
+    return exit_code
 
 
 if __name__ == "__main__":

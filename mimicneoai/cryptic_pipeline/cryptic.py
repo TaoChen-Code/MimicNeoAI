@@ -31,7 +31,7 @@ from typing import Dict, Any, List, Tuple
 from multiprocessing import Manager
 import multiprocessing.pool
 from importlib.resources import files
-from mimicneoai.functions.pipline_tools import tools
+from mimicneoai.functions.pipline_tools import raise_for_failed_samples, tools
 
 
 # ---------------------- Constants ----------------------
@@ -419,15 +419,22 @@ def _run_pool(samples: List[str], pool_size: int, configure, paths, tool: tools)
     Submit one asynchronous task per sample and wait for completion.
     Errors inside workers are reported via tool.print_pool_error.
     """
+    async_results = []
     with NoDaemonPool(processes=pool_size) as pool:
         for s in samples:
-            pool.apply_async(
-                _run_one_sample,
-                (s, configure, paths, tool),
-                error_callback=tool.print_pool_error,
+            async_results.append(
+                (
+                    s,
+                    pool.apply_async(
+                        _run_one_sample,
+                        (s, configure, paths, tool),
+                        error_callback=tool.print_pool_error,
+                    ),
+                )
             )
         pool.close()
         pool.join()
+    raise_for_failed_samples(async_results)
 
 
 def _peek_output_dir(cfg_path: str) -> str | None:
@@ -492,10 +499,21 @@ def main(argv: List[str] | None = None) -> int:
     tool_obj.sharing_variable(mgr, samples)
 
     # Run
-    _run_pool(samples, pool_size, configure, paths, tool_obj)
+    exit_code = 0
+    try:
+        _run_pool(samples, pool_size, configure, paths, tool_obj)
+    except Exception:
+        exit_code = 1
+        tool_obj.write_log(
+            f"Pipeline completed with failed sample(s):\n{traceback.format_exc()}",
+            "error",
+        )
+    finally:
+        tool_obj.summary()
 
-    tool_obj.summary()
-    return 0
+    if tool_obj.has_failures():
+        exit_code = 1
+    return exit_code
 
 
 if __name__ == "__main__":

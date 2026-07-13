@@ -41,3 +41,4 @@ def fastp(run_sample_id,sample, configure, pathes, tool):
         error_message = traceback.format_exc()
         print(f"fastp error occurred: {error_message}")
         tool.write_log(f"fastp error occurred: {error_message}","error")
+        raise

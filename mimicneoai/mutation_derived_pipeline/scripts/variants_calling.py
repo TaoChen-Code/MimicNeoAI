@@ -272,14 +272,12 @@ def variants_calling_start(sample_name: str, tool, configure: dict, paths: dict)
     try:
         # ---- matched-normal validation ----
         if not bool(configure["others"]["tumor_with_matched_normal"]):
-            tool.write_log(
-                "Only matched-normal mode is supported (tumor_with_matched_normal=True).",
-                "error",
+            raise ValueError(
+                "Only matched-normal mode is supported "
+                "(tumor_with_matched_normal=True)."
             )
-            return
         if "," not in sample_name:
-            tool.write_log("Matched-normal mode requires sample_name='TUMOR,NORMAL'", "error")
-            return
+            raise ValueError("Matched-normal mode requires sample_name='TUMOR,NORMAL'")
 
         tumor_sample, normal_sample = [x.strip() for x in sample_name.split(",")[:2]]
 
@@ -491,3 +489,4 @@ def variants_calling_start(sample_name: str, tool, configure: dict, paths: dict)
 
     except Exception:
         tool.write_log(f"variants_calling_start crashed:\n{traceback.format_exc()}", "error")
+        raise

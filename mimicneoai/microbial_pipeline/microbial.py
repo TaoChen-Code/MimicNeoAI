@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from mimicneoai.functions.fastp import fastp
-from mimicneoai.functions.pipline_tools import tools
+from mimicneoai.functions.pipline_tools import raise_for_failed_samples, tools
 from mimicneoai.functions.hlatyping import hlahd
 from mimicneoai.microbial_pipeline.scripts.microbial_peptides import (
     HostSequencesRemoving,
@@ -58,56 +58,70 @@ def _start_one_sample(
             fastp(sample, sample, configure, paths, tool)
         except Exception:
             tool.write_log(f"QC error:\n{traceback.format_exc()}", "error")
+            raise
 
     if run_host_depletion:
         try:
             HostSequencesRemoving(sample, configure, paths, tool)
         except Exception:
             tool.write_log(f"HostSequencesRemoving error:\n{traceback.format_exc()}", "error")
+            raise
 
     if run_vector_decontam:
         try:
             VectorContaminationRemoving(sample, configure, paths, tool)
         except Exception:
             tool.write_log(f"VectorContaminationRemoving error:\n{traceback.format_exc()}", "error")
+            raise
 
     if run_pathseq:
         try:
             MicrobialTaxasQuantification(sample, configure, paths, tool)
         except Exception:
             tool.write_log(f"MicrobialTaxasQuantification error:\n{traceback.format_exc()}", "error")
+            raise
 
     if run_microbial_peptide_identification:
         try:
             MicrobialPeptidesIdentification(sample, configure, paths, tool)
         except Exception:
             tool.write_log(f"MicrobialPeptidesIdentification error:\n{traceback.format_exc()}", "error")
+            raise
 
     if run_hla_typing:
         try:
             hlahd(sample, sample, configure, paths, tool)
         except Exception:
             tool.write_log(f"HLA typing error:\n{traceback.format_exc()}", "error")
+            raise
 
     if run_binding_prediction:
         try:
             MicrobialPeptidesBindingPrediction(sample, configure, paths, tool)
         except Exception:
             tool.write_log(f"Binding prediction error:\n{traceback.format_exc()}", "error")
+            raise
 
 
 
 def _run_pipeline(samples: List[str], pool_size: int, configure, paths, tool: tools) -> None:
     """Run the pipeline across samples using a (non-daemon) process pool."""
+    async_results = []
     with NoDaemonPool(pool_size) as pool:
         for sample in samples:
-            pool.apply_async(
-                _start_one_sample,
-                (str(sample), configure, paths, tool),
-                error_callback=tool.print_pool_error,
+            async_results.append(
+                (
+                    str(sample),
+                    pool.apply_async(
+                        _start_one_sample,
+                        (str(sample), configure, paths, tool),
+                        error_callback=tool.print_pool_error,
+                    ),
+                )
             )
         pool.close()
         pool.join()
+    raise_for_failed_samples(async_results)
 
 
 def _peek_output_dir(cfg_path: str) -> Optional[str]:
@@ -166,11 +180,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     # 5) Initialize shared state & execute in parallel
     tool.sharing_variable(mgr, samples)
     pool_size = int(configure["args"]["pool_size"])
-    _run_pipeline(samples, pool_size, configure, paths, tool)
+    exit_code = 0
+    try:
+        _run_pipeline(samples, pool_size, configure, paths, tool)
+    except Exception:
+        exit_code = 1
+        tool.write_log(
+            f"Pipeline completed with failed sample(s):\n{traceback.format_exc()}",
+            "error",
+        )
+    finally:
+        tool.summary()
 
-    # 6) Final summary
-    tool.summary()
-    return 0
+    if tool.has_failures():
+        exit_code = 1
+    return exit_code
 
 
 if __name__ == "__main__":
