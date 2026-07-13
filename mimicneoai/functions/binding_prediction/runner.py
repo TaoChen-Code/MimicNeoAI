@@ -70,7 +70,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--iedb-mhci-cwd", default=AdapterConfig.iedb_mhci_cwd)
     parser.add_argument("--iedb-mhcii-script", default=AdapterConfig.iedb_mhcii_script)
     parser.add_argument("--iedb-mhcii-cwd", default=AdapterConfig.iedb_mhcii_cwd)
-    parser.add_argument("--python-bin", default=AdapterConfig.python_bin)
+    parser.add_argument(
+        "--iedb-mhci-python-bin",
+        "--python-bin",
+        dest="python_bin",
+        default=AdapterConfig.python_bin,
+    )
     parser.add_argument("--iedb-mhcii-python-bin", default=AdapterConfig.iedb_mhcii_python_bin)
     return parser
 
