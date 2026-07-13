@@ -64,8 +64,58 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chunk-size", type=int, default=None)
     parser.add_argument("--device", choices=("cpu", "gpu"), default="cpu")
     parser.add_argument("--command-timeout", type=int, default=None)
-    parser.add_argument("--netmhcpan-bin", default="netMHCpan")
-    parser.add_argument("--netmhciipan-bin", default="netMHCIIpan")
+    parser.add_argument(
+        "--mhcflurry-predict-bin",
+        default=os.environ.get("MIMICNEOAI_MHCFLURRY_PREDICT_BIN", "mhcflurry-predict"),
+    )
+    parser.add_argument(
+        "--mhcflurry-downloads-dir",
+        default=os.environ.get("MHCFLURRY_DOWNLOADS_DIR", ""),
+    )
+    parser.add_argument(
+        "--mhcnuggets-python-bin",
+        default=os.environ.get("MIMICNEOAI_MHCNUGGETS_PYTHON_BIN", sys.executable),
+    )
+    parser.add_argument(
+        "--mhcnuggets-script",
+        default=os.environ.get("MIMICNEOAI_MHCNUGGETS_SCRIPT", "predict.py"),
+    )
+    parser.add_argument(
+        "--mhcnuggets-cwd",
+        default=os.environ.get("MIMICNEOAI_MHCNUGGETS_CWD", "."),
+    )
+    parser.add_argument(
+        "--netmhcpan-bin",
+        default=os.environ.get("MIMICNEOAI_NETMHCPAN_BIN", "netMHCpan"),
+    )
+    parser.add_argument(
+        "--netmhciipan-bin",
+        default=os.environ.get("MIMICNEOAI_NETMHCIIPAN_BIN", "netMHCIIpan"),
+    )
+    parser.add_argument(
+        "--iedb-mhci-python-bin",
+        default=os.environ.get("MIMICNEOAI_IEDB_MHCI_PYTHON_BIN", sys.executable),
+    )
+    parser.add_argument(
+        "--iedb-mhci-script",
+        default=os.environ.get("MIMICNEOAI_IEDB_MHCI_SCRIPT", "predict_binding.py"),
+    )
+    parser.add_argument(
+        "--iedb-mhci-cwd",
+        default=os.environ.get("MIMICNEOAI_IEDB_MHCI_CWD", "."),
+    )
+    parser.add_argument(
+        "--iedb-mhcii-python-bin",
+        default=os.environ.get("MIMICNEOAI_IEDB_MHCII_PYTHON_BIN", sys.executable),
+    )
+    parser.add_argument(
+        "--iedb-mhcii-script",
+        default=os.environ.get("MIMICNEOAI_IEDB_MHCII_SCRIPT", "mhc_II_binding.py"),
+    )
+    parser.add_argument(
+        "--iedb-mhcii-cwd",
+        default=os.environ.get("MIMICNEOAI_IEDB_MHCII_CWD", "."),
+    )
     parser.add_argument("--python-bin", default=sys.executable)
     parser.add_argument("--pvacseq-merged", default=None, help="Optional legacy pVACseq merged TSV for validation.")
     parser.add_argument("--no-pass-only", action="store_true")
@@ -85,6 +135,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         for label, command in commands:
             print(f"[DRY-RUN] {label}: {format_command(command)}", flush=True)
         return 0
+
+    validate_predictor_configuration(args)
 
     outdir.mkdir(parents=True, exist_ok=True)
     for key in ("epitope_tasks", "binding_predictions", "merged_epitopes", "archive"):
@@ -133,6 +185,7 @@ def build_commands(args: argparse.Namespace, paths: dict[str, Path]) -> list[tup
     chunk_args = ["--chunk-size", str(args.chunk_size)] if args.chunk_size else []
     timeout_args = ["--command-timeout", str(args.command_timeout)] if args.command_timeout else []
     pvacseq_validation_args = ["--pvacseq-merged", args.pvacseq_merged] if args.pvacseq_merged else []
+    predictor_args = runner_predictor_args(args)
 
     commands = [
         (
@@ -221,10 +274,7 @@ def build_commands(args: argparse.Namespace, paths: dict[str, Path]) -> list[tup
                 str(args.mt_workers or args.workers),
                 "--device",
                 args.device,
-                "--netmhcpan-bin",
-                args.netmhcpan_bin,
-                "--netmhciipan-bin",
-                args.netmhciipan_bin,
+                *predictor_args,
                 *chunk_args,
                 *timeout_args,
             ],
@@ -243,10 +293,7 @@ def build_commands(args: argparse.Namespace, paths: dict[str, Path]) -> list[tup
                 str(args.wt_workers or args.workers),
                 "--device",
                 args.device,
-                "--netmhcpan-bin",
-                args.netmhcpan_bin,
-                "--netmhciipan-bin",
-                args.netmhciipan_bin,
+                *predictor_args,
                 *chunk_args,
                 *timeout_args,
             ],
@@ -277,6 +324,78 @@ def build_commands(args: argparse.Namespace, paths: dict[str, Path]) -> list[tup
         ),
     ]
     return commands
+
+
+def runner_predictor_args(args: argparse.Namespace) -> list[str]:
+    values = [
+        ("--mhcflurry-predict-bin", args.mhcflurry_predict_bin),
+        ("--mhcflurry-downloads-dir", args.mhcflurry_downloads_dir),
+        ("--mhcnuggets-python-bin", args.mhcnuggets_python_bin),
+        ("--mhcnuggets-script", args.mhcnuggets_script),
+        ("--mhcnuggets-cwd", args.mhcnuggets_cwd),
+        ("--netmhcpan-bin", args.netmhcpan_bin),
+        ("--netmhciipan-bin", args.netmhciipan_bin),
+        ("--python-bin", args.iedb_mhci_python_bin),
+        ("--iedb-mhci-script", args.iedb_mhci_script),
+        ("--iedb-mhci-cwd", args.iedb_mhci_cwd),
+        ("--iedb-mhcii-python-bin", args.iedb_mhcii_python_bin),
+        ("--iedb-mhcii-script", args.iedb_mhcii_script),
+        ("--iedb-mhcii-cwd", args.iedb_mhcii_cwd),
+    ]
+    result: list[str] = []
+    for argument, value in values:
+        if value:
+            result.extend([argument, str(value)])
+    return result
+
+
+def validate_predictor_configuration(args: argparse.Namespace) -> None:
+    algorithms = {
+        item for item in args.algorithms.replace(",", " ").split() if item
+    }
+    errors: list[str] = []
+
+    def require_executable(label: str, value: str) -> None:
+        path = Path(value)
+        if path.parent != Path("."):
+            if not path.is_file() or not os.access(path, os.X_OK):
+                errors.append(f"{label} is not executable: {value}")
+        elif shutil.which(value) is None:
+            errors.append(f"{label} was not found on PATH: {value}")
+
+    def require_file(label: str, value: str) -> None:
+        if not Path(value).is_file():
+            errors.append(f"{label} does not exist: {value}")
+
+    def require_dir(label: str, value: str) -> None:
+        if not Path(value).is_dir():
+            errors.append(f"{label} does not exist: {value}")
+
+    if algorithms & {"MHCflurry", "MHCflurryEL"}:
+        require_executable("MHCflurry executable", args.mhcflurry_predict_bin)
+        require_dir("MHCflurry downloads directory", args.mhcflurry_downloads_dir)
+    if algorithms & {"MHCnuggetsI", "MHCnuggetsII"}:
+        require_executable("MHCnuggets Python", args.mhcnuggets_python_bin)
+        require_file("MHCnuggets script", args.mhcnuggets_script)
+        require_dir("MHCnuggets working directory", args.mhcnuggets_cwd)
+    if algorithms & {"NetMHCpan", "NetMHCpanEL"}:
+        require_executable("NetMHCpan executable", args.netmhcpan_bin)
+    if algorithms & {"NetMHCIIpan", "NetMHCIIpanEL"}:
+        require_executable("NetMHCIIpan executable", args.netmhciipan_bin)
+    if algorithms & {"SMM", "SMMPMBEC", "PickPocket"}:
+        require_executable("IEDB MHC-I Python", args.iedb_mhci_python_bin)
+        require_file("IEDB MHC-I script", args.iedb_mhci_script)
+        require_dir("IEDB MHC-I working directory", args.iedb_mhci_cwd)
+    if "NNalign" in algorithms:
+        require_executable("IEDB MHC-II Python", args.iedb_mhcii_python_bin)
+        require_file("IEDB MHC-II script", args.iedb_mhcii_script)
+        require_dir("IEDB MHC-II working directory", args.iedb_mhcii_cwd)
+
+    if errors:
+        raise RuntimeError(
+            "Binding predictor configuration is incomplete:\n- "
+            + "\n- ".join(errors)
+        )
 
 
 def run_steps(commands: list[tuple[str, list[str]]], paths: dict[str, Path], python_bin: str) -> None:

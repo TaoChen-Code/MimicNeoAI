@@ -19,6 +19,7 @@ from multiprocessing import Manager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from mimicneoai.functions.binding_prediction import configured_predictor_cli_args
 from mimicneoai.functions.fastp import fastp
 from mimicneoai.functions.hlatyping import hlahd
 from mimicneoai.functions.pipline_tools import raise_for_failed_samples, tools
@@ -190,6 +191,7 @@ def _start_one_sample(
                     "--workers",
                     str(int(others.get("binding_prediction_workers", configure.get("args", {}).get("hla_binding_threads", 5)))),
                 ]
+                cmd.extend(configured_predictor_cli_args(paths))
                 if "bcftools" in others:
                     cmd.extend(["--bcftools", str(others["bcftools"])])
                 tool.exec_cmd(" ".join(shlex.quote(item) for item in cmd), sample, pipline="mutation")

@@ -31,6 +31,7 @@ from typing import Dict, Any, List, Tuple
 from multiprocessing import Manager
 import multiprocessing.pool
 from importlib.resources import files
+from mimicneoai.functions.binding_prediction import configured_predictor_cli_args
 from mimicneoai.functions.pipline_tools import raise_for_failed_samples, tools
 
 
@@ -379,6 +380,7 @@ def _run_one_sample(
                 ]
                 if bool(others.get("binding_prediction_force_large_samples", False)):
                     cmd.append("--force-large-samples")
+                cmd.extend(configured_predictor_cli_args(paths))
                 _run_cmd(tool, sample, cmd)
             else:
                 raise ValueError(f"Unsupported binding_prediction_backend: {backend}")

@@ -168,6 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Prefix for intermediate task and prediction directories.",
     )
     parser.add_argument("--mhcflurry-predict-bin", default=None)
+    parser.add_argument("--mhcflurry-downloads-dir", default=None)
     parser.add_argument("--mhcnuggets-python-bin", default=None)
     parser.add_argument("--mhcnuggets-script", default=None)
     parser.add_argument("--mhcnuggets-cwd", default=None)
@@ -177,7 +178,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--iedb-mhci-cwd", default=None)
     parser.add_argument("--iedb-mhcii-script", default=None)
     parser.add_argument("--iedb-mhcii-cwd", default=None)
-    parser.add_argument("--python-bin", default=None)
+    parser.add_argument(
+        "--iedb-mhci-python-bin",
+        "--python-bin",
+        dest="iedb_mhci_python_bin",
+        default=None,
+    )
     parser.add_argument("--iedb-mhcii-python-bin", default=None)
     return parser
 
@@ -940,6 +946,7 @@ def fill_algorithm_columns(row: dict[str, str], algorithm: str, prediction: dict
 def append_optional_runner_args(args: argparse.Namespace, runner_args: list[str]) -> None:
     mapping = {
         "mhcflurry_predict_bin": "--mhcflurry-predict-bin",
+        "mhcflurry_downloads_dir": "--mhcflurry-downloads-dir",
         "mhcnuggets_python_bin": "--mhcnuggets-python-bin",
         "mhcnuggets_script": "--mhcnuggets-script",
         "mhcnuggets_cwd": "--mhcnuggets-cwd",
@@ -949,7 +956,7 @@ def append_optional_runner_args(args: argparse.Namespace, runner_args: list[str]
         "iedb_mhci_cwd": "--iedb-mhci-cwd",
         "iedb_mhcii_script": "--iedb-mhcii-script",
         "iedb_mhcii_cwd": "--iedb-mhcii-cwd",
-        "python_bin": "--python-bin",
+        "iedb_mhci_python_bin": "--python-bin",
         "iedb_mhcii_python_bin": "--iedb-mhcii-python-bin",
     }
     for attr, cli_name in mapping.items():

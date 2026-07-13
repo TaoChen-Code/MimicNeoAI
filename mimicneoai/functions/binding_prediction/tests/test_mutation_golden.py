@@ -21,7 +21,11 @@ from mimicneoai.functions.binding_prediction.allele_support import (
     allele_key,
     catalog_from_lines,
 )
-from mimicneoai.functions.binding_prediction.runner import merge_predictions, unsupported_reason
+from mimicneoai.functions.binding_prediction.runner import (
+    merge_predictions,
+    prediction_run_failed,
+    unsupported_reason,
+)
 from mimicneoai.functions.binding_prediction.schema import (
     PREDICTION_FIELDS,
     BindingPrediction,
@@ -543,6 +547,39 @@ class HlaAndAdapterContractTest(unittest.TestCase):
                 outdir=tempdir,
             )
             self.assertFalse(reusable_normalized_output(changed_job, resume=True))
+
+    def test_error_chunk_is_not_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            job = PredictionJob(
+                algorithm="MHCnuggetsI",
+                mhc_class="MHC-I",
+                hla_allele="HLA-A*02:01",
+                peptide_length=9,
+                chunk_index=1,
+                peptides=("ACDEFGHIK",),
+                outdir=tempdir,
+            )
+            job.normalized_path.parent.mkdir(parents=True)
+            write_prediction_rows(
+                job.normalized_path,
+                [
+                    BindingPrediction(
+                        peptide="ACDEFGHIK",
+                        hla_allele="HLA-A*02:01",
+                        algorithm="MHCnuggetsI",
+                        mhc_class="MHC-I",
+                        peptide_length=9,
+                        status="error",
+                        error="predictor unavailable",
+                    )
+                ],
+            )
+            self.assertFalse(reusable_normalized_output(job, resume=True))
+
+    def test_zero_usable_predictions_is_fatal_only_for_runnable_tasks(self) -> None:
+        self.assertTrue(prediction_run_failed(10, {"usable_result_rows": 0}))
+        self.assertFalse(prediction_run_failed(10, {"usable_result_rows": 1}))
+        self.assertFalse(prediction_run_failed(0, {"usable_result_rows": 0}))
 
 
 class MergeGoldenTest(unittest.TestCase):

@@ -7,6 +7,7 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
+from mimicneoai.functions.binding_prediction import PREDICTOR_PATH_ARGUMENTS
 from mimicneoai.functions.binding_prediction.nonmutation_workflow import main as run_nonmutation_binding
 
 
@@ -31,6 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--command-timeout", type=int, default=None)
     parser.add_argument("--skip-prediction", action="store_true")
     parser.add_argument("--windows-only", action="store_true")
+    for option in PREDICTOR_PATH_ARGUMENTS.values():
+        parser.add_argument(option, default=None)
     return parser
 
 
@@ -71,6 +74,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         command.append("--skip-prediction")
     if args.windows_only:
         command.append("--windows-only")
+    for option in PREDICTOR_PATH_ARGUMENTS.values():
+        value = getattr(args, option[2:].replace("-", "_"))
+        if value:
+            command.extend([option, value])
     return run_nonmutation_binding(command)
 
 

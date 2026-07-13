@@ -43,6 +43,18 @@ class PipelineBackendContractTest(unittest.TestCase):
             self.assertEqual(config["others"]["binding_prediction_max_task_rows"], 5_000_000)
             self.assertFalse(config["others"]["binding_prediction_force_large_samples"])
 
+        paths = yaml.safe_load((CONFIG_DIR / "paths.yaml").read_text())
+        predictor_paths = paths["path"]["common"]["BINDING_PREDICTORS"]
+        self.assertTrue(
+            predictor_paths["MHCFLURRY_PREDICT_BIN"].endswith("mhcflurry-predict")
+        )
+        self.assertTrue(
+            predictor_paths["NETMHCPAN_BIN"].endswith("netMHCpan")
+        )
+        self.assertTrue(
+            predictor_paths["IEDB_MHCII_SCRIPT"].endswith("mhc_II_binding.py")
+        )
+
     def test_mutation_default_and_native_dispatch(self) -> None:
         config = {
             "path": {"output_dir": str(self.root)},
@@ -80,6 +92,21 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.assertIn("run_mimicneoai_binding_prediction.py", command)
         self.assertIn("07.binding_prediction_mimicneoai_test", command)
         self.assertIn("--workers 3", command)
+
+        paths["path"]["common"]["BINDING_PREDICTORS"] = {
+            "MHCFLURRY_DOWNLOADS_DIR": "/tools/mhcflurry-models",
+            "MHCNUGGETS_CWD": "/tools/mhcnuggets",
+            "NETMHCPAN_BIN": "/tools/netMHCpan",
+        }
+        tool.reset_mock()
+        with patch.object(mutation_derived, "_variants_calling_and_annotation"):
+            mutation_derived._start_one_sample("TUMOR,NORMAL", config, paths, tool)
+        command = tool.exec_cmd.call_args.args[0]
+        self.assertIn(
+            "--mhcflurry-downloads-dir /tools/mhcflurry-models", command
+        )
+        self.assertIn("--mhcnuggets-cwd /tools/mhcnuggets", command)
+        self.assertIn("--netmhcpan-bin /tools/netMHCpan", command)
 
         config["others"]["binding_prediction_step_name"] = "../invalid"
         with (
@@ -124,6 +151,8 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.assertIn("--max-task-rows", native_command)
         self.assertIn("1234", native_command)
         self.assertIn("--force-large-samples", native_command)
+        self.assertIn("--netmhcpan-bin", native_command)
+        self.assertIn("/tools/netMHCpan", native_command)
 
     def test_microbial_default_and_native_dispatch(self) -> None:
         sample = "MICROBIAL-T"
@@ -154,12 +183,22 @@ class PipelineBackendContractTest(unittest.TestCase):
             }
         )
         tool.reset_mock()
-        microbial_peptides.MicrobialPeptidesBindingPrediction(sample, config, {}, tool)
+        paths = {
+            "path": {
+                "common": {
+                    "BINDING_PREDICTORS": {
+                        "NETMHCPAN_BIN": "/tools/netMHCpan"
+                    }
+                }
+            }
+        }
+        microbial_peptides.MicrobialPeptidesBindingPrediction(sample, config, paths, tool)
         command = tool.exec_cmd.call_args.args[0]
         self.assertIn("hla_binding_pred_mimicneoai.py", command)
         self.assertIn("08.MicrobialPeptidesBindingPrediction_mimicneoai", command)
         self.assertIn("--max-task-rows 4321", command)
         self.assertIn("--force-large-samples", command)
+        self.assertIn("--netmhcpan-bin /tools/netMHCpan", command)
 
     def cryptic_config(self) -> dict[str, object]:
         return {
@@ -183,7 +222,12 @@ class PipelineBackendContractTest(unittest.TestCase):
         return {
             "path": {
                 "cryptic": {"TRINITY_SIF": "/tools/trinity.sif"},
-                "common": {"PVACTOOLS": "/tools/pvactools.sif"},
+                "common": {
+                    "PVACTOOLS": "/tools/pvactools.sif",
+                    "BINDING_PREDICTORS": {
+                        "NETMHCPAN_BIN": "/tools/netMHCpan"
+                    },
+                },
             },
             "database": {
                 "cryptic": {

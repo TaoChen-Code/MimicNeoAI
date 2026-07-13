@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Optional
 
-from mimicneoai.functions.binding_prediction.adapters.base import AdapterConfig
+from mimicneoai.functions.binding_prediction.adapters.base import (
+    AdapterConfig,
+    predictor_env,
+)
 from mimicneoai.functions.binding_prediction.schema import BindingTask
 
 
@@ -97,7 +100,9 @@ class AlleleSupportMatrix:
             return SupportCatalog(None, "discovery_failed", error=str(exc))
 
     def _load_mhcflurry(self) -> SupportCatalog:
-        candidates = discover_mhcflurry_allele_files()
+        candidates = discover_mhcflurry_allele_files(
+            self.config.mhcflurry_downloads_dir
+        )
         if candidates:
             path = candidates[-1]
             with path.open(newline="") as handle:
@@ -107,7 +112,10 @@ class AlleleSupportMatrix:
                     if row.get("allele")
                 }
             return SupportCatalog(frozenset(alleles), str(path))
-        lines = run_inventory_command([self.config.mhcflurry_predict_bin, "--list-supported-alleles"])
+        lines = run_inventory_command(
+            [self.config.mhcflurry_predict_bin, "--list-supported-alleles"],
+            env=predictor_env(self.config),
+        )
         return catalog_from_lines(lines, f"{self.config.mhcflurry_predict_bin} --list-supported-alleles")
 
     def _load_netmhcpan(self) -> SupportCatalog:
@@ -212,7 +220,9 @@ def catalog_from_lines(lines: Iterable[str], source: str) -> SupportCatalog:
     return SupportCatalog(frozenset(alleles), source)
 
 
-def run_inventory_command(command: list[str]) -> list[str]:
+def run_inventory_command(
+    command: list[str], env: Optional[dict[str, str]] = None
+) -> list[str]:
     completed = subprocess.run(
         command,
         stdout=subprocess.PIPE,
@@ -220,15 +230,18 @@ def run_inventory_command(command: list[str]) -> list[str]:
         text=True,
         check=False,
         timeout=60,
+        env=env,
     )
     if completed.returncode != 0:
         raise RuntimeError(f"allele inventory command failed ({completed.returncode}): {' '.join(command)}")
     return completed.stdout.splitlines()
 
 
-def discover_mhcflurry_allele_files() -> list[Path]:
+def discover_mhcflurry_allele_files(configured_root: str = "") -> list[Path]:
     roots = []
-    configured_root = os.environ.get("MHCFLURRY_DOWNLOADS_DIR", "").strip()
+    configured_root = (
+        configured_root or os.environ.get("MHCFLURRY_DOWNLOADS_DIR", "")
+    ).strip()
     if configured_root:
         roots.append(Path(configured_root))
     roots.append(Path.home() / ".local" / "share" / "mhcflurry")

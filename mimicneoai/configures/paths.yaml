@@ -7,6 +7,20 @@ path:
   common:
     GATK_JAR: "../database/soft/GATK/gatk-4.6.0.0.jar"
     PVACTOOLS: "../database/soft/PVACTOOLS/pvactools-4.2.1.sif"
+    BINDING_PREDICTORS:
+      MHCFLURRY_PREDICT_BIN: "/workspace/pkgs/mhcflurry/.venv/bin/mhcflurry-predict"
+      MHCFLURRY_DOWNLOADS_DIR: "/workspace/pkgs/mhcflurry/downloads/2.2.0"
+      MHCNUGGETS_PYTHON_BIN: "/workspace/pkgs/mhcnuggets/.venv/bin/python"
+      MHCNUGGETS_SCRIPT: "/workspace/pkgs/mhcnuggets/mhcnuggets/src/predict.py"
+      MHCNUGGETS_CWD: "/workspace/pkgs/mhcnuggets"
+      NETMHCPAN_BIN: "/workspace/pkgs/NetMHCpan/netMHCpan-4.2/netMHCpan"
+      NETMHCIIPAN_BIN: "/workspace/pkgs/NetMHCIIpan/netMHCIIpan-4.3/netMHCIIpan"
+      IEDB_MHCI_PYTHON_BIN: "/usr/bin/python3.10"
+      IEDB_MHCI_SCRIPT: "/workspace/pkgs/IEDB/mhc_i/src/predict_binding.py"
+      IEDB_MHCI_CWD: "/workspace/pkgs/IEDB/mhc_i/src"
+      IEDB_MHCII_PYTHON_BIN: "/usr/bin/python3.10"
+      IEDB_MHCII_SCRIPT: "/workspace/pkgs/IEDB/mhc_ii/mhc_II_binding.py"
+      IEDB_MHCII_CWD: "/workspace/pkgs/IEDB/mhc_ii"
 
   neoantigen:
     VEP_SIF:  "../database/soft/VEP/vep.sif"

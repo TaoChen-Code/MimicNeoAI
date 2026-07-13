@@ -26,6 +26,9 @@ class AdapterConfig:
     mhcflurry_predict_bin: str = os.environ.get(
         "MIMICNEOAI_MHCFLURRY_PREDICT_BIN", "mhcflurry-predict"
     )
+    mhcflurry_downloads_dir: str = os.environ.get(
+        "MHCFLURRY_DOWNLOADS_DIR", ""
+    )
     mhcnuggets_python_bin: str = os.environ.get(
         "MIMICNEOAI_MHCNUGGETS_PYTHON_BIN", sys.executable
     )
@@ -95,6 +98,8 @@ def reusable_normalized_output(job: PredictionJob, resume: bool) -> bool:
             if not set(PREDICTION_FIELDS).issubset(reader.fieldnames or []):
                 return False
             for row in reader:
+                if (row.get("status") or "").strip() == "error":
+                    return False
                 observed.add(
                     (
                         (row.get("peptide") or "").strip(),
@@ -136,6 +141,8 @@ def predictor_env(config: Optional[AdapterConfig] = None, extra: Optional[dict[s
             "TF_NUM_INTEROP_THREADS": str(config.tf_inter_op_threads if config else 1),
         }
     )
+    if config and config.mhcflurry_downloads_dir:
+        env["MHCFLURRY_DOWNLOADS_DIR"] = config.mhcflurry_downloads_dir
     if extra:
         env.update(extra)
     return env

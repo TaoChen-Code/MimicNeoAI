@@ -4,6 +4,7 @@ import shlex
 import sys
 from datetime import datetime
 from importlib.resources import files
+from mimicneoai.functions.binding_prediction import configured_predictor_cli_args
 from mimicneoai.functions.utils import format_java_heap
 import pandas as pd
 from mimicneoai.microbial_pipeline.scripts.get_data_for_blastx import get_data
@@ -788,6 +789,7 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
             ]
             if bool(others.get("binding_prediction_force_large_samples", False)):
                 cmd.append("--force-large-samples")
+            cmd.extend(configured_predictor_cli_args(paths))
             tool.exec_cmd(" ".join(shlex.quote(item) for item in cmd), sample, pipline="microbial")
         else:
             raise ValueError(f"Unsupported binding_prediction_backend: {backend}")

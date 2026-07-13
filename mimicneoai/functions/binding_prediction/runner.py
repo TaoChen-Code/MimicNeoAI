@@ -45,6 +45,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional per-predictor subprocess timeout in seconds. Timed-out chunks are written as error rows.",
     )
     parser.add_argument("--mhcflurry-predict-bin", default=AdapterConfig.mhcflurry_predict_bin)
+    parser.add_argument(
+        "--mhcflurry-downloads-dir",
+        default=AdapterConfig.mhcflurry_downloads_dir,
+    )
     parser.add_argument("--mhcnuggets-python-bin", default=AdapterConfig.mhcnuggets_python_bin)
     parser.add_argument("--mhcnuggets-script", default=AdapterConfig.mhcnuggets_script)
     parser.add_argument("--mhcnuggets-cwd", default=AdapterConfig.mhcnuggets_cwd)
@@ -80,6 +84,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     tasks = read_binding_tasks(Path(args.tasks), algorithms=algorithm_filter)
     config = AdapterConfig(
         mhcflurry_predict_bin=args.mhcflurry_predict_bin,
+        mhcflurry_downloads_dir=args.mhcflurry_downloads_dir,
         mhcnuggets_python_bin=args.mhcnuggets_python_bin,
         mhcnuggets_script=args.mhcnuggets_script,
         mhcnuggets_cwd=args.mhcnuggets_cwd,
@@ -143,7 +148,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         json.dump(summary, handle, indent=2, ensure_ascii=False)
     print(f"[binding_prediction] wrote {final_path}", flush=True)
     print(f"[binding_prediction] wrote {summary_path}", flush=True)
+    qc_summary = summary.get("qc_summary", {})
+    if prediction_run_failed(len(runnable_tasks), qc_summary):
+        print(
+            "[binding_prediction] no usable predictions were produced for runnable tasks",
+            flush=True,
+        )
+        return 2
     return 0
+
+
+def prediction_run_failed(
+    runnable_task_rows: int, qc_summary: dict[str, object]
+) -> bool:
+    """Return whether execution produced no usable result for runnable tasks."""
+
+    return runnable_task_rows > 0 and int(qc_summary.get("usable_result_rows", 0)) == 0
 
 
 def parse_algorithm_filter(value: str) -> Optional[set[str]]:
@@ -157,6 +177,7 @@ def predictor_runtime_summary(config: AdapterConfig) -> dict[str, object]:
 
     return {
         "mhcflurry_predict_bin": config.mhcflurry_predict_bin,
+        "mhcflurry_downloads_dir": config.mhcflurry_downloads_dir,
         "mhcnuggets_python_bin": config.mhcnuggets_python_bin,
         "mhcnuggets_script": config.mhcnuggets_script,
         "mhcnuggets_cwd": config.mhcnuggets_cwd,

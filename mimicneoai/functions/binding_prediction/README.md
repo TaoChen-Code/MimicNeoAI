@@ -27,6 +27,13 @@ others:
   binding_prediction_workers: 8
 ```
 
+Predictor installation paths are deployment settings under
+`path.common.BINDING_PREDICTORS` in `configures/paths.yaml`. They are passed
+through the pipeline entry point to the common runner, including the
+MHCflurry model directory and the MHCnuggets/IEDB working directories. The
+matching `MIMICNEOAI_*` environment variables remain available for standalone
+runner use.
+
 Cryptic and microbial pipelines also support:
 
 ```yaml
@@ -74,7 +81,8 @@ Cryptic and microbial native output:
 - Binding tasks are reused only when the epitope-window identity, HLA file, and
   algorithm sets match their manifest.
 - Predictor chunks are reused only when normalized rows exactly match the
-  current peptide, HLA, algorithm, MHC class, and peptide length requests.
+  current peptide, HLA, algorithm, MHC class, and peptide length requests and
+  contain no `status=error` rows.
 - Changed inputs rebuild the affected stage instead of silently accepting stale
   output.
 
@@ -92,6 +100,8 @@ new output directory when replacing an input while preserving all three values.
 - Unsupported predictor-HLA pairs remain in the normalized long table with
   `status=skipped` and `error=unsupported_allele_by_predictor`.
 - Predictor failures remain in the long table with `status=error`.
+- Partial predictor failures remain informational. A run with runnable tasks
+  but no usable prediction rows exits nonzero and stops the parent pipeline.
 
 ## HLA support discovery
 
