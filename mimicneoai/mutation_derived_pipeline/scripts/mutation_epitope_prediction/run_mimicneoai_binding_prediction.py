@@ -346,6 +346,10 @@ def build_workflow_summary(args: argparse.Namespace, paths: dict[str, Path], sta
         "wt_task_rows": mt_split_summary.get("wt_task_rows"),
         "mt_prediction_rows": mt_prediction_summary.get("prediction_rows"),
         "wt_prediction_rows": wt_prediction_summary.get("prediction_rows"),
+        "binding_qc_summary": {
+            "MT": mt_prediction_summary.get("qc_summary", {}),
+            "WT": wt_prediction_summary.get("qc_summary", {}),
+        },
         "merged_rows": merged_summary.get("rows"),
         "fs_wt_rule": "Frameshift WT Epitope Seq and corresponding WT IC50/fold-change/percentile fields are left blank.",
         "outputs": {

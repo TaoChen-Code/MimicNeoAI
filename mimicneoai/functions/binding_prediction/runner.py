@@ -14,6 +14,7 @@ from mimicneoai.functions.binding_prediction.adapters import (
     adapter_for_algorithm,
 )
 from mimicneoai.functions.binding_prediction.allele_support import AlleleSupportMatrix
+from mimicneoai.functions.binding_prediction.qc import build_binding_qc_summary
 from mimicneoai.functions.binding_prediction.schema import (
     PREDICTION_FIELDS,
     BindingTask,
@@ -119,6 +120,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     final_path = outdir / "binding_predictions.long.tsv"
     summary_path = outdir / "binding_predictions.summary.json"
     summary = merge_predictions(normalized_paths, final_path, skipped_tasks)
+    summary["qc_summary"] = build_binding_qc_summary(Path(args.tasks), final_path)
     summary.update(
         {
             "task_rows": len(tasks),

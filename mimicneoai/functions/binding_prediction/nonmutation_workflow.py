@@ -16,6 +16,7 @@ from pathlib import Path
 from statistics import median
 from typing import Iterable, Optional
 
+from mimicneoai.functions.binding_prediction.qc import build_binding_qc_summary
 from mimicneoai.functions.binding_prediction.runner import main as run_binding_predictions
 from mimicneoai.functions.binding_prediction.schema import safe_float
 from mimicneoai.mutation_derived_pipeline.scripts.mutation_epitope_prediction.hla_parser import (
@@ -299,6 +300,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     prediction_path = pred_dir / "binding_predictions.long.tsv"
     prediction_paths: list[Path] = []
+    binding_qc_summary: dict[str, object] = {}
     binding_task_rows = int(task_summary["binding_task_rows"])
     prediction_skipped_by_scale = task_materialization_skipped_by_scale
     skip_reason = ""
@@ -356,6 +358,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         concatenate_prediction_tables(prediction_paths, prediction_path)
         merged_out = combined_dir / f"{args.sample}.merged.all_epitopes.tsv"
         merge_pvacbind_compatible(epitope_windows_path, prediction_path, task_path, merged_out)
+        binding_qc_summary = build_binding_qc_summary(task_path, prediction_path)
     else:
         merged_out = combined_dir / f"{args.sample}.merged.all_epitopes.tsv"
 
@@ -389,6 +392,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "prediction_skipped": args.skip_prediction or args.windows_only or prediction_skipped_by_scale,
         "prediction_skipped_by_scale": prediction_skipped_by_scale,
         "skip_reason": skip_reason,
+        "binding_qc_summary": binding_qc_summary,
         "merged_output": str(merged_out),
         "merged_output_exists": merged_out.exists(),
     }
