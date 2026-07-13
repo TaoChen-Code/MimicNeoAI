@@ -7,9 +7,9 @@
 Generate selected aeSEP CDS FASTA and map ORF/CDS sequences back to the
 reference genome for block-level genomic annotation.
 
-This script wraps the former manual step:
-  1) annotation_v4.ipynb: select CDS records for aeSEP peptide IDs.
-  2) run-v4.sh: minimap2/samtools/bedtools/HOMER annotation.
+This script consolidates two ORF annotation operations:
+  1) select CDS records for aeSEP peptide IDs;
+  2) run minimap2/samtools/bedtools/HOMER genome annotation.
 
 Example (sanitized):
   python 08-orf_genome_annotation.py \
@@ -307,7 +307,7 @@ def parse_args():
     ap = argparse.ArgumentParser(
         description="Generate aeSEP CDS FASTA and annotate ORF genomic positions for cryptic antigen pipeline."
     )
-    ap.add_argument("-s", "--sample", required=True, help="Sample ID, e.g. WHB-T-RNA-2")
+    ap.add_argument("-s", "--sample", required=True, help="Sample ID, e.g. SAMPLE_ID")
     ap.add_argument("--sample-dir", required=True, help="Sample root directory containing 02-known and 03-novel")
     ap.add_argument("-o", "--outdir", required=True, help="Output directory, usually SAMPLE/08-annotaions")
 

@@ -6,6 +6,7 @@ import csv
 import gzip
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
@@ -22,19 +23,31 @@ from mimicneoai.functions.binding_prediction.schema import (
 class AdapterConfig:
     """Filesystem configuration for local predictor tools."""
 
-    mhcflurry_predict_bin: str = "/workspace/pkgs/mhcflurry/.venv/bin/mhcflurry-predict"
-    mhcnuggets_python_bin: str = "/workspace/pkgs/mhcnuggets/.venv/bin/python"
-    mhcnuggets_script: str = "/workspace/pkgs/mhcnuggets/mhcnuggets/src/predict.py"
-    mhcnuggets_cwd: str = "/workspace/pkgs/mhcnuggets"
+    mhcflurry_predict_bin: str = os.environ.get(
+        "MIMICNEOAI_MHCFLURRY_PREDICT_BIN", "mhcflurry-predict"
+    )
+    mhcnuggets_python_bin: str = os.environ.get(
+        "MIMICNEOAI_MHCNUGGETS_PYTHON_BIN", sys.executable
+    )
+    mhcnuggets_script: str = os.environ.get(
+        "MIMICNEOAI_MHCNUGGETS_SCRIPT", "predict.py"
+    )
+    mhcnuggets_cwd: str = os.environ.get("MIMICNEOAI_MHCNUGGETS_CWD", ".")
     mhcnuggets_rank_output: bool = True
-    netmhcpan_bin: str = "/workspace/pkgs/NetMHCpan/netMHCpan-4.2/netMHCpan"
-    netmhciipan_bin: str = "/workspace/pkgs/NetMHCIIpan/netMHCIIpan-4.3/netMHCIIpan"
-    iedb_mhci_script: str = "/workspace/pkgs/IEDB/mhc_i/src/predict_binding.py"
-    iedb_mhci_cwd: str = "/workspace/pkgs/IEDB/mhc_i"
-    iedb_mhcii_script: str = "/workspace/pkgs/IEDB/mhc_ii/mhc_II_binding.py"
-    iedb_mhcii_cwd: str = "/workspace/pkgs/IEDB/mhc_ii"
+    netmhcpan_bin: str = os.environ.get("MIMICNEOAI_NETMHCPAN_BIN", "netMHCpan")
+    netmhciipan_bin: str = os.environ.get("MIMICNEOAI_NETMHCIIPAN_BIN", "netMHCIIpan")
+    iedb_mhci_script: str = os.environ.get(
+        "MIMICNEOAI_IEDB_MHCI_SCRIPT", "predict_binding.py"
+    )
+    iedb_mhci_cwd: str = os.environ.get("MIMICNEOAI_IEDB_MHCI_CWD", ".")
+    iedb_mhcii_script: str = os.environ.get(
+        "MIMICNEOAI_IEDB_MHCII_SCRIPT", "mhc_II_binding.py"
+    )
+    iedb_mhcii_cwd: str = os.environ.get("MIMICNEOAI_IEDB_MHCII_CWD", ".")
     python_bin: str = "python"
-    iedb_mhcii_python_bin: str = "/workspace/pkgs/mhcflurry/.venv/bin/python"
+    iedb_mhcii_python_bin: str = os.environ.get(
+        "MIMICNEOAI_IEDB_MHCII_PYTHON_BIN", sys.executable
+    )
     chunk_size: Optional[int] = None
     resume: bool = True
     device: str = "cpu"

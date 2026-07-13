@@ -1,4 +1,4 @@
-"""Step 02: merge local binding predictions into a pVACseq-like wide table.
+"""Step 02: merge local binding predictions into a downstream-compatible wide table.
 
 This script joins:
 
@@ -500,7 +500,7 @@ def set_if_present(row: dict[str, str], key: str, value: object) -> None:
 
 
 def format_mutation_position(epitope: dict[str, str], window_start: int) -> str:
-    """Format pVACseq-like mutation position inside the epitope window."""
+    """Format the mutation position inside the epitope window."""
 
     window_end = int(epitope["window_end_0based"])
     mutation_start = int(epitope["mutation_start_0based"])

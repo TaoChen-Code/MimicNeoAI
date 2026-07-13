@@ -2,7 +2,7 @@
 
 The workflow uses pVACtools only as an external source generator for mutation
 annotation and WT/MT protein FASTA. MimicNeoAI then builds mutation-covering
-epitope windows, runs local binding predictors, and writes a pVACseq-compatible
+epitope windows, runs local binding predictors, and writes a downstream-compatible
 merged all_epitopes table.
 """
 

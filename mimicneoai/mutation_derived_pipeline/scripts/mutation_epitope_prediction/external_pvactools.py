@@ -1,11 +1,8 @@
 """External pVACtools command wrapper.
 
-This module is a thin boundary around the pVACtools Apptainer image. It should
-only assemble commands, run commands, validate expected files, and return output
-paths to downstream MimicNeoAI code.
-
-Do not copy or reimplement pVACtools internals here. In particular, do not
-vendor pVACtools VcfConverter, FastaGenerator, or ProximalVariant code.
+This module is a thin boundary around the pVACtools Apptainer image. It only
+assembles external commands, validates expected files, and returns output paths
+to downstream MimicNeoAI code. No third-party implementation is vendored.
 """
 
 from __future__ import annotations
@@ -169,7 +166,7 @@ def run_vcf_converter(
 ) -> VcfConverterOutputs:
     """Run the pVACtools VCF conversion step externally.
 
-    This step is used to obtain pVACtools-compatible mutation annotation fields.
+    This step obtains mutation annotation fields from the external converter.
     The returned table should be treated as an annotation source, not as the
     primary stable identifier system for the new workflow.
     """

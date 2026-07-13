@@ -6,7 +6,7 @@ Date: 2026-07-13
 
 This validation covers pipeline entry integration, output contracts, oversized
 non-mutation task handling, dependency-light regression fixtures, and runtime
-documentation. Full CJ end-to-end prediction and performance benchmarking are
+documentation. Full-size end-to-end prediction and performance benchmarking are
 outside this fast validation scope.
 
 ## Acceptance results
@@ -24,17 +24,17 @@ outside this fast validation scope.
 | MT/WT contract | Pass | Missense/in-frame WT pairing is retained; frameshift WT and dependent metrics are blank. |
 | IC50 and EL separation | Pass | EL/presentation results enter percentile fields only and cannot alter Best/Median IC50 or fold change. |
 | Error visibility | Pass | Skipped and failed tasks remain explicit in normalized outputs and summary status counts. |
-| pVAC-compatible output | Pass | Mutation uses the 111-column pVACseq profile; non-mutation uses the common 45-column pVACbind-compatible profile. |
+| Output schema | Pass | Mutation uses the established 111-column profile; non-mutation uses the common 45-column profile. |
 
 Static inspection of the current downstream `afterNeoantigen_v2.3` notebook
 found 99 direct references to pVACseq input columns. All 99 are present in the
-native CJ 111-column merged table. Other candidate strings identified by the
+native 111-column reference merged table. Other candidate strings identified by the
 scan are fields created later by population-frequency, expression, or
 immunogenicity annotation steps rather than missing binding-input columns.
 
-## Existing CJ smoke evidence
+## Existing smoke evidence
 
-The previously completed CJ non-mutation smoke tests remain valid after the
+The previously completed non-mutation smoke tests remain valid after the
 shared-adapter changes:
 
 - cryptic: 150 rows, all MHCnuggets IC50 and percentile fields populated;
@@ -43,11 +43,10 @@ shared-adapter changes:
 - microbial retains all historical columns in order and adds the common
   MHCflurry fields.
 
-Smoke artifacts are maintained outside the repository under
-`work/Antigen/MS/binding_prediction_smoke/2026-07-13`.
+Smoke artifacts are maintained outside the repository.
 
 ## Deferred validation
 
-- full CJ mutation, cryptic, and microbial end-to-end prediction;
+- full mutation, cryptic, and microbial end-to-end prediction;
 - multi-sample throughput, memory, and worker-count benchmarking;
 - forced full prediction for microbial samples exceeding the scale threshold.
