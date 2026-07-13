@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import csv
+import pickle
+import re
+from bisect import bisect_left, bisect_right
 from pathlib import Path
 
 from mimicneoai.functions.binding_prediction.schema import BindingPrediction, PredictionJob
@@ -48,31 +51,25 @@ class MhcnuggetsAdapter(PredictorAdapter):
                 )
             write_peptide_lines(job.input_path, job.peptides)
             rank_error = ""
+            run_logged_command(
+                build_mhcnuggets_command(job, rank_output=False, config=self.config),
+                Path(self.config.mhcnuggets_cwd),
+                job.log_path,
+                config=self.config,
+            )
+            rows = list(csv.DictReader(job.raw_path.open()))
+            rank_by_peptide = {}
             if self.config.mhcnuggets_rank_output:
                 try:
-                    run_logged_command(
-                        build_mhcnuggets_command(job, rank_output=True, config=self.config),
+                    predictor_allele = read_closest_mhcnuggets_allele(job.log_path)
+                    rank_by_peptide = calculate_mhcnuggets_ranks(
+                        rows,
+                        job.mhc_class,
+                        predictor_allele,
                         Path(self.config.mhcnuggets_cwd),
-                        job.log_path,
-                        config=self.config,
                     )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 - retain IC50 when rank resources fail
                     rank_error = str(exc)
-                    run_logged_command(
-                        build_mhcnuggets_command(job, rank_output=False, config=self.config),
-                        Path(self.config.mhcnuggets_cwd),
-                        job.log_path,
-                        config=self.config,
-                    )
-            else:
-                run_logged_command(
-                    build_mhcnuggets_command(job, rank_output=False, config=self.config),
-                    Path(self.config.mhcnuggets_cwd),
-                    job.log_path,
-                    config=self.config,
-                )
-            rows = list(csv.DictReader(job.raw_path.open()))
-            rank_by_peptide = read_mhcnuggets_rank_output(job.raw_path) if self.config.mhcnuggets_rank_output else {}
             rows_by_peptide: dict[str, dict[str, str]] = {}
             for row in rows:
                 peptide = normalize_peptide(row.get("peptide", ""))
@@ -183,6 +180,87 @@ def human_proteome_percentile(rank: str) -> str:
     if str(rank).strip() == "":
         return ""
     return f"{float(rank) * 100:.12g}"
+
+
+def read_closest_mhcnuggets_allele(log_path: Path) -> str:
+    """Read the trained allele selected by MHCnuggets' closest-model logic."""
+
+    pattern = re.compile(r"^Closest allele found\s+(\S+)\s*$")
+    for line in log_path.read_text().splitlines():
+        match = pattern.match(line.strip())
+        if match:
+            return match.group(1)
+    raise ValueError(f"MHCnuggets closest allele was not found in {log_path}")
+
+
+def calculate_mhcnuggets_ranks(
+    rows: list[dict[str, str]],
+    mhc_class: str,
+    predictor_allele: str,
+    mhcnuggets_cwd: Path,
+) -> dict[str, str]:
+    """Calculate human-proteome ranks without upstream float-key lookups.
+
+    MHCnuggets' bundled ``get_ranks`` indexes an exact float32 IC50 in a
+    dictionary. Batch predictions can differ by floating-point representation
+    and raise ``KeyError``. Bisecting the same reference distributions preserves
+    the rank definition while making ties and rounded IC50 values robust.
+    """
+
+    suffix = "cI" if mhc_class == "MHC-I" else "cII"
+    subdir = "mhcI" if mhc_class == "MHC-I" else "mhcII"
+    data_dir = mhcnuggets_cwd / "mhcnuggets" / "data" / "production" / subdir
+    ic50_data = read_pickle(data_dir / f"hp_ic50s_{suffix}.pkl")
+    hp_lengths = read_pickle(data_dir / f"hp_ic50s_hp_lengths_{suffix}.pkl")
+    first_percentiles = read_pickle(data_dir / f"hp_ic50s_first_percentiles_{suffix}.pkl")
+
+    downsampled = list(ic50_data["downsampled"][predictor_allele])
+    first_values = list(ic50_data["first_percentiles"][predictor_allele])
+    first_percentile = float(first_percentiles[predictor_allele])
+    hp_length = int(hp_lengths[predictor_allele])
+    result = {}
+    for row in rows:
+        peptide = normalize_peptide(row.get("peptide", ""))
+        ic50_text = str(row.get("ic50", "")).strip()
+        if not peptide or not ic50_text:
+            continue
+        rank = reference_rank_fraction(
+            float(ic50_text),
+            first_percentile,
+            downsampled,
+            first_values,
+            hp_length,
+        )
+        result[peptide] = f"{rank:.12g}"
+    return result
+
+
+def reference_rank_fraction(
+    ic50: float,
+    first_percentile: float,
+    downsampled: list[float],
+    first_values: list[float],
+    hp_length: int,
+) -> float:
+    """Return the 0-1 MHCnuggets rank fraction using tie-aware bisect."""
+
+    if ic50 > first_percentile:
+        values = downsampled
+        denominator = len(values)
+    else:
+        values = first_values
+        denominator = hp_length
+    if not values or denominator <= 0:
+        raise ValueError("empty MHCnuggets human-proteome rank reference")
+    left = bisect_left(values, ic50)
+    right = bisect_right(values, ic50)
+    position = (left + right - 1) / 2 if right > left else left - 1
+    return max(0.0, min(1.0, (position + 1) / float(denominator)))
+
+
+def read_pickle(path: Path):
+    with path.open("rb") as handle:
+        return pickle.load(handle)  # noqa: S301 - trusted predictor installation data
 
 
 def mhcnuggets_rank_path(output_path: Path) -> Path:

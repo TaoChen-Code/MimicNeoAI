@@ -13,6 +13,13 @@ from mimicneoai.functions.binding_prediction.adapters.mhcnuggets import (
     MhcnuggetsAdapter,
     build_mhcnuggets_command,
     human_proteome_percentile,
+    reference_rank_fraction,
+)
+from mimicneoai.functions.binding_prediction.allele_support import (
+    AlleleSupportMatrix,
+    SupportCatalog,
+    allele_key,
+    catalog_from_lines,
 )
 from mimicneoai.functions.binding_prediction.runner import unsupported_reason
 from mimicneoai.functions.binding_prediction.schema import (
@@ -244,6 +251,16 @@ class HlaAndAdapterContractTest(unittest.TestCase):
     def test_mhcnuggets_percentile_scale_and_command(self) -> None:
         self.assertEqual(human_proteome_percentile("0.8719"), "87.19")
         self.assertEqual(human_proteome_percentile(""), "")
+        self.assertEqual(
+            reference_rank_fraction(
+                20.0,
+                first_percentile=10.0,
+                downsampled=[10.0, 20.0, 20.0, 30.0],
+                first_values=[1.0, 5.0, 10.0],
+                hp_length=100,
+            ),
+            0.625,
+        )
         job = PredictionJob(
             algorithm="MHCnuggetsI",
             mhc_class="MHC-I",
@@ -258,6 +275,14 @@ class HlaAndAdapterContractTest(unittest.TestCase):
         self.assertEqual(command[-2:], ["-r", "True"])
 
     def test_unsupported_alleles_are_explicitly_skipped(self) -> None:
+        support = AlleleSupportMatrix(
+            AdapterConfig(),
+            catalogs={
+                "MHCnuggetsI": SupportCatalog(frozenset({allele_key("HLA-A*02:01")}), "fixture"),
+                "NetMHCpan": SupportCatalog(frozenset({allele_key("HLA-A*02:01")}), "fixture"),
+                "NNalign": SupportCatalog(frozenset({allele_key("DRB1*11:01")}), "fixture"),
+            },
+        )
         cases = [
             (BindingTask("ACDEFGHIK", "HLA-F*01:01", "MHCnuggetsI", "MHC-I"), True),
             (BindingTask("ACDEFGHIK", "HLA-A*11:353", "NetMHCpan", "MHC-I"), True),
@@ -267,7 +292,44 @@ class HlaAndAdapterContractTest(unittest.TestCase):
         ]
         for task, expected_skipped in cases:
             with self.subTest(task=task):
-                self.assertEqual(bool(unsupported_reason(task)), expected_skipped)
+                self.assertEqual(bool(unsupported_reason(task, support)), expected_skipped)
+
+    def test_predictor_allele_spellings_share_one_support_key(self) -> None:
+        self.assertEqual(allele_key("HLA-A*02:01"), allele_key("HLA-A0201"))
+        self.assertEqual(allele_key("DRB1*11:01"), allele_key("DRB1_1101"))
+        self.assertEqual(
+            allele_key("DPA1*01:03-DPB1*02:01"),
+            allele_key("HLA-DPA10103-DPB10201"),
+        )
+
+    def test_support_catalog_parsing_and_unknown_catalog_fail_open(self) -> None:
+        catalog = catalog_from_lines(
+            ["# supported", "HLA-A02:01", "HLA-B*44:03", "", "----"],
+            "fixture",
+        )
+        self.assertEqual(
+            catalog.alleles,
+            frozenset({allele_key("HLA-A*02:01"), allele_key("HLA-B*44:03")}),
+        )
+        support = AlleleSupportMatrix(
+            AdapterConfig(),
+            catalogs={"NetMHCpan": SupportCatalog(None, "fixture", error="probe failed")},
+        )
+        task = BindingTask("ACDEFGHIK", "HLA-A*99:99", "NetMHCpan", "MHC-I")
+        self.assertEqual(unsupported_reason(task, support), "")
+
+    def test_mhcnuggets_class_i_length_limit_precedes_exact_model(self) -> None:
+        support = AlleleSupportMatrix(
+            AdapterConfig(),
+            catalogs={
+                "MHCnuggetsI": SupportCatalog(
+                    frozenset({allele_key("HLA-A*02:01")}),
+                    "fixture",
+                )
+            },
+        )
+        task = BindingTask("ACDEFGHIKLMNPQRST", "HLA-A*02:01", "MHCnuggetsI", "MHC-I")
+        self.assertEqual(unsupported_reason(task, support), "unsupported_allele_by_predictor")
 
     def test_mhcnuggets_resume_reuses_normalized_chunk(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:

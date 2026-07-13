@@ -13,6 +13,7 @@ from mimicneoai.functions.binding_prediction.adapters import (
     AdapterConfig,
     adapter_for_algorithm,
 )
+from mimicneoai.functions.binding_prediction.allele_support import AlleleSupportMatrix
 from mimicneoai.functions.binding_prediction.schema import (
     PREDICTION_FIELDS,
     BindingTask,
@@ -99,7 +100,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         command_timeout=args.command_timeout,
     )
 
-    runnable_tasks, skipped_tasks = filter_unsupported_tasks(tasks)
+    allele_support = AlleleSupportMatrix(config)
+    runnable_tasks, skipped_tasks = filter_unsupported_tasks(tasks, allele_support)
     jobs = build_jobs(runnable_tasks, outdir / "chunks", config)
     print(
         f"[binding_prediction] tasks={len(tasks)} runnable={len(runnable_tasks)} "
@@ -131,6 +133,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "command_timeout": args.command_timeout,
             "algorithms": sorted({task.algorithm for task in tasks}),
             "supported_algorithms": SUPPORTED_ALGORITHMS,
+            "allele_support_matrix": allele_support.summary(),
         }
     )
     with summary_path.open("w") as handle:
@@ -146,11 +149,15 @@ def parse_algorithm_filter(value: str) -> Optional[set[str]]:
     return {item.strip() for item in value.replace(",", " ").split() if item.strip()}
 
 
-def filter_unsupported_tasks(tasks: list[BindingTask]) -> tuple[list[BindingTask], list[tuple[BindingTask, str]]]:
+def filter_unsupported_tasks(
+    tasks: list[BindingTask],
+    allele_support: Optional[AlleleSupportMatrix] = None,
+) -> tuple[list[BindingTask], list[tuple[BindingTask, str]]]:
+    allele_support = allele_support or AlleleSupportMatrix(AdapterConfig())
     runnable: list[BindingTask] = []
     skipped: list[tuple[BindingTask, str]] = []
     for task in tasks:
-        reason = unsupported_reason(task)
+        reason = unsupported_reason(task, allele_support)
         if reason:
             skipped.append((task, reason))
         else:
@@ -158,87 +165,14 @@ def filter_unsupported_tasks(tasks: list[BindingTask]) -> tuple[list[BindingTask
     return runnable, skipped
 
 
-def unsupported_reason(task: BindingTask) -> str:
-    if task.algorithm in {"NetMHCpan", "NetMHCpanEL"} and task.hla_allele in {
-        "HLA-A*11:353",
-        "HLA-F*01:01",
-    }:
-        return "unsupported_allele_by_predictor"
-    if task.algorithm == "MHCnuggetsI" and task.hla_allele in {
-        "HLA-F*01:01",
-        "HLA-G*01:01",
-    }:
-        return "unsupported_allele_by_predictor"
-    if task.algorithm == "NNalign" and not iedb_nnalign_supports(task.hla_allele):
+def unsupported_reason(
+    task: BindingTask,
+    allele_support: Optional[AlleleSupportMatrix] = None,
+) -> str:
+    allele_support = allele_support or AlleleSupportMatrix(AdapterConfig())
+    if allele_support.supports(task) is False:
         return "unsupported_allele_by_predictor"
     return ""
-
-
-IEDB_NNALIGN_SUPPORTED_ALLELES = {
-    "HLA-DPA1*01:03/DPB1*02:01",
-    "HLA-DPA1*01:03/DPB1*03:01",
-    "HLA-DPA1*01:03/DPB1*04:01",
-    "HLA-DPA1*01:03/DPB1*04:02",
-    "HLA-DPA1*01:03/DPB1*06:01",
-    "HLA-DPA1*02:01/DPB1*01:01",
-    "HLA-DPA1*02:01/DPB1*05:01",
-    "HLA-DPA1*02:01/DPB1*14:01",
-    "HLA-DPA1*03:01/DPB1*04:02",
-    "HLA-DQA1*01:01/DQB1*05:01",
-    "HLA-DQA1*01:02/DQB1*05:01",
-    "HLA-DQA1*01:02/DQB1*05:02",
-    "HLA-DQA1*01:02/DQB1*06:02",
-    "HLA-DQA1*01:03/DQB1*06:03",
-    "HLA-DQA1*01:04/DQB1*05:03",
-    "HLA-DQA1*02:01/DQB1*02:02",
-    "HLA-DQA1*02:01/DQB1*03:01",
-    "HLA-DQA1*02:01/DQB1*03:03",
-    "HLA-DQA1*02:01/DQB1*04:02",
-    "HLA-DQA1*03:01/DQB1*03:01",
-    "HLA-DQA1*03:01/DQB1*03:02",
-    "HLA-DQA1*03:03/DQB1*04:02",
-    "HLA-DQA1*04:01/DQB1*04:02",
-    "HLA-DQA1*05:01/DQB1*02:01",
-    "HLA-DQA1*05:01/DQB1*03:01",
-    "HLA-DQA1*05:01/DQB1*03:02",
-    "HLA-DQA1*05:01/DQB1*03:03",
-    "HLA-DQA1*05:01/DQB1*04:02",
-    "HLA-DQA1*06:01/DQB1*04:02",
-    "HLA-DRB1*01:01",
-    "HLA-DRB1*01:03",
-    "HLA-DRB1*03:01",
-    "HLA-DRB1*04:01",
-    "HLA-DRB1*04:02",
-    "HLA-DRB1*04:03",
-    "HLA-DRB1*04:04",
-    "HLA-DRB1*04:05",
-    "HLA-DRB1*07:01",
-    "HLA-DRB1*08:01",
-    "HLA-DRB1*08:02",
-    "HLA-DRB1*09:01",
-    "HLA-DRB1*10:01",
-    "HLA-DRB1*11:01",
-    "HLA-DRB1*12:01",
-    "HLA-DRB1*13:01",
-    "HLA-DRB1*13:02",
-    "HLA-DRB1*15:01",
-    "HLA-DRB1*16:02",
-    "HLA-DRB3*01:01",
-    "HLA-DRB3*02:02",
-    "HLA-DRB3*03:01",
-    "HLA-DRB4*01:01",
-    "HLA-DRB4*01:03",
-    "HLA-DRB5*01:01",
-}
-
-
-def iedb_nnalign_supports(allele: str) -> bool:
-    formatted = allele.strip()
-    if not formatted.startswith("HLA-"):
-        formatted = "HLA-" + formatted
-    if any(gene in formatted for gene in ("DPA1", "DQA1")):
-        formatted = formatted.replace("-DPB1", "/DPB1").replace("-DQB1", "/DQB1")
-    return formatted in IEDB_NNALIGN_SUPPORTED_ALLELES
 
 
 def summarize_skipped_tasks(skipped_tasks: list[tuple[BindingTask, str]]) -> dict[str, int]:
