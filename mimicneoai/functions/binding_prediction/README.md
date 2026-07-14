@@ -118,6 +118,21 @@ The runner builds support catalogs from the installed predictor resources:
 executables, scripts, and environments. Catalog discovery failure is fail-open:
 the task is attempted and the adapter records the real execution result.
 
+## IEDB MHC-II / NNalign runtime
+
+IEDB MHC-II 3.1.11 imports the legacy `pkg_resources` API. Use a dedicated
+Python 3.10 environment and pin setuptools below version 81:
+
+```bash
+python3.10 -m venv /workspace/pkgs/IEDB/.venv
+/workspace/pkgs/IEDB/.venv/bin/python -m pip install 'setuptools<81'
+```
+
+Configure `IEDB_MHCII_PYTHON_BIN` with
+`/workspace/pkgs/IEDB/.venv/bin/python`. The binding runner executes an NNalign
+runtime preflight before scheduling supported NNalign tasks, so a missing or
+incompatible IEDB environment fails before prediction starts.
+
 ## Regression tests
 
 ```bash

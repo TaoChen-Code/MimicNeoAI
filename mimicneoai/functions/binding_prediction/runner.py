@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Optional
@@ -113,6 +114,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     allele_support = AlleleSupportMatrix(config)
     runnable_tasks, skipped_tasks = filter_unsupported_tasks(tasks, allele_support)
+    validate_predictor_runtime(runnable_tasks, config)
     jobs = build_jobs(runnable_tasks, outdir / "chunks", config)
     print(
         f"[binding_prediction] tasks={len(tasks)} runnable={len(runnable_tasks)} "
@@ -169,6 +171,44 @@ def prediction_run_failed(
     """Return whether execution produced no usable result for runnable tasks."""
 
     return runnable_task_rows > 0 and int(qc_summary.get("usable_result_rows", 0)) == 0
+
+
+def validate_predictor_runtime(
+    tasks: list[BindingTask], config: AdapterConfig
+) -> None:
+    """Fail early when a requested predictor runtime cannot start."""
+
+    algorithms = {task.algorithm for task in tasks}
+    if "NNalign" not in algorithms:
+        return
+
+    command = [
+        config.iedb_mhcii_python_bin,
+        config.iedb_mhcii_script,
+        "method",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=config.iedb_mhcii_cwd,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            "IEDB MHC-II runtime validation failed for NNalign: "
+            f"{exc}. Configure --iedb-mhcii-python-bin with the dedicated "
+            "IEDB Python environment."
+        ) from exc
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "no diagnostic output").strip()
+        raise RuntimeError(
+            "IEDB MHC-II runtime validation failed for NNalign "
+            f"(exit code {result.returncode}): {detail[:2000]}"
+        )
 
 
 def parse_algorithm_filter(value: str) -> Optional[set[str]]:

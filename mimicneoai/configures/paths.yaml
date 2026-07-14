@@ -18,7 +18,7 @@ path:
       IEDB_MHCI_PYTHON_BIN: "/usr/bin/python3.10"
       IEDB_MHCI_SCRIPT: "/workspace/pkgs/IEDB/mhc_i/src/predict_binding.py"
       IEDB_MHCI_CWD: "/workspace/pkgs/IEDB/mhc_i/src"
-      IEDB_MHCII_PYTHON_BIN: "/usr/bin/python3.10"
+      IEDB_MHCII_PYTHON_BIN: "/workspace/pkgs/IEDB/.venv/bin/python"
       IEDB_MHCII_SCRIPT: "/workspace/pkgs/IEDB/mhc_ii/mhc_II_binding.py"
       IEDB_MHCII_CWD: "/workspace/pkgs/IEDB/mhc_ii"
 

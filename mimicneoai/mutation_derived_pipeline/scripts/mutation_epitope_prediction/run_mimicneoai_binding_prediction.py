@@ -486,23 +486,31 @@ def read_json(path: Path) -> dict[str, object]:
         return json.load(handle)
 
 
-def capture_command(command: list[str]) -> str:
-    try:
-        result = subprocess.run(command, text=True, capture_output=True, timeout=30, check=False)
-    except Exception as exc:  # pragma: no cover - best-effort metadata only
-        return f"unavailable: {exc}"
-    text = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
-    return text[:2000]
-
-
 def capture_pvactools_version(apptainer: str, sif_path: str) -> str:
-    queried = capture_command([apptainer, "exec", sif_path, "pvacseq", "--version"])
-    if not queried.startswith("unavailable:"):
-        return queried.splitlines()[0]
+    command = [apptainer, "exec", sif_path, "pvactools", "--version"]
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        queried = "\n".join(
+            part.strip() for part in (result.stdout, result.stderr) if part.strip()
+        )
+        if result.returncode == 0:
+            version_match = re.search(
+                r"(?<!\d)(\d+(?:\.\d+){2,})(?!\d)", queried
+            )
+            if version_match:
+                return f"pVACtools {version_match.group(1)}"
+    except Exception as exc:  # pragma: no cover - best-effort metadata only
+        queried = f"runtime query failed: {exc}"
     match = re.search(r"pvactools[-_](\d+(?:\.\d+)+)", Path(sif_path).name, re.IGNORECASE)
     if match:
-        return f"pVACtools {match.group(1)} (from SIF filename; runtime query unavailable)"
-    return queried
+        return f"pVACtools {match.group(1)} (from SIF filename; runtime query failed)"
+    return queried[:2000]
 
 
 def version_from_path(tool_name: str, executable: str) -> str:

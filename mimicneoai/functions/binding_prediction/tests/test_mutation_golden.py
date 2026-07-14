@@ -3,10 +3,12 @@ from __future__ import annotations
 import csv
 import importlib
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from typing import List, Optional
+from unittest.mock import patch
 
 from mimicneoai.functions.binding_prediction.adapters.base import AdapterConfig, reusable_normalized_output
 from mimicneoai.functions.binding_prediction.adapters.mhcnuggets import (
@@ -25,6 +27,7 @@ from mimicneoai.functions.binding_prediction.runner import (
     merge_predictions,
     prediction_run_failed,
     unsupported_reason,
+    validate_predictor_runtime,
 )
 from mimicneoai.functions.binding_prediction.schema import (
     PREDICTION_FIELDS,
@@ -54,6 +57,9 @@ TASK_MODULE = importlib.import_module(
 )
 MERGE_MODULE = importlib.import_module(
     "mimicneoai.mutation_derived_pipeline.scripts.mutation_epitope_prediction.02_merge_binding_predictions"
+)
+WORKFLOW_MODULE = importlib.import_module(
+    "mimicneoai.mutation_derived_pipeline.scripts.mutation_epitope_prediction.run_mimicneoai_binding_prediction"
 )
 
 
@@ -448,6 +454,37 @@ class HlaAndAdapterContractTest(unittest.TestCase):
         for task, expected_skipped in cases:
             with self.subTest(task=task):
                 self.assertEqual(bool(unsupported_reason(task, support)), expected_skipped)
+
+    def test_nnalign_runtime_validation_fails_before_prediction(self) -> None:
+        task = BindingTask(
+            "ACDEFGHIKLMNPQR", "DRB1*11:01", "NNalign", "MHC-II"
+        )
+        config = AdapterConfig(
+            iedb_mhcii_python_bin="/missing/iedb-python",
+            iedb_mhcii_script="/missing/mhc_II_binding.py",
+            iedb_mhcii_cwd="/missing/iedb",
+        )
+        with self.assertRaisesRegex(RuntimeError, "runtime validation failed"):
+            validate_predictor_runtime([task], config)
+
+    def test_non_nnalign_tasks_do_not_require_iedb_mhcii_runtime(self) -> None:
+        task = BindingTask("ACDEFGHIK", "HLA-A*02:01", "NetMHCpan", "MHC-I")
+        validate_predictor_runtime([task], AdapterConfig())
+
+    def test_pvactools_version_uses_top_level_cli(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="4.2.1\n", stderr=""
+        )
+        with patch.object(
+            WORKFLOW_MODULE.subprocess, "run", return_value=completed
+        ) as mocked_run:
+            version = WORKFLOW_MODULE.capture_pvactools_version(
+                "apptainer", "/tools/pvactools-4.2.1.sif"
+            )
+        self.assertEqual(version, "pVACtools 4.2.1")
+        self.assertEqual(
+            mocked_run.call_args.args[0][-2:], ["pvactools", "--version"]
+        )
 
     def test_skipped_task_is_retained_in_normalized_output(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
