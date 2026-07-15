@@ -79,6 +79,8 @@ class NonmutationAntigenFixtureTest(unittest.TestCase):
             )
             summary = json.loads((outdir / "FIXTURE.mimicneoai_binding.summary.json").read_text())
             task_dir = outdir / "mimicneoai_epitope_tasks"
+            window_manifest = json.loads((task_dir / "epitope_windows.manifest.json").read_text())
+            self.assertEqual(window_manifest["input_signature"]["schema_version"], 2)
             with (task_dir / "epitope_windows.tsv").open(newline="") as handle:
                 windows = list(csv.DictReader(handle, delimiter="\t"))
             with (task_dir / "binding_tasks.tsv").open(newline="") as handle:

@@ -69,6 +69,8 @@ IC50_SUMMARY_ALGORITHMS = {
     "SMMalign",
 }
 
+EPITOPE_WINDOWS_SCHEMA_VERSION = 2
+
 
 PVACBIND_COMPAT_COLUMNS = [
     "Mutation",
@@ -210,6 +212,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     epitope_windows_path = task_dir / "epitope_windows.tsv"
     epitope_windows_manifest_path = task_dir / "epitope_windows.manifest.json"
     epitope_windows_signature = {
+        "schema_version": EPITOPE_WINDOWS_SCHEMA_VERSION,
         "peptide_fasta": file_identity(Path(args.pep_fasta)),
         "mhc_i_lengths": list(mhc_i_lengths),
         "mhc_ii_lengths": list(mhc_ii_lengths),
@@ -501,13 +504,28 @@ def read_fasta(path: Path) -> Iterable[tuple[str, str]]:
                 continue
             if line.startswith(">"):
                 if header is not None:
-                    yield header, normalize_peptide_sequence("".join(chunks))
+                    yield (
+                        fasta_record_id(header),
+                        normalize_peptide_sequence("".join(chunks)),
+                    )
                 header = line[1:].strip()
                 chunks = []
             else:
                 chunks.append(line)
         if header is not None:
-            yield header, normalize_peptide_sequence("".join(chunks))
+            yield (
+                fasta_record_id(header),
+                normalize_peptide_sequence("".join(chunks)),
+            )
+
+
+def fasta_record_id(header: str) -> str:
+    """Return the stable record identifier from a FASTA description line."""
+
+    fields = header.strip().split()
+    if not fields:
+        raise ValueError("FASTA header does not contain a record identifier")
+    return fields[0]
 
 
 def normalize_peptide_sequence(sequence: str) -> str:
