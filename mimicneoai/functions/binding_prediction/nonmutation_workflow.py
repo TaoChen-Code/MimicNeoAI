@@ -18,7 +18,7 @@ from typing import Iterable, Optional
 
 from mimicneoai.functions.binding_prediction.qc import build_binding_qc_summary
 from mimicneoai.functions.binding_prediction.runner import main as run_binding_predictions
-from mimicneoai.functions.binding_prediction.schema import safe_float
+from mimicneoai.functions.binding_prediction.schema import PREDICTION_FIELDS, safe_float
 from mimicneoai.mutation_derived_pipeline.scripts.mutation_epitope_prediction.hla_parser import (
     parse_hlahd_result,
 )
@@ -800,8 +800,8 @@ def concatenate_prediction_tables(paths: list[Path], output_path: Path) -> None:
     """Concatenate batch-level normalized prediction tables."""
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    wrote_header = False
     with output_path.open("w", newline="") as out_handle:
+        out_handle.write("\t".join(PREDICTION_FIELDS) + "\n")
         for path in paths:
             if not path.exists() or path.stat().st_size == 0:
                 continue
@@ -809,9 +809,12 @@ def concatenate_prediction_tables(paths: list[Path], output_path: Path) -> None:
                 header = in_handle.readline()
                 if not header:
                     continue
-                if not wrote_header:
-                    out_handle.write(header)
-                    wrote_header = True
+                fields = header.rstrip("\r\n").split("\t")
+                missing = set(PREDICTION_FIELDS).difference(fields)
+                if missing:
+                    raise ValueError(
+                        f"{path} missing required prediction columns: {sorted(missing)}"
+                    )
                 for line in in_handle:
                     out_handle.write(line)
 

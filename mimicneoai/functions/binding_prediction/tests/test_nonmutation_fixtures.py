@@ -11,6 +11,7 @@ from mimicneoai.functions.binding_prediction.nonmutation_workflow import (
     build_pvacbind_row,
     main,
 )
+from mimicneoai.functions.binding_prediction.schema import PREDICTION_FIELDS
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "nonmutation"
@@ -121,6 +122,56 @@ class NonmutationAntigenFixtureTest(unittest.TestCase):
         self.assertTrue(duplicate_source_windows)
         self.assertEqual(len(tasks), summary["estimated_binding_task_rows"])
         self.assertLess(len(tasks), len(windows))
+
+    def test_empty_fasta_writes_schema_valid_empty_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            fasta = root / "empty.fasta"
+            fasta.write_text("")
+            outdir = root / "out"
+
+            self.assertEqual(
+                main(
+                    [
+                        "-s",
+                        "EMPTY",
+                        "--pep-fasta",
+                        str(fasta),
+                        "--hla-file",
+                        str(FIXTURE_DIR / "hla_final.result.txt"),
+                        "-o",
+                        str(outdir),
+                        "--mhc-i-lengths",
+                        "8,9",
+                        "--mhc-ii-lengths",
+                        "15",
+                        "--algorithms",
+                        "MHCflurry,MHCnuggetsII",
+                    ]
+                ),
+                0,
+            )
+
+            prediction_path = (
+                outdir / "mimicneoai_binding_predictions" / "binding_predictions.long.tsv"
+            )
+            with prediction_path.open(newline="") as handle:
+                reader = csv.DictReader(handle, delimiter="\t")
+                self.assertEqual(reader.fieldnames, PREDICTION_FIELDS)
+                self.assertEqual(list(reader), [])
+
+            merged_path = outdir / "combined" / "EMPTY.merged.all_epitopes.tsv"
+            with merged_path.open(newline="") as handle:
+                reader = csv.DictReader(handle, delimiter="\t")
+                self.assertEqual(reader.fieldnames, PVACBIND_COMPAT_COLUMNS)
+                self.assertEqual(list(reader), [])
+
+            summary = json.loads((outdir / "EMPTY.mimicneoai_binding.summary.json").read_text())
+            self.assertEqual(summary["fasta_records"], 0)
+            self.assertEqual(summary["epitope_window_rows"], 0)
+            self.assertEqual(summary["binding_task_rows"], 0)
+            self.assertEqual(summary["binding_qc_summary"]["prediction_rows"], 0)
+            self.assertTrue(summary["merged_output_exists"])
 
 
 if __name__ == "__main__":
