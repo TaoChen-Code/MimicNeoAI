@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import yaml
 
 from mimicneoai.cryptic_pipeline import cryptic
+from mimicneoai.microbial_pipeline import microbial
 from mimicneoai.microbial_pipeline.scripts import microbial_peptides
 from mimicneoai.mutation_derived_pipeline import mutation_derived
 
@@ -126,6 +127,18 @@ class PipelineBackendContractTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "tmp_dir must be set"):
             mutation_derived._prepare_runtime_directories({"path": {"tmp_dir": ""}})
+
+    def test_microbial_runtime_tmp_directory_is_created(self) -> None:
+        tmp_dir = self.root / "nested" / "microbial-tmp"
+        config = {"path": {"tmp_dir": str(tmp_dir)}}
+
+        microbial._prepare_runtime_directories(config)
+
+        self.assertTrue(tmp_dir.is_dir())
+        self.assertEqual(config["path"]["tmp_dir"], str(tmp_dir.resolve()))
+
+        with self.assertRaisesRegex(ValueError, "tmp_dir must be set"):
+            microbial._prepare_runtime_directories({"path": {"tmp_dir": ""}})
 
     def test_cryptic_default_and_native_dispatch(self) -> None:
         config = self.cryptic_config()

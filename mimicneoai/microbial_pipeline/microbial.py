@@ -134,6 +134,22 @@ def _peek_output_dir(cfg_path: str) -> Optional[str]:
         return None
 
 
+def _prepare_runtime_directories(configure: Dict[str, Any]) -> None:
+    """Create and validate writable runtime directories from the user config."""
+
+    tmp_value = str(configure.get("path", {}).get("tmp_dir", "")).strip()
+    if not tmp_value:
+        raise ValueError("configure.path.tmp_dir must be set")
+
+    tmp_dir = Path(tmp_value).expanduser().resolve()
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    if not tmp_dir.is_dir():
+        raise NotADirectoryError(f"Configured tmp_dir is not a directory: {tmp_dir}")
+    if not os.access(tmp_dir, os.R_OK | os.W_OK | os.X_OK):
+        raise PermissionError(f"Configured tmp_dir is not readable and writable: {tmp_dir}")
+    configure["path"]["tmp_dir"] = str(tmp_dir)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """CLI entry point for the microbial antigen pipeline."""
     parser = argparse.ArgumentParser(description="Microbial Antigen pipeline")
@@ -167,6 +183,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # 3) Load configuration and paths (tools.get_configure also persists a copy for reproducibility)
     configure = tool.get_configure(args.configure)
     paths = tool.get_paths(args.paths)
+    _prepare_runtime_directories(configure)
     tool.write_log(f"configures: {configure}", "info")
     tool.write_log(f"paths: {paths}", "info")
 
