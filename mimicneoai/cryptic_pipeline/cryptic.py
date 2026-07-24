@@ -421,6 +421,9 @@ def _run_one_sample(
                 ]
                 if bool(others.get("binding_prediction_force_large_samples", False)):
                     cmd.append("--force-large-samples")
+                preset = str(others.get("binding_prediction_preset", "")).strip()
+                if preset:
+                    cmd.extend(["--preset", preset])
                 cmd.extend(configured_predictor_cli_args(paths))
                 _run_cmd(tool, sample, cmd)
             else:

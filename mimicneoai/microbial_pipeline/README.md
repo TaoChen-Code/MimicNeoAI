@@ -87,3 +87,8 @@ Pipeline outputs are written under:
 - `others.binding_prediction_backend` defaults to `pvactools`. The optional
   `mimicneoai` backend estimates task scale before materializing the task table;
   see the [native binding backend documentation](../functions/binding_prediction/README.md).
+- With `others.binding_prediction_backend: mimicneoai`, set
+  `others.binding_prediction_preset: full` for one-stage multialgorithm
+  prediction or `fast` for EL-rank Stage 1 routing before formal local binding
+  prediction. Omitting the preset preserves explicit length and algorithm
+  settings in the YAML.

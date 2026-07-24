@@ -23,9 +23,29 @@ Common native-backend options:
 ```yaml
 others:
   binding_prediction_backend: "mimicneoai"
-  binding_prediction_algorithms: "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL"
+  binding_prediction_preset: "fast"
   binding_prediction_workers: 8
 ```
+
+`binding_prediction_preset` is optional. If it is omitted, the backend keeps
+using the explicitly configured lengths and algorithm list.
+
+Available presets:
+
+- `full`: one-stage multialgorithm prediction. Uses HLA-I 8-11 aa and HLA-II
+  13-17 aa. HLA-I predictors are MHCflurry, MHCflurryEL, MHCnuggetsI,
+  NetMHCpan, and NetMHCpanEL. HLA-II predictors are MHCnuggetsII, NNalign,
+  NetMHCIIpan, and NetMHCIIpanEL.
+- `fast`: two-stage prediction for large peptide sets. Stage 1 routes by
+  NetMHCpanEL/NetMHCIIpanEL `%Rank < 10` only. Stage 2 runs the same HLA-I
+  predictors as `full` and HLA-II predictors MHCnuggetsII, NetMHCIIpan, and
+  NetMHCIIpanEL. NNalign is intentionally omitted in this preset.
+
+Stage 1 is a routing filter, not a final binding or immunogenicity tier. It
+records `stage1_screen_pass`, `screened_out_stage1`, unsupported HLA alleles,
+and missing/failed predictions separately. For mutation-derived antigens,
+Stage 1 is evaluated on MT peptides; when an MT peptide passes, the matched WT
+peptide is carried into Stage 2 for the existing WT/MT fold-change calculation.
 
 Predictor installation paths are deployment settings under
 `path.common.BINDING_PREDICTORS` in `configures/paths.yaml`. They are passed

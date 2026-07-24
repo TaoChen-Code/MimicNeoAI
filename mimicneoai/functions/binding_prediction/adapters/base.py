@@ -39,6 +39,7 @@ class AdapterConfig:
     mhcnuggets_rank_output: bool = True
     netmhcpan_bin: str = os.environ.get("MIMICNEOAI_NETMHCPAN_BIN", "netMHCpan")
     netmhciipan_bin: str = os.environ.get("MIMICNEOAI_NETMHCIIPAN_BIN", "netMHCIIpan")
+    netmhc_el_only: bool = False
     iedb_mhci_script: str = os.environ.get(
         "MIMICNEOAI_IEDB_MHCI_SCRIPT", "predict_binding.py"
     )

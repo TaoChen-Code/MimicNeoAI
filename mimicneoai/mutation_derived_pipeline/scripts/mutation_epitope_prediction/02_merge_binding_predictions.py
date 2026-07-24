@@ -223,8 +223,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             hla_alleles = tasks["hla_by_class_length"].get((mhc_class, peptide_length), [])
             if not hla_alleles:
                 continue
+            mt_peptide = (epitope["mt_epitope_seq"] or "").strip()
             annotation = annotations.get(epitope["pvacseq_index"], {})
             for hla_allele in hla_alleles:
+                if (mt_peptide, hla_allele, mhc_class, peptide_length) not in tasks["task_keys"]:
+                    continue
                 row, row_metrics = build_output_row(
                     epitope=epitope,
                     annotation=annotation,
@@ -263,6 +266,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 def read_tasks(path: Path) -> dict[str, object]:
     hla_by_class_length: dict[tuple[str, int], set[str]] = defaultdict(set)
     algorithms: set[str] = set()
+    task_keys: set[tuple[str, str, str, int]] = set()
     rows = 0
     with path.open(newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
@@ -275,11 +279,13 @@ def read_tasks(path: Path) -> dict[str, object]:
             hla_allele = row["hla_allele"].strip()
             hla_by_class_length[(mhc_class, len(peptide))].add(hla_allele)
             algorithms.add(algorithm)
+            task_keys.add((peptide, hla_allele, mhc_class, len(peptide)))
             rows += 1
     return {
         "rows": rows,
         "algorithms": algorithms,
         "hla_by_class_length": {key: sorted(value) for key, value in hla_by_class_length.items()},
+        "task_keys": task_keys,
     }
 
 
@@ -288,6 +294,7 @@ def summarize_tasks(tasks: dict[str, object]) -> dict[str, object]:
     return {
         "rows": tasks["rows"],
         "algorithms": ordered_algorithms(tasks["algorithms"]),
+        "task_key_count": len(tasks["task_keys"]),
         "hla_by_class_length": {
             f"{key[0]}:{key[1]}": value
             for key, value in sorted(hla_by_class_length.items(), key=lambda item: (item[0][0], item[0][1]))

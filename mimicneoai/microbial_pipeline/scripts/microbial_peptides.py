@@ -789,6 +789,9 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
             ]
             if bool(others.get("binding_prediction_force_large_samples", False)):
                 cmd.append("--force-large-samples")
+            preset = str(others.get("binding_prediction_preset", "")).strip()
+            if preset:
+                cmd.extend(["--preset", preset])
             cmd.extend(configured_predictor_cli_args(paths))
             tool.exec_cmd(" ".join(shlex.quote(item) for item in cmd), sample, pipline="microbial")
         else:

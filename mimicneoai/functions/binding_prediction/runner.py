@@ -67,6 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--netmhcpan-bin", default=AdapterConfig.netmhcpan_bin)
     parser.add_argument("--netmhciipan-bin", default=AdapterConfig.netmhciipan_bin)
+    parser.add_argument(
+        "--netmhc-el-only",
+        action="store_true",
+        help="Run NetMHCpan/NetMHCIIpan without BA output when only EL algorithms are requested.",
+    )
     parser.add_argument("--iedb-mhci-script", default=AdapterConfig.iedb_mhci_script)
     parser.add_argument("--iedb-mhci-cwd", default=AdapterConfig.iedb_mhci_cwd)
     parser.add_argument("--iedb-mhcii-script", default=AdapterConfig.iedb_mhcii_script)
@@ -97,6 +102,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         mhcnuggets_rank_output=args.mhcnuggets_rank_output,
         netmhcpan_bin=args.netmhcpan_bin,
         netmhciipan_bin=args.netmhciipan_bin,
+        netmhc_el_only=args.netmhc_el_only,
         iedb_mhci_script=args.iedb_mhci_script,
         iedb_mhci_cwd=args.iedb_mhci_cwd,
         iedb_mhcii_script=args.iedb_mhcii_script,
@@ -144,6 +150,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "device": args.device,
             "gpu_id": args.gpu_id if args.device == "gpu" else "",
             "mhcnuggets_rank_output": args.mhcnuggets_rank_output,
+            "netmhc_el_only": args.netmhc_el_only,
             "command_timeout": args.command_timeout,
             "algorithms": sorted({task.algorithm for task in tasks}),
             "supported_algorithms": SUPPORTED_ALGORITHMS,
@@ -228,6 +235,7 @@ def predictor_runtime_summary(config: AdapterConfig) -> dict[str, object]:
         "mhcnuggets_cwd": config.mhcnuggets_cwd,
         "netmhcpan_bin": config.netmhcpan_bin,
         "netmhciipan_bin": config.netmhciipan_bin,
+        "netmhc_el_only": config.netmhc_el_only,
         "iedb_mhci_script": config.iedb_mhci_script,
         "iedb_mhci_cwd": config.iedb_mhci_cwd,
         "iedb_mhcii_script": config.iedb_mhcii_script,

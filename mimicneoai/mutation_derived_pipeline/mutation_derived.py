@@ -192,6 +192,9 @@ def _start_one_sample(
                     str(int(others.get("binding_prediction_workers", configure.get("args", {}).get("hla_binding_threads", 5)))),
                 ]
                 cmd.extend(configured_predictor_cli_args(paths))
+                preset = str(others.get("binding_prediction_preset", "")).strip()
+                if preset:
+                    cmd.extend(["--preset", preset])
                 if "bcftools" in others:
                     cmd.extend(["--bcftools", str(others["bcftools"])])
                 tool.exec_cmd(" ".join(shlex.quote(item) for item in cmd), sample, pipline="mutation")

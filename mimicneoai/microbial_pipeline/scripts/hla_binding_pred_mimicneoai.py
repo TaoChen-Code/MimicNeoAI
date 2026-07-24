@@ -20,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-t", "--threads", type=int, default=10, help="Local predictor workers.")
     parser.add_argument("--mhc-i-lengths", default="8,9,10")
     parser.add_argument("--mhc-ii-lengths", default="15")
+    parser.add_argument("--preset", default="")
     parser.add_argument(
         "--algorithms",
         default="MHCflurry,MHCflurryEL,MHCnuggetsI,MHCnuggetsII,NNalign,NetMHCpan,NetMHCpanEL,NetMHCIIpan,NetMHCIIpanEL",
@@ -64,6 +65,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--gpu-id",
         args.gpu_id,
     ]
+    if args.preset:
+        command.extend(["--preset", args.preset])
     if args.chunk_size:
         command.extend(["--chunk-size", str(args.chunk_size)])
     if args.command_timeout:

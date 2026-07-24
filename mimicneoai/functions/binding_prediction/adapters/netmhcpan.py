@@ -29,6 +29,8 @@ class NetMHCpanAdapter(PredictorAdapter):
         try:
             write_peptide_lines(job.input_path, job.peptides)
             relative_input_path = job.input_path.relative_to(job.key_dir)
+            output_algorithms = job.output_algorithms or (job.algorithm,)
+            el_only = self.config.netmhc_el_only and set(output_algorithms) == {"NetMHCpanEL"}
             cmd = [
                 self.config.netmhcpan_bin,
                 "-p",
@@ -36,14 +38,14 @@ class NetMHCpanAdapter(PredictorAdapter):
                 str(relative_input_path),
                 "-a",
                 format_netmhcpan_allele(job.hla_allele),
-                "-BA",
             ]
+            if not el_only:
+                cmd.append("-BA")
             run_logged_command(cmd, job.key_dir, job.log_path, stdout_path=job.raw_path, config=self.config)
             rows = parse_netmhc_stdout_table(job.raw_path)
             if not rows:
                 raise ValueError(f"NetMHCpan returned no parseable rows for {job.hla_allele}")
             predictions = []
-            output_algorithms = job.output_algorithms or (job.algorithm,)
             for row in rows:
                 peptide = (row.get("Peptide") or "").strip()
                 if not peptide:

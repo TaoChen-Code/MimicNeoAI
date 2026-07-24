@@ -97,3 +97,8 @@ Notable subfolders:
 - `others.binding_prediction_backend` defaults to `pvactools`. The optional
   `mimicneoai` backend writes `07.binding_prediction_mimicneoai`; see the
   [native binding backend documentation](../functions/binding_prediction/README.md).
+- With `others.binding_prediction_backend: mimicneoai`, set
+  `others.binding_prediction_preset: full` for one-stage multialgorithm
+  prediction or `fast` for EL-rank Stage 1 routing followed by local Stage 2
+  prediction. In `fast` mode, MT peptides drive Stage 1 and matched WT peptides
+  are retained for Stage 2 when the MT peptide passes.

@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from mimicneoai.functions.binding_prediction.policy import resolve_binding_prediction_policy
+
 
 DEFAULT_ALGORITHMS = (
     "MHCflurry",
@@ -53,6 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bcftools", default="bcftools")
     parser.add_argument("--tabix", default="tabix")
     parser.add_argument("--bind", action="append", default=[])
+    parser.add_argument(
+        "--preset",
+        default="",
+        help="Optional compact prediction preset. Supported: full, fast. Empty preserves explicit CLI settings.",
+    )
     parser.add_argument("--mhc-i-lengths", default="8,9,10,11")
     parser.add_argument("--mhc-ii-lengths", default="15")
     parser.add_argument("--protein-flank-length", type=int, default=25)
@@ -126,6 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    apply_policy_overrides(args)
     outdir = Path(args.outdir)
     started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
@@ -153,6 +161,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     return 0
 
 
+def apply_policy_overrides(args: argparse.Namespace) -> None:
+    """Apply a binding prediction preset while preserving explicit mode by default."""
+
+    policy = resolve_binding_prediction_policy(args.preset)
+    if policy is None:
+        return
+    args.mhc_i_lengths = ",".join(str(value) for value in policy.mhc_i_lengths)
+    args.mhc_ii_lengths = ",".join(str(value) for value in policy.mhc_ii_lengths)
+    args.algorithms = " ".join(policy.algorithms)
+
+
 def workflow_paths(outdir: Path, sample: str, protein_flank_length: int) -> dict[str, Path]:
     return {
         "root": outdir,
@@ -165,7 +184,16 @@ def workflow_paths(outdir: Path, sample: str, protein_flank_length: int) -> dict
         "protein_fasta": outdir / "01_pvactools_sources" / f"{sample}.protein.flank{protein_flank_length}.wt_mt.fasta",
         "binding_tasks": outdir / "02_epitope_tasks" / "binding_tasks.tsv",
         "epitope_windows": outdir / "02_epitope_tasks" / "epitope_windows.tsv",
+        "prediction_peptides": outdir / "02_epitope_tasks" / "prediction_peptides.tsv",
         "variant_annotation": outdir / "02_epitope_tasks" / "variant_annotation.tsv",
+        "stage1_tasks": outdir / "02_epitope_tasks" / "stage1_binding_tasks.tsv",
+        "stage1_tasks_summary": outdir / "02_epitope_tasks" / "stage1_binding_tasks.summary.json",
+        "stage1_routing": outdir / "02_epitope_tasks" / "stage1_routing.tsv",
+        "stage1_unsupported": outdir / "02_epitope_tasks" / "stage1_unsupported_or_failed.tsv",
+        "stage1_route_summary": outdir / "02_epitope_tasks" / "stage1_route.summary.json",
+        "stage1_runner": outdir / "03_binding_predictions" / f"{sample}.stage1.runner",
+        "stage1_predictions": outdir / "03_binding_predictions" / f"{sample}.stage1.binding_predictions.long.tsv",
+        "stage1_pass_predictions": outdir / "03_binding_predictions" / f"{sample}.stage1_pass.binding_predictions.long.tsv",
         "mt_tasks": outdir / "03_binding_predictions" / f"{sample}.MT.binding_tasks.tsv",
         "wt_tasks": outdir / "03_binding_predictions" / f"{sample}.WT.binding_tasks.tsv",
         "mt_runner": outdir / "03_binding_predictions" / f"{sample}.MT.runner",
@@ -178,6 +206,7 @@ def workflow_paths(outdir: Path, sample: str, protein_flank_length: int) -> dict
 
 def build_commands(args: argparse.Namespace, paths: dict[str, Path]) -> list[tuple[str, list[str]]]:
     python_bin = args.python_bin
+    policy = resolve_binding_prediction_policy(args.preset)
     bind_args: list[str] = []
     for bind_path in args.bind:
         bind_args.extend(["--bind", bind_path])
@@ -323,6 +352,78 @@ def build_commands(args: argparse.Namespace, paths: dict[str, Path]) -> list[tup
             ],
         ),
     ]
+    if policy and policy.two_stage:
+        stage1_commands = [
+            (
+                "02_stage1_build_tasks",
+                [
+                    python_bin,
+                    "-m",
+                    "mimicneoai.functions.binding_prediction.stage1",
+                    "build-mutation",
+                    "--prediction-peptides",
+                    str(paths["prediction_peptides"]),
+                    "--hla-file",
+                    args.hla_file,
+                    "--preset",
+                    policy.name,
+                    "-o",
+                    str(paths["stage1_tasks"]),
+                    "--summary",
+                    str(paths["stage1_tasks_summary"]),
+                ],
+            ),
+            (
+                "02_stage1_predict",
+                [
+                    python_bin,
+                    "-m",
+                    "mimicneoai.functions.binding_prediction.runner",
+                    "--tasks",
+                    str(paths["stage1_tasks"]),
+                    "-o",
+                    str(paths["stage1_runner"]),
+                    "--algorithms",
+                    ",".join(policy.stage1_algorithms),
+                    "--workers",
+                    str(args.workers),
+                    "--device",
+                    args.device,
+                    "--netmhc-el-only",
+                    *predictor_args,
+                    *chunk_args,
+                    *timeout_args,
+                ],
+            ),
+            (
+                "02_stage1_route",
+                [
+                    python_bin,
+                    "-m",
+                    "mimicneoai.functions.binding_prediction.stage1",
+                    "route",
+                    "--stage1-tasks",
+                    str(paths["stage1_tasks"]),
+                    "--stage1-predictions",
+                    str(paths["stage1_runner"] / "binding_predictions.long.tsv"),
+                    "--preset",
+                    policy.name,
+                    "--stage2-algorithms",
+                    args.algorithms,
+                    "-o",
+                    str(paths["binding_tasks"]),
+                    "--routing-output",
+                    str(paths["stage1_routing"]),
+                    "--unsupported-output",
+                    str(paths["stage1_unsupported"]),
+                    "--pass-predictions-output",
+                    str(paths["stage1_pass_predictions"]),
+                    "--summary",
+                    str(paths["stage1_route_summary"]),
+                ],
+            ),
+        ]
+        commands = commands[:2] + stage1_commands + commands[2:]
     return commands
 
 
@@ -440,6 +541,9 @@ def archive_runner_workdirs(paths: dict[str, Path], sample: str, enabled: bool) 
 
 
 def build_workflow_summary(args: argparse.Namespace, paths: dict[str, Path], started_at: str) -> dict[str, object]:
+    policy = resolve_binding_prediction_policy(args.preset)
+    stage1_task_summary = read_json(paths["stage1_tasks_summary"])
+    stage1_route_summary = read_json(paths["stage1_route_summary"])
     mt_split_summary = read_json(paths["binding_predictions"] / f"{args.sample}.split_binding_tasks.summary.json")
     mt_prediction_summary = read_json(paths["binding_predictions"] / f"{args.sample}.MT.binding_predictions.summary.json")
     wt_prediction_summary = read_json(paths["binding_predictions"] / f"{args.sample}.WT.binding_predictions.summary.json")
@@ -450,6 +554,8 @@ def build_workflow_summary(args: argparse.Namespace, paths: dict[str, Path], sta
         "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "workflow": "MimicNeoAI-native mutation-derived binding prediction",
         "output_dir": str(paths["root"]),
+        "binding_prediction_preset": policy.name if policy else "",
+        "two_stage_binding_prediction": bool(policy and policy.two_stage),
         "pvactools_boundary": "pVACtools is used only for VCF annotation conversion and WT/MT protein FASTA source generation.",
         "pvactools_sif": args.pvactools_sif,
         "pvactools_version": capture_pvactools_version(args.apptainer, args.pvactools_sif),
@@ -461,6 +567,8 @@ def build_workflow_summary(args: argparse.Namespace, paths: dict[str, Path], sta
         "workers": args.workers,
         "mt_workers": args.mt_workers or args.workers,
         "wt_workers": args.wt_workers or args.workers,
+        "stage1_task_summary": stage1_task_summary,
+        "stage1_route_summary": stage1_route_summary,
         "mt_task_rows": mt_split_summary.get("mt_task_rows"),
         "wt_task_rows": mt_split_summary.get("wt_task_rows"),
         "mt_prediction_rows": mt_prediction_summary.get("prediction_rows"),

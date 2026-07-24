@@ -83,6 +83,7 @@ class PipelineBackendContractTest(unittest.TestCase):
             {
                 "binding_prediction_backend": "mimicneoai",
                 "binding_prediction_step_name": "07.binding_prediction_mimicneoai_test",
+                "binding_prediction_preset": "fast",
                 "binding_prediction_workers": 3,
             }
         )
@@ -92,6 +93,7 @@ class PipelineBackendContractTest(unittest.TestCase):
         command = tool.exec_cmd.call_args.args[0]
         self.assertIn("run_mimicneoai_binding_prediction.py", command)
         self.assertIn("07.binding_prediction_mimicneoai_test", command)
+        self.assertIn("--preset fast", command)
         self.assertIn("--workers 3", command)
 
         paths["path"]["common"]["BINDING_PREDICTORS"] = {
@@ -160,6 +162,7 @@ class PipelineBackendContractTest(unittest.TestCase):
             {
                 "binding_prediction_backend": "mimicneoai",
                 "binding_prediction_step_name": "09-hla_binding_pred_mimicneoai_test",
+                "binding_prediction_preset": "fast",
                 "binding_prediction_max_task_rows": 1234,
                 "binding_prediction_force_large_samples": True,
             }
@@ -172,6 +175,8 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.assertTrue(any(str(value).endswith("CRYPTIC-T.aeSEPs.orf_filtered.pep") for value in native_command))
         self.assertIn("--max-task-rows", native_command)
         self.assertIn("1234", native_command)
+        self.assertIn("--preset", native_command)
+        self.assertIn("fast", native_command)
         self.assertIn("--force-large-samples", native_command)
         self.assertIn("--netmhcpan-bin", native_command)
         self.assertIn("/tools/netMHCpan", native_command)
@@ -200,6 +205,7 @@ class PipelineBackendContractTest(unittest.TestCase):
         config["others"].update(
             {
                 "binding_prediction_backend": "mimicneoai",
+                "binding_prediction_preset": "fast",
                 "binding_prediction_max_task_rows": 4321,
                 "binding_prediction_force_large_samples": True,
             }
@@ -219,6 +225,7 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.assertIn("hla_binding_pred_mimicneoai.py", command)
         self.assertIn("08.MicrobialPeptidesBindingPrediction_mimicneoai", command)
         self.assertIn("--max-task-rows 4321", command)
+        self.assertIn("--preset fast", command)
         self.assertIn("--force-large-samples", command)
         self.assertIn("--netmhcpan-bin /tools/netMHCpan", command)
 

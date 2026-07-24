@@ -16,9 +16,16 @@ from pathlib import Path
 from statistics import median
 from typing import Iterable, Optional
 
+from mimicneoai.functions.binding_prediction.policy import (
+    resolve_binding_prediction_policy,
+)
 from mimicneoai.functions.binding_prediction.qc import build_binding_qc_summary
 from mimicneoai.functions.binding_prediction.runner import main as run_binding_predictions
 from mimicneoai.functions.binding_prediction.schema import PREDICTION_FIELDS, safe_float
+from mimicneoai.functions.binding_prediction.stage1 import (
+    route_stage2_tasks,
+    write_stage1_tasks_from_nonmutation_windows,
+)
 from mimicneoai.mutation_derived_pipeline.scripts.mutation_epitope_prediction.hla_parser import (
     parse_hlahd_result,
 )
@@ -129,6 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pep-fasta", required=True, help="Input peptide FASTA.")
     parser.add_argument("--hla-file", required=True, help="HLA-HD *_final.result.txt file.")
     parser.add_argument("-o", "--outdir", required=True, help="Output directory.")
+    parser.add_argument(
+        "--preset",
+        default="",
+        help="Optional compact prediction preset. Supported: full, fast. Empty preserves explicit CLI settings.",
+    )
     parser.add_argument("--mhc-i-lengths", default="8,9,10")
     parser.add_argument("--mhc-ii-lengths", default="15")
     parser.add_argument(
@@ -197,9 +209,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    mhc_i_lengths = parse_int_list(args.mhc_i_lengths)
-    mhc_ii_lengths = parse_int_list(args.mhc_ii_lengths)
-    algorithms = parse_str_list(args.algorithms)
+    policy = resolve_binding_prediction_policy(args.preset)
+    if policy:
+        mhc_i_lengths = policy.mhc_i_lengths
+        mhc_ii_lengths = policy.mhc_ii_lengths
+        algorithms = list(policy.algorithms)
+    else:
+        mhc_i_lengths = parse_int_list(args.mhc_i_lengths)
+        mhc_ii_lengths = parse_int_list(args.mhc_ii_lengths)
+        algorithms = parse_str_list(args.algorithms)
     mhc_i_algorithms, mhc_ii_algorithms, unknown_algorithms = split_algorithms_by_mhc_class(algorithms)
 
     task_dir = outdir / f"{args.keep_intermediate_prefix}_epitope_tasks"
@@ -240,13 +258,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     hla = parse_hlahd_result(Path(args.hla_file))
     task_path = task_dir / "binding_tasks.tsv"
     task_manifest_path = task_dir / "binding_tasks.manifest.json"
-    task_signature = {
-        "epitope_windows": file_identity(epitope_windows_path),
-        "hla_file": file_identity(Path(args.hla_file)),
-        "mhc_i_algorithms": mhc_i_algorithms,
-        "mhc_ii_algorithms": mhc_ii_algorithms,
-    }
-    estimated_task_rows = estimate_binding_task_rows(
+    runner_invocations: list[dict[str, object]] = []
+    stage1_task_summary: dict[str, object] = {}
+    stage1_route_summary: dict[str, object] = {}
+    stage1_outputs: dict[str, str] = {}
+    full_estimated_task_rows = estimate_binding_task_rows(
         len(mhc_i_peptides),
         len(hla.mhc_i),
         len(mhc_i_algorithms),
@@ -254,46 +270,165 @@ def main(argv: Optional[list[str]] = None) -> int:
         len(hla.mhc_ii),
         len(mhc_ii_algorithms),
     )
-    task_materialization_skipped_by_scale = (
-        estimated_task_rows > args.max_task_rows
-        and not args.force_large_samples
-        and not args.windows_only
-    )
-    if args.windows_only:
-        task_summary = {"binding_task_rows": 0, "estimated_binding_task_rows": estimated_task_rows}
-        binding_tasks_reused = False
-    elif task_materialization_skipped_by_scale:
-        task_summary = {"binding_task_rows": 0, "estimated_binding_task_rows": estimated_task_rows}
-        binding_tasks_reused = False
-    elif (
-        task_path.exists()
-        and task_path.stat().st_size > 0
-        and manifest_signature_matches(task_manifest_path, task_signature)
-        and read_json(task_manifest_path).get("task_table_materialized") is True
-    ):
-        task_summary = read_binding_task_summary(task_path)
-        task_summary["estimated_binding_task_rows"] = estimated_task_rows
-        binding_tasks_reused = True
-    else:
-        task_summary = write_binding_task_table(
-            task_path,
-            sorted(mhc_i_peptides),
-            list(hla.mhc_i),
-            mhc_i_algorithms,
-            sorted(mhc_ii_peptides),
-            list(hla.mhc_ii),
-            mhc_ii_algorithms,
-        )
-        task_summary["estimated_binding_task_rows"] = estimated_task_rows
-        binding_tasks_reused = False
 
+    if policy and policy.two_stage:
+        stage1_task_path = task_dir / "stage1_binding_tasks.tsv"
+        stage1_task_summary_path = task_dir / "stage1_binding_tasks.summary.json"
+        stage1_prediction_path = pred_dir / "stage1_binding_predictions.long.tsv"
+        stage1_pass_prediction_path = pred_dir / "stage1_pass.binding_predictions.long.tsv"
+        stage1_routing_path = task_dir / "stage1_routing.tsv"
+        stage1_unsupported_path = task_dir / "stage1_unsupported_or_failed.tsv"
+        stage1_route_summary_path = task_dir / "stage1_route.summary.json"
+        stage1_outputs = {
+            "stage1_tasks": str(stage1_task_path),
+            "stage1_task_summary": str(stage1_task_summary_path),
+            "stage1_predictions": str(stage1_prediction_path),
+            "stage1_pass_predictions": str(stage1_pass_prediction_path),
+            "stage1_routing": str(stage1_routing_path),
+            "stage1_unsupported_or_failed": str(stage1_unsupported_path),
+            "stage1_route_summary": str(stage1_route_summary_path),
+        }
+        estimated_task_rows = estimate_binding_task_rows(
+            len(mhc_i_peptides),
+            len(hla.mhc_i),
+            1,
+            len(mhc_ii_peptides),
+            len(hla.mhc_ii),
+            1,
+        )
+        task_signature = {
+            "epitope_windows": file_identity(epitope_windows_path),
+            "hla_file": file_identity(Path(args.hla_file)),
+            "binding_prediction_preset": policy.name,
+            "two_stage": True,
+            "stage1_algorithms": list(policy.stage1_algorithms),
+            "stage2_algorithms": algorithms,
+            "mhc_i_algorithms": mhc_i_algorithms,
+            "mhc_ii_algorithms": mhc_ii_algorithms,
+        }
+        task_materialization_skipped_by_scale = (
+            estimated_task_rows > args.max_task_rows
+            and not args.force_large_samples
+            and not args.windows_only
+        )
+        if args.windows_only:
+            task_summary = {"binding_task_rows": 0, "estimated_binding_task_rows": estimated_task_rows}
+            binding_tasks_reused = False
+        elif task_materialization_skipped_by_scale:
+            task_summary = {"binding_task_rows": 0, "estimated_binding_task_rows": estimated_task_rows}
+            binding_tasks_reused = False
+        elif (
+            task_path.exists()
+            and task_path.stat().st_size > 0
+            and stage1_pass_prediction_path.exists()
+            and stage1_pass_prediction_path.stat().st_size > 0
+            and manifest_signature_matches(task_manifest_path, task_signature)
+            and read_json(task_manifest_path).get("task_table_materialized") is True
+        ):
+            task_summary = read_binding_task_summary(task_path)
+            task_summary["estimated_binding_task_rows"] = estimated_task_rows
+            stage1_task_summary = read_json(stage1_task_summary_path)
+            stage1_route_summary = read_json(stage1_route_summary_path)
+            binding_tasks_reused = True
+        elif args.skip_prediction:
+            stage1_task_summary = write_stage1_tasks_from_nonmutation_windows(
+                epitope_windows_path,
+                Path(args.hla_file),
+                policy,
+                stage1_task_path,
+            )
+            write_json(stage1_task_summary_path, stage1_task_summary)
+            task_summary = {"binding_task_rows": 0, "estimated_binding_task_rows": estimated_task_rows}
+            binding_tasks_reused = False
+        else:
+            stage1_task_summary = write_stage1_tasks_from_nonmutation_windows(
+                epitope_windows_path,
+                Path(args.hla_file),
+                policy,
+                stage1_task_path,
+            )
+            write_json(stage1_task_summary_path, stage1_task_summary)
+            stage1_prediction_paths = run_prediction_batches(
+                stage1_task_path,
+                list(policy.stage1_algorithms),
+                pred_dir / "stage1",
+                args,
+                runner_invocations,
+                netmhc_el_only=True,
+            )
+            concatenate_prediction_tables(stage1_prediction_paths, stage1_prediction_path)
+            stage1_route_summary = route_stage2_tasks(
+                stage1_tasks_path=stage1_task_path,
+                stage1_predictions_path=stage1_prediction_path,
+                policy=policy,
+                stage2_algorithms=policy.algorithms,
+                stage2_task_path=task_path,
+                routing_path=stage1_routing_path,
+                unsupported_path=stage1_unsupported_path,
+                pass_predictions_path=stage1_pass_prediction_path,
+            )
+            write_json(stage1_route_summary_path, stage1_route_summary)
+            task_summary = read_binding_task_summary(task_path)
+            task_summary["estimated_binding_task_rows"] = estimated_task_rows
+            binding_tasks_reused = False
+    else:
+        task_signature = {
+            "epitope_windows": file_identity(epitope_windows_path),
+            "hla_file": file_identity(Path(args.hla_file)),
+            "binding_prediction_preset": policy.name if policy else "",
+            "two_stage": False,
+            "mhc_i_algorithms": mhc_i_algorithms,
+            "mhc_ii_algorithms": mhc_ii_algorithms,
+        }
+        estimated_task_rows = full_estimated_task_rows
+        task_materialization_skipped_by_scale = (
+            estimated_task_rows > args.max_task_rows
+            and not args.force_large_samples
+            and not args.windows_only
+        )
+        if args.windows_only:
+            task_summary = {"binding_task_rows": 0, "estimated_binding_task_rows": estimated_task_rows}
+            binding_tasks_reused = False
+        elif task_materialization_skipped_by_scale:
+            task_summary = {"binding_task_rows": 0, "estimated_binding_task_rows": estimated_task_rows}
+            binding_tasks_reused = False
+        elif (
+            task_path.exists()
+            and task_path.stat().st_size > 0
+            and manifest_signature_matches(task_manifest_path, task_signature)
+            and read_json(task_manifest_path).get("task_table_materialized") is True
+        ):
+            task_summary = read_binding_task_summary(task_path)
+            task_summary["estimated_binding_task_rows"] = estimated_task_rows
+            binding_tasks_reused = True
+        else:
+            task_summary = write_binding_task_table(
+                task_path,
+                sorted(mhc_i_peptides),
+                list(hla.mhc_i),
+                mhc_i_algorithms,
+                sorted(mhc_ii_peptides),
+                list(hla.mhc_ii),
+                mhc_ii_algorithms,
+            )
+            task_summary["estimated_binding_task_rows"] = estimated_task_rows
+            binding_tasks_reused = False
+
+    task_table_materialized = (
+        not args.windows_only
+        and not task_materialization_skipped_by_scale
+        and not (policy and policy.two_stage and args.skip_prediction)
+    )
     task_manifest = {
         "sample": args.sample,
+        "binding_prediction_preset": policy.name if policy else "",
+        "two_stage_binding_prediction": bool(policy and policy.two_stage),
         "estimated_binding_task_rows": estimated_task_rows,
+        "full_estimated_binding_task_rows_without_stage1": full_estimated_task_rows,
         "binding_task_rows": int(task_summary["binding_task_rows"]),
         "max_task_rows": args.max_task_rows,
         "force_large_samples": args.force_large_samples,
-        "task_table_materialized": not args.windows_only and not task_materialization_skipped_by_scale,
+        "task_table_materialized": task_table_materialized,
         "task_materialization_skipped_by_scale": task_materialization_skipped_by_scale,
         "binding_tasks_path": str(task_path),
         "preexisting_binding_tasks_ignored": task_materialization_skipped_by_scale and task_path.exists(),
@@ -303,6 +438,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "mhc_ii_alleles": len(hla.mhc_ii),
         "mhc_i_algorithms": mhc_i_algorithms,
         "mhc_ii_algorithms": mhc_ii_algorithms,
+        "stage1": stage1_outputs,
         "input_signature": task_signature,
     }
     write_json(task_manifest_path, task_manifest)
@@ -313,57 +449,55 @@ def main(argv: Optional[list[str]] = None) -> int:
     binding_task_rows = int(task_summary["binding_task_rows"])
     prediction_skipped_by_scale = task_materialization_skipped_by_scale
     skip_reason = ""
+    if (
+        not args.windows_only
+        and not args.skip_prediction
+        and not prediction_skipped_by_scale
+        and binding_task_rows > args.max_task_rows
+        and not args.force_large_samples
+    ):
+        prediction_skipped_by_scale = True
+        skip_reason = (
+            f"stage2_binding_task_rows ({binding_task_rows}) exceeds max_task_rows "
+            f"({args.max_task_rows}); set --force-large-samples to run prediction."
+        )
     if args.windows_only:
         merged_out = combined_dir / f"{args.sample}.merged.all_epitopes.tsv"
     elif prediction_skipped_by_scale:
         merged_out = combined_dir / f"{args.sample}.merged.all_epitopes.tsv"
-        skip_reason = (
-            f"estimated_binding_task_rows ({estimated_task_rows}) exceeds max_task_rows "
-            f"({args.max_task_rows}); set --force-large-samples to run prediction."
-        )
+        if not skip_reason:
+            skip_reason = (
+                f"estimated_binding_task_rows ({estimated_task_rows}) exceeds max_task_rows "
+                f"({args.max_task_rows}); set --force-large-samples to run prediction."
+            )
         print(f"[nonmutation_binding] skip prediction: {skip_reason}", flush=True)
     elif not args.skip_prediction:
-        runner_invocations = []
-        for batch in build_algorithm_batches(mhc_i_algorithms + mhc_ii_algorithms):
-            batch_label = sanitize_batch_label(batch)
-            task_shards = split_task_file_for_algorithm_batch(
-                task_path,
-                batch,
-                pred_dir / "task_shards" / batch_label,
-                args.max_runner_task_rows,
-            )
-            for shard_index, shard_task_path in enumerate(task_shards, start=1):
-                shard_dir = pred_dir / batch_label / f"shard_{shard_index:04d}"
-                runner_args = [
-                    "--tasks",
-                    str(shard_task_path),
-                    "-o",
-                    str(shard_dir),
-                    "--algorithms",
-                    ",".join(batch),
-                    "--workers",
-                    str(args.workers),
-                    "--device",
-                    args.device,
-                    "--gpu-id",
-                    args.gpu_id,
-                ]
-                if args.chunk_size:
-                    runner_args.extend(["--chunk-size", str(args.chunk_size)])
-                if args.command_timeout:
-                    runner_args.extend(["--command-timeout", str(args.command_timeout)])
-                append_optional_runner_args(args, runner_args)
-                runner_invocations.append(
-                    {
-                        "batch": list(batch),
-                        "task_file": str(shard_task_path),
-                        "outdir": str(shard_dir),
-                    }
+        if policy and policy.two_stage:
+            stage1_pass_prediction_path = Path(stage1_outputs["stage1_pass_predictions"])
+            if stage1_pass_prediction_path.exists():
+                prediction_paths.append(stage1_pass_prediction_path)
+            stage2_algorithms = [
+                algorithm for algorithm in algorithms if algorithm not in set(policy.stage1_algorithms)
+            ]
+            prediction_paths.extend(
+                run_prediction_batches(
+                    task_path,
+                    stage2_algorithms,
+                    pred_dir / "stage2",
+                    args,
+                    runner_invocations,
                 )
-                run_binding_predictions(runner_args)
-                batch_prediction_path = shard_dir / "binding_predictions.long.tsv"
-                if batch_prediction_path.exists():
-                    prediction_paths.append(batch_prediction_path)
+            )
+        else:
+            prediction_paths.extend(
+                run_prediction_batches(
+                    task_path,
+                    mhc_i_algorithms + mhc_ii_algorithms,
+                    pred_dir,
+                    args,
+                    runner_invocations,
+                )
+            )
         concatenate_prediction_tables(prediction_paths, prediction_path)
         merged_out = combined_dir / f"{args.sample}.merged.all_epitopes.tsv"
         merge_pvacbind_compatible(epitope_windows_path, prediction_path, task_path, merged_out)
@@ -376,6 +510,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "peptide_fasta": str(Path(args.pep_fasta)),
         "hla_file": str(Path(args.hla_file)),
         "output_dir": str(outdir),
+        "binding_prediction_preset": policy.name if policy else "",
+        "two_stage_binding_prediction": bool(policy and policy.two_stage),
         "fasta_records": window_summary["fasta_records"],
         "epitope_window_rows": window_summary["epitope_window_rows"],
         "unique_mhc_i_peptides": len(mhc_i_peptides),
@@ -388,10 +524,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         "unknown_algorithms": unknown_algorithms,
         "binding_task_rows": binding_task_rows,
         "estimated_binding_task_rows": task_summary["estimated_binding_task_rows"],
+        "full_estimated_binding_task_rows_without_stage1": full_estimated_task_rows,
         "binding_tasks_manifest": str(task_manifest_path),
         "task_table_materialized": task_manifest["task_table_materialized"],
         "task_materialization_skipped_by_scale": task_materialization_skipped_by_scale,
         "algorithm_batches": [list(batch) for batch in build_algorithm_batches(mhc_i_algorithms + mhc_ii_algorithms)],
+        "runner_invocations": runner_invocations,
+        "stage1_task_summary": stage1_task_summary,
+        "stage1_route_summary": stage1_route_summary,
+        "stage1_outputs": stage1_outputs,
         "max_runner_task_rows": args.max_runner_task_rows,
         "max_task_rows": args.max_task_rows,
         "force_large_samples": args.force_large_samples,
@@ -487,6 +628,64 @@ def build_algorithm_batches(algorithms: list[str]) -> list[tuple[str, ...]]:
     for algorithm in sorted(requested.difference(consumed)):
         batches.append((algorithm,))
     return batches
+
+
+def run_prediction_batches(
+    task_path: Path,
+    algorithms: list[str],
+    prediction_root: Path,
+    args: argparse.Namespace,
+    runner_invocations: list[dict[str, object]],
+    *,
+    netmhc_el_only: bool = False,
+) -> list[Path]:
+    """Run runner shards for the selected algorithms and return prediction tables."""
+
+    prediction_paths: list[Path] = []
+    for batch in build_algorithm_batches(algorithms):
+        batch_label = sanitize_batch_label(batch)
+        task_shards = split_task_file_for_algorithm_batch(
+            task_path,
+            batch,
+            prediction_root / "task_shards" / batch_label,
+            args.max_runner_task_rows,
+        )
+        for shard_index, shard_task_path in enumerate(task_shards, start=1):
+            shard_dir = prediction_root / batch_label / f"shard_{shard_index:04d}"
+            runner_args = [
+                "--tasks",
+                str(shard_task_path),
+                "-o",
+                str(shard_dir),
+                "--algorithms",
+                ",".join(batch),
+                "--workers",
+                str(args.workers),
+                "--device",
+                args.device,
+                "--gpu-id",
+                args.gpu_id,
+            ]
+            if netmhc_el_only:
+                runner_args.append("--netmhc-el-only")
+            if args.chunk_size:
+                runner_args.extend(["--chunk-size", str(args.chunk_size)])
+            if args.command_timeout:
+                runner_args.extend(["--command-timeout", str(args.command_timeout)])
+            append_optional_runner_args(args, runner_args)
+            runner_invocations.append(
+                {
+                    "batch": list(batch),
+                    "task_file": str(shard_task_path),
+                    "outdir": str(shard_dir),
+                    "netmhc_el_only": netmhc_el_only,
+                }
+            )
+            run_binding_predictions(runner_args)
+            batch_prediction_path = shard_dir / "binding_predictions.long.tsv"
+            if batch_prediction_path.exists():
+                prediction_paths.append(batch_prediction_path)
+    return prediction_paths
 
 
 def sanitize_batch_label(batch: tuple[str, ...]) -> str:
@@ -765,7 +964,7 @@ def merge_pvacbind_compatible(
     output_path: Path,
 ) -> None:
     predictions, prediction_summary = read_prediction_index(prediction_path)
-    hla_by_class_length, algorithms_raw, task_rows = collect_task_metadata(task_path)
+    hla_by_class_length, algorithms_raw, task_keys, task_rows = collect_task_metadata(task_path)
     algorithms = ordered_algorithms(algorithms_raw)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -778,7 +977,10 @@ def merge_pvacbind_compatible(
         for epitope in reader:
             mhc_class = epitope["mhc_class"]
             peptide_length = int(epitope["Peptide Length"])
+            peptide = (epitope["Epitope Seq"] or "").strip().upper()
             for hla_allele in hla_by_class_length.get((mhc_class, peptide_length), []):
+                if (peptide, hla_allele, mhc_class, peptide_length) not in task_keys:
+                    continue
                 row, metrics = build_pvacbind_row(epitope, hla_allele, algorithms, predictions)
                 writer.writerow(row)
                 row_count += 1
@@ -788,6 +990,8 @@ def merge_pvacbind_compatible(
         "output": str(output_path),
         "rows": row_count,
         "algorithms": algorithms,
+        "task_rows": task_rows,
+        "task_key_count": len(task_keys),
         "prediction_summary": prediction_summary,
         "metric_counts": dict(metric_counts),
     }
@@ -861,20 +1065,25 @@ def prediction_quality(row: dict[str, str]) -> tuple[int, int, int]:
     return (status_score, missing_ic50, missing_percentile)
 
 
-def collect_task_metadata(task_path: Path) -> tuple[dict[tuple[str, int], list[str]], set[str], int]:
+def collect_task_metadata(task_path: Path) -> tuple[dict[tuple[str, int], list[str]], set[str], set[tuple[str, str, str, int]], int]:
     values: dict[tuple[str, int], set[str]] = defaultdict(set)
     algorithms: set[str] = set()
+    task_keys: set[tuple[str, str, str, int]] = set()
     rows = 0
     with task_path.open(newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
         for row in reader:
             rows += 1
-            peptide = row.get("peptide", "")
+            peptide = (row.get("peptide") or "").strip().upper()
             if not peptide:
                 continue
-            values[(row["mhc_class"], len(peptide))].add(row["hla_allele"])
-            algorithms.add(row["algorithm"])
-    return {key: sorted(value) for key, value in values.items()}, algorithms, rows
+            mhc_class = (row.get("mhc_class") or "").strip()
+            hla_allele = (row.get("hla_allele") or "").strip()
+            algorithm = (row.get("algorithm") or "").strip()
+            values[(mhc_class, len(peptide))].add(hla_allele)
+            algorithms.add(algorithm)
+            task_keys.add((peptide, hla_allele, mhc_class, len(peptide)))
+    return {key: sorted(value) for key, value in values.items()}, algorithms, task_keys, rows
 
 
 def ordered_algorithms(algorithms: set[str]) -> list[str]:

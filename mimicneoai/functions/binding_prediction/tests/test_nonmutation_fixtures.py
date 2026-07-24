@@ -10,6 +10,7 @@ from mimicneoai.functions.binding_prediction.nonmutation_workflow import (
     PVACBIND_COMPAT_COLUMNS,
     build_pvacbind_row,
     main,
+    merge_pvacbind_compatible,
 )
 from mimicneoai.functions.binding_prediction.schema import PREDICTION_FIELDS
 
@@ -52,6 +53,75 @@ class NonmutationAntigenFixtureTest(unittest.TestCase):
         self.assertEqual(row["Best Percentile Method"], "MHCflurryEL")
         self.assertEqual(row["Best Percentile"], "0.1")
         self.assertEqual(row["MHCflurryEL Presentation Score"], "0.9")
+
+    def test_merge_respects_actual_task_peptide_hla_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            epitope_windows = root / "epitope_windows.tsv"
+            tasks = root / "binding_tasks.tsv"
+            predictions = root / "binding_predictions.long.tsv"
+            merged = root / "merged.tsv"
+
+            with epitope_windows.open("w", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    delimiter="\t",
+                    fieldnames=[
+                        "Mutation",
+                        "HLA Allele",
+                        "Sub-peptide Position",
+                        "Epitope Seq",
+                        "Peptide Length",
+                        "mhc_class",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "Mutation": "source",
+                        "Sub-peptide Position": "1",
+                        "Epitope Seq": "ACDEFGHIK",
+                        "Peptide Length": "9",
+                        "mhc_class": "MHC-I",
+                    }
+                )
+                writer.writerow(
+                    {
+                        "Mutation": "source",
+                        "Sub-peptide Position": "2",
+                        "Epitope Seq": "CDEFGHIKL",
+                        "Peptide Length": "9",
+                        "mhc_class": "MHC-I",
+                    }
+                )
+
+            with tasks.open("w", newline="") as handle:
+                writer = csv.writer(handle, delimiter="\t")
+                writer.writerow(["peptide", "hla_allele", "algorithm", "mhc_class"])
+                writer.writerow(["ACDEFGHIK", "HLA-A*02:01", "MHCflurry", "MHC-I"])
+
+            with predictions.open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, delimiter="\t", fieldnames=PREDICTION_FIELDS)
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "peptide": "ACDEFGHIK",
+                        "hla_allele": "HLA-A*02:01",
+                        "algorithm": "MHCflurry",
+                        "mhc_class": "MHC-I",
+                        "peptide_length": "9",
+                        "ic50": "100",
+                        "percentile": "2",
+                        "status": "ok",
+                    }
+                )
+
+            merge_pvacbind_compatible(epitope_windows, predictions, tasks, merged)
+
+            with merged.open(newline="") as handle:
+                rows = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["Epitope Seq"], "ACDEFGHIK")
 
     def run_fixture(self, fasta_name: str) -> tuple[dict[str, object], list[dict[str, str]], list[dict[str, str]]]:
         with tempfile.TemporaryDirectory() as tempdir:
