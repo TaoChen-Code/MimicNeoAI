@@ -77,18 +77,25 @@ Pipeline outputs are written under:
 ├── 04-salmon_quant
 ├── 05-hla_typing
 ├── 06-aeSEPs
-├── 07-hla_binding_pred
+├── 07-orf_genome_annotation
+├── 08-orf_filter
+├── 09-hla_binding_pred
 └── 023-shared
 ```
 
 Notable subfolders:
 - `04-salmon_quant/salmon_index`, `salmon_quant`, `salmon_quant_control`
-- `07-hla_binding_pred/<tumor_sample>/pvacbind`
+- `07-orf_genome_annotation`: maps selected ORF/CDS records back to the reference genome
+- `08-orf_filter`: writes the ORF-filtered aeSEP FASTA used by binding prediction
+- `09-hla_binding_pred/<tumor_sample>/pvacbind` for the pVACbind backend, or
+  `09-hla_binding_pred_mimicneoai/<tumor_sample>/` for the MimicNeoAI backend
 
 ## Notes
 
 - Tumor/control samples should be provided as `Tumor,Control` in `samples`.
 - The pipeline is resumable; existing non-empty outputs are skipped.
+- `others.orf_genome_annotation` and `others.orf_filter` default to enabled;
+  binding prediction uses the ORF-filtered aeSEP FASTA when `orf_filter` is enabled.
 - `others.binding_prediction_backend` defaults to `pvactools`. The optional
   `mimicneoai` backend estimates task scale before materializing the task table;
   see the [native binding backend documentation](../functions/binding_prediction/README.md).

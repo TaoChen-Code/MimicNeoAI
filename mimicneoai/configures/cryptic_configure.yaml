@@ -29,6 +29,8 @@ others:
   salmon_quant_control: true
   hlatyping: true
   extract_aeseps: true
+  orf_genome_annotation: true
+  orf_filter: true
   hla_binding_pred: true
 
   min_tpm_tumor: 5.0
@@ -42,6 +44,7 @@ others:
 
   # Binding prediction backend. Default keeps the legacy pVACbind workflow.
   binding_prediction_backend: "pvactools"  # pvactools | mimicneoai
+  binding_prediction_step_name: "09-hla_binding_pred_mimicneoai"
   binding_prediction_algorithms: "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL"
   binding_prediction_workers: 8
   # Estimate task scale before materializing binding_tasks.tsv.

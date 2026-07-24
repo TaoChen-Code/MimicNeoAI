@@ -146,13 +146,20 @@ class PipelineBackendContractTest(unittest.TestCase):
         tool = MagicMock()
         with patch.object(cryptic, "_run_cmd") as run_cmd:
             cryptic._run_one_sample("CRYPTIC-T", config, paths, tool)
+        self.assertEqual(run_cmd.call_count, 3)
+        self.assertTrue(run_cmd.call_args_list[0].args[2][1].endswith("08-orf_genome_annotation.py"))
+        self.assertTrue(any(str(value).endswith("/07-orf_genome_annotation") for value in run_cmd.call_args_list[0].args[2]))
+        self.assertTrue(run_cmd.call_args_list[1].args[2][1].endswith("08-orf_filter.py"))
+        self.assertTrue(any(str(value).endswith("/08-orf_filter") for value in run_cmd.call_args_list[1].args[2]))
         legacy_command = run_cmd.call_args.args[2]
         self.assertTrue(legacy_command[1].endswith("07-hla_binding_pred.py"))
-        self.assertTrue(any(str(value).endswith("/07-hla_binding_pred") for value in legacy_command))
+        self.assertTrue(any(str(value).endswith("/09-hla_binding_pred") for value in legacy_command))
+        self.assertTrue(any(str(value).endswith("CRYPTIC-T.aeSEPs.orf_filtered.pep") for value in legacy_command))
 
         config["others"].update(
             {
                 "binding_prediction_backend": "mimicneoai",
+                "binding_prediction_step_name": "09-hla_binding_pred_mimicneoai_test",
                 "binding_prediction_max_task_rows": 1234,
                 "binding_prediction_force_large_samples": True,
             }
@@ -161,6 +168,8 @@ class PipelineBackendContractTest(unittest.TestCase):
             cryptic._run_one_sample("CRYPTIC-T", config, paths, tool)
         native_command = run_cmd.call_args.args[2]
         self.assertTrue(native_command[1].endswith("07-hla_binding_pred_mimicneoai.py"))
+        self.assertTrue(any(str(value).endswith("/09-hla_binding_pred_mimicneoai_test") for value in native_command))
+        self.assertTrue(any(str(value).endswith("CRYPTIC-T.aeSEPs.orf_filtered.pep") for value in native_command))
         self.assertIn("--max-task-rows", native_command)
         self.assertIn("1234", native_command)
         self.assertIn("--force-large-samples", native_command)

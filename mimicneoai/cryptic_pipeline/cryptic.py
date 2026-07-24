@@ -10,7 +10,9 @@ It mirrors the original run.sh flow:
 04  Salmon quant (control)
 05  HLA typing (hlahd)
 06  Extract aberrantly expressed sORF peptides (aeSEPs)
-07  HLA binding prediction (pvacbind/IEDB)
+07  ORF genome annotation
+08  ORF-level filtering
+09  HLA binding prediction (pvacbind/IEDB or MimicNeoAI backend)
 
 This module:
 - Uses absolute imports within the 'mimicneoai' package
@@ -45,7 +47,10 @@ STEP_NAME = {
     "salmon": "04-salmon_quant",
     "hla": "05-hla_typing",
     "aeseps": "06-aeSEPs",
-    "pvacbind": "07-hla_binding_pred",
+    "orf_genome_annotation": "07-orf_genome_annotation",
+    "orf_filter": "08-orf_filter",
+    "pvacbind": "09-hla_binding_pred",
+    "mimicneoai_binding": "09-hla_binding_pred_mimicneoai",
 }
 
 
@@ -129,6 +134,8 @@ def _run_one_sample(
         do_quant_ctrl = bool(others.get("salmon_quant_control", True))
         do_hla = bool(others.get("hlatyping", True))
         do_aeseps = bool(others.get("extract_aeseps", True))
+        do_orf_annotation = bool(others.get("orf_genome_annotation", True))
+        do_orf_filter = bool(others.get("orf_filter", True))
         do_pvacbind = bool(others.get("hla_binding_pred", True))
 
         # Tumor/control resolution
@@ -163,6 +170,8 @@ def _run_one_sample(
         DIR04 = os.path.join(OPT, STEP_NAME["salmon"])
         DIR05 = os.path.join(OPT, STEP_NAME["hla"])
         DIR06 = os.path.join(OPT, STEP_NAME["aeseps"])
+        DIR07_ORF = os.path.join(OPT, STEP_NAME["orf_genome_annotation"])
+        DIR08_ORF = os.path.join(OPT, STEP_NAME["orf_filter"])
         DIR07 = os.path.join(OPT, STEP_NAME["pvacbind"])
         SHARED = os.path.join(OPT, "023-shared")
 
@@ -195,6 +204,7 @@ def _run_one_sample(
         AESEPs_PEP = os.path.join(DIR06, f"{tumor_sample}.aeSEPs.pep")
         ABERRANT_TABLE = os.path.join(DIR06, f"{tumor_sample}.aberrant_noncoding.annot.csv")
         HLA_FINAL_TXT = os.path.join(DIR05, tumor_sample, "result", f"{tumor_sample}_final.result.txt")
+        ORF_FILTERED_AESEPs_PEP = os.path.join(DIR08_ORF, f"{tumor_sample}.aeSEPs.orf_filtered.pep")
 
         # Minimum requirements for aeSEPs (can be overridden in YAML)
         min_tpm_tumor = float(others.get("min_tpm_tumor", 5.0))
@@ -335,7 +345,31 @@ def _run_one_sample(
                 "--min-log2fc", str(min_log2fc),
             ])
 
-        # ---------- 07 HLA binding prediction (pvacbind) ----------
+        # ---------- 07 ORF genome annotation ----------
+        if do_orf_annotation:
+            _run_cmd(tool, sample, [
+                sys.executable, _script_path("08-orf_genome_annotation.py"),
+                "-s", tumor_sample,
+                "--sample-dir", OPT,
+                "-o", DIR07_ORF,
+                "--genome-fa", REF_GENOME,
+                "--gtf", REF_GTF,
+                "--threads", str(int(others.get("orf_annotation_threads", n_lncsorf))),
+                "--sort-threads", str(int(others.get("orf_annotation_sort_threads", 8))),
+            ])
+
+        binding_pep_fasta = AESEPs_PEP
+        if do_orf_filter:
+            _run_cmd(tool, sample, [
+                sys.executable, _script_path("08-orf_filter.py"),
+                "-s", tumor_sample,
+                "--sample-dir", OPT,
+                "-o", DIR08_ORF,
+                "--orf-annotation-dir", DIR07_ORF,
+            ])
+            binding_pep_fasta = ORF_FILTERED_AESEPs_PEP
+
+        # ---------- 09 HLA binding prediction ----------
         if do_pvacbind:
             backend = str(others.get("binding_prediction_backend", "pvactools")).strip().lower()
             e1_lengths = others.get("mhcI_lengths", "8,9,10")
@@ -350,7 +384,7 @@ def _run_one_sample(
                 _run_cmd(tool, sample, [
                     sys.executable, _script_path("07-hla_binding_pred.py"),
                     "-s", tumor_sample,
-                    "--pep-fasta", AESEPs_PEP,
+                    "--pep-fasta", binding_pep_fasta,
                     "--hla-file", HLA_FINAL_TXT,
                     "-o", DIR07,
                     "--pvactools", PVACTOOLS_SIF,
@@ -365,11 +399,18 @@ def _run_one_sample(
                     "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign "
                     "NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL",
                 )
-                outdir_mimicneoai = os.path.join(OPT, "07-hla_binding_pred_mimicneoai")
+                binding_step_value = others.get(
+                    "binding_prediction_step_name",
+                    configure.get("step_name", {}).get("mimicneoai_binding", STEP_NAME["mimicneoai_binding"]),
+                )
+                binding_step = str(binding_step_value).strip()
+                if not binding_step or Path(binding_step).name != binding_step:
+                    raise ValueError("binding_prediction_step_name must be a single directory name")
+                outdir_mimicneoai = os.path.join(OPT, binding_step)
                 cmd = [
                     sys.executable, _script_path("07-hla_binding_pred_mimicneoai.py"),
                     "-s", tumor_sample,
-                    "--pep-fasta", AESEPs_PEP,
+                    "--pep-fasta", binding_pep_fasta,
                     "--hla-file", HLA_FINAL_TXT,
                     "-o", outdir_mimicneoai,
                     "-t", str(int(others.get("binding_prediction_workers", n_pvacbind))),
