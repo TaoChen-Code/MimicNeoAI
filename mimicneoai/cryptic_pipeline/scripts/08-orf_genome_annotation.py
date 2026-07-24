@@ -26,6 +26,7 @@ Example (sanitized):
 from __future__ import annotations
 
 import argparse
+import os
 import shlex
 import shutil
 import subprocess
@@ -35,6 +36,12 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 import pandas as pd
+
+DEFAULT_EXTRA_TOOL_DIRS = [
+    "/opt/conda/envs/mimicneoai-rna-newzlib/bin",
+    "/opt/conda/envs/mimicneoai-tools/bin",
+    "/opt/conda/envs/mimicneoai-homer/bin",
+]
 
 
 def ts() -> str:
@@ -59,8 +66,35 @@ def check_file(path: str | Path, label: Optional[str] = None) -> None:
         raise FileNotFoundError(f"[ERR] missing or empty{name}: {path}")
 
 
-def check_bin(name: str) -> None:
-    if shutil.which(name) is None:
+def split_path_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [item for item in raw.split(os.pathsep) if item]
+
+
+def build_runtime_env(extra_tool_paths: list[str] | None = None) -> dict[str, str]:
+    env = os.environ.copy()
+    path_items: list[str] = []
+    path_items.extend(split_path_list(env.get("MIMICNEOAI_TOOL_PATHS")))
+    path_items.extend(extra_tool_paths or [])
+    path_items.extend(DEFAULT_EXTRA_TOOL_DIRS)
+    path_items.extend(split_path_list(env.get("PATH")))
+
+    seen: set[str] = set()
+    resolved: list[str] = []
+    for item in path_items:
+        if item in seen:
+            continue
+        if item.startswith("/opt/conda/") and not Path(item).exists():
+            continue
+        seen.add(item)
+        resolved.append(item)
+    env["PATH"] = os.pathsep.join(resolved)
+    return env
+
+
+def check_bin(name: str, env: dict[str, str]) -> None:
+    if shutil.which(name, path=env.get("PATH")) is None:
         raise RuntimeError(f"[ERR] need `{name}` in PATH")
 
 
@@ -68,7 +102,7 @@ def quote(path: str | Path) -> str:
     return shlex.quote(str(path))
 
 
-def run_shell(cmd: str, cwd: str | Path, log_fh) -> None:
+def run_shell(cmd: str, cwd: str | Path, log_fh, env: dict[str, str]) -> None:
     log("CMD: " + cmd)
     log_fh.write(f"\n[{ts()}] CMD: {cmd}\n")
     log_fh.flush()
@@ -80,14 +114,15 @@ def run_shell(cmd: str, cwd: str | Path, log_fh) -> None:
         stdout=log_fh,
         stderr=subprocess.STDOUT,
         executable="/bin/bash",
+        env=env,
     )
 
 
-def command_output(cmd: list[str], cwd: str | Path, log_fh) -> str:
+def command_output(cmd: list[str], cwd: str | Path, log_fh, env: dict[str, str]) -> str:
     log("CMD: " + " ".join(map(str, cmd)))
     log_fh.write(f"\n[{ts()}] CMD: {' '.join(map(str, cmd))}\n")
     log_fh.flush()
-    out = subprocess.check_output(list(map(str, cmd)), cwd=str(cwd), stderr=subprocess.STDOUT)
+    out = subprocess.check_output(list(map(str, cmd)), cwd=str(cwd), stderr=subprocess.STDOUT, env=env)
     text = out.decode(errors="replace").strip()
     log_fh.write(text + "\n")
     log_fh.flush()
@@ -205,6 +240,8 @@ def run_genome_annotation(
     gtf: str | Path,
     threads: int,
     sort_threads: int,
+    homer_genome: str | Path | None,
+    env: dict[str, str],
     log_fh,
 ) -> None:
     """
@@ -223,34 +260,40 @@ def run_genome_annotation(
         ),
         cwd=outdir,
         log_fh=log_fh,
+        env=env,
     )
-    run_shell("samtools index orf2genome.bam", cwd=outdir, log_fh=log_fh)
+    run_shell("samtools index orf2genome.bam", cwd=outdir, log_fh=log_fh, env=env)
 
     run_shell(
         "samtools view -bh -F 0x804 orf2genome.bam > orf2genome.noUnmap.noSup.bam",
         cwd=outdir,
         log_fh=log_fh,
+        env=env,
     )
-    run_shell("samtools index orf2genome.noUnmap.noSup.bam", cwd=outdir, log_fh=log_fh)
+    run_shell("samtools index orf2genome.noUnmap.noSup.bam", cwd=outdir, log_fh=log_fh, env=env)
 
     run_shell(
         "bedtools bamtobed -bed12 -i orf2genome.noUnmap.noSup.bam > orf.noUnmap.noSup.bed12",
         cwd=outdir,
         log_fh=log_fh,
+        env=env,
     )
     run_shell(
         "bedtools bed12tobed6 -i orf.noUnmap.noSup.bed12 > orf.noUnmap.noSup.blocks.bed",
         cwd=outdir,
         log_fh=log_fh,
+        env=env,
     )
 
     run_shell(
         (
-            "annotatePeaks.pl orf.noUnmap.noSup.blocks.bed hg38 "
+            "annotatePeaks.pl orf.noUnmap.noSup.blocks.bed "
+            f"{quote(homer_genome or genome_fa)} "
             f"-gtf {quote(gtf)} -gid > orf.noUnmap.noSup.blocks.homer.tsv"
         ),
         cwd=outdir,
         log_fh=log_fh,
+        env=env,
     )
 
     run_shell(
@@ -261,6 +304,7 @@ def run_genome_annotation(
         ),
         cwd=outdir,
         log_fh=log_fh,
+        env=env,
     )
     run_shell(
         (
@@ -270,14 +314,16 @@ def run_genome_annotation(
         ),
         cwd=outdir,
         log_fh=log_fh,
+        env=env,
     )
 
-    mapped = command_output(["samtools", "view", "-c", "-F", "0x4", "orf2genome.bam"], outdir, log_fh)
-    kept = command_output(["samtools", "view", "-c", "orf2genome.noUnmap.noSup.bam"], outdir, log_fh)
+    mapped = command_output(["samtools", "view", "-c", "-F", "0x4", "orf2genome.bam"], outdir, log_fh, env)
+    kept = command_output(["samtools", "view", "-c", "orf2genome.noUnmap.noSup.bam"], outdir, log_fh, env)
     secondary = command_output(
         ["samtools", "view", "-c", "-f", "0x100", "orf2genome.noUnmap.noSup.bam"],
         outdir,
         log_fh,
+        env,
     )
     log_fh.write(f"mapped (primary+secondary) alignments: {mapped}\n")
     log_fh.write(f"kept (no unmapped/supplementary): {kept}\n")
@@ -287,6 +333,7 @@ def run_genome_annotation(
         "samtools view orf2genome.noUnmap.noSup.bam | awk '{print $5}' | sort -n | uniq -c | head",
         cwd=outdir,
         log_fh=log_fh,
+        env=env,
     )
 
     for required in [
@@ -319,6 +366,22 @@ def parse_args():
 
     ap.add_argument("--genome-fa", help="Reference genome FASTA; required unless --write-cds-only is set")
     ap.add_argument("--gtf", help="Reference GTF for HOMER/bedtools annotation; required unless --write-cds-only is set")
+    ap.add_argument(
+        "--homer-genome",
+        help=(
+            "Genome argument passed to annotatePeaks.pl. Defaults to --genome-fa. "
+            "Set to a HOMER genome key such as hg38 only when that genome is installed in HOMER."
+        ),
+    )
+    ap.add_argument(
+        "--extra-tool-path",
+        action="append",
+        default=[],
+        help=(
+            "Additional directory prepended to PATH for minimap2/samtools/bedtools/HOMER. "
+            "May be used multiple times. MIMICNEOAI_TOOL_PATHS is also honored."
+        ),
+    )
     ap.add_argument("--threads", type=int, default=36, help="minimap2 threads")
     ap.add_argument("--sort-threads", type=int, default=8, help="samtools sort threads")
     ap.add_argument(
@@ -389,8 +452,10 @@ def main():
         if not args.genome_fa or not args.gtf:
             raise ValueError("[ERR] --genome-fa and --gtf are required for full genome annotation")
 
+        runtime_env = build_runtime_env(args.extra_tool_path)
+        log_fh.write(f"runtime PATH: {runtime_env.get('PATH', '')}\n")
         for binary in ["minimap2", "samtools", "bedtools", "annotatePeaks.pl"]:
-            check_bin(binary)
+            check_bin(binary, runtime_env)
         check_file(args.genome_fa, "reference genome FASTA")
         check_file(args.gtf, "reference GTF")
         check_file(out_cds_fa, "selected SEP CDS FASTA")
@@ -403,6 +468,8 @@ def main():
             gtf=args.gtf,
             threads=args.threads,
             sort_threads=args.sort_threads,
+            homer_genome=args.homer_genome,
+            env=runtime_env,
             log_fh=log_fh,
         )
         log_fh.write(f"[{ts()}] 08-orf_genome_annotation.py finished\n")
