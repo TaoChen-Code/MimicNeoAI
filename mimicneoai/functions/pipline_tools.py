@@ -163,7 +163,9 @@ class tools:
         self.log_lock = log_lock
 
         # Logging paths (timestamped session)
-        self.start_date = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+        now = datetime.now()
+        self.start_date = now.strftime("%Y-%m-%d_%H:%M:%S")
+        logger_token = now.strftime("%Y%m%d%H%M%S%f")
         self.start_log = f"{self.sys_path}log/{self.start_date}/{self.log_type}_start_{self.start_date}.log"
         self.cmd_log_dir = f"{self.sys_path}log/{self.start_date}/detail/"
 
@@ -171,7 +173,7 @@ class tools:
         self.mkdir(f"{self.sys_path}log/{self.start_date}")
 
         # Configure logger
-        self.logger = logging.getLogger(f"pipeline_logger::{self.start_date}::{self.log_type}::{id(self)}")
+        self.logger = logging.getLogger(f"pipeline_logger::{self.start_date}::{logger_token}::{self.log_type}::{id(self)}")
         self.logger.setLevel(logging.DEBUG)
         self.logger.propagate = False
 
