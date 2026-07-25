@@ -226,7 +226,7 @@ def _run_one_sample(
                 "--fq2", RAW_R2,
                 "-o", DIR00,
                 "-p", str(n_qc),
-            ])
+            ], display_name="Tumor RNA QC")
 
         # ---------- 00 QC (control) ----------
         if do_qc and ctrl_sample:
@@ -236,7 +236,7 @@ def _run_one_sample(
                 "--fq2", RAW_CTRL_R2,
                 "-o", DIR00,
                 "-p", str(n_qc),
-            ])
+            ], display_name="Control RNA QC")
 
         # ---------- 01 STAR alignment ----------
         if do_align:
@@ -247,7 +247,7 @@ def _run_one_sample(
                 "--genome-dir", STAR_GENOME_DIR,
                 "--out-root", DIR01,
                 "-p", str(n_align),
-            ])
+            ], display_name="STAR alignment")
 
         # Use produced BAM if available (to pass into step 02)
         IN_BAM = os.path.join(DIR01, tumor_sample, f"{tumor_sample}.star", f"{tumor_sample}Aligned.out.bam")
@@ -267,7 +267,7 @@ def _run_one_sample(
                 "--ref-gtf", REF_GTF,
                 "--ref-lnc-gtf", REF_LNC_GTF,
                 *extra_in_bam,
-            ])
+            ], display_name="Known noncoding sORF detection")
 
         # ---------- 02 novel lnc/sORF (with Trinity) ----------
         if do_novel:
@@ -289,7 +289,7 @@ def _run_one_sample(
                 "--ref-lnc-gtf", REF_LNC_GTF,
                 *extra_in_bam,
             ]
-            _run_cmd(tool, sample, cmd_novel)
+            _run_cmd(tool, sample, cmd_novel, display_name="Novel noncoding sORF discovery")
 
         # ---------- 03 Salmon quant (tumor) ----------
         if do_quant:
@@ -304,7 +304,7 @@ def _run_one_sample(
                 "--fq2", QC_R2,
                 "--threads", str(n_salmon),
                 "--kmer", str(int(others.get("salmon_kmer", 31))),
-            ])
+            ], display_name="Tumor transcript quantification")
 
         # ---------- 04 Salmon quant (control) ----------
         if do_quant_ctrl and ctrl_sample:
@@ -315,7 +315,7 @@ def _run_one_sample(
                 "-i", os.path.join(DIR04, "salmon_index"),
                 "-o", os.path.join(DIR04, "salmon_quant_control"),
                 "-p", str(n_salmon),
-            ])
+            ], display_name="Control transcript quantification")
 
         # ---------- 05 HLA typing (hlahd) ----------
         if do_hla:
@@ -331,7 +331,7 @@ def _run_one_sample(
                 "--HLA-gene", HLA_GENE,
                 "--dictionary", HLA_DICT,
                 "--hla-gen", HLA_BOWTIE2_INDEX,
-            ])
+            ], display_name="HLA-HD typing")
 
         # ---------- 06 Extract aeSEPs ----------
         if do_aeseps:
@@ -349,7 +349,7 @@ def _run_one_sample(
                 "--min-tpm-tumor", str(min_tpm_tumor),
                 "--max-tpm-ctrl", str(max_tpm_ctrl),
                 "--min-log2fc", str(min_log2fc),
-            ])
+            ], display_name="aeSEP extraction")
 
         # ---------- 07 ORF genome annotation ----------
         if do_orf_annotation:
@@ -362,7 +362,7 @@ def _run_one_sample(
                 "--gtf", REF_GTF,
                 "--threads", str(int(others.get("orf_annotation_threads", n_lncsorf))),
                 "--sort-threads", str(int(others.get("orf_annotation_sort_threads", 8))),
-            ])
+            ], display_name="ORF genome annotation")
 
         binding_pep_fasta = AESEPs_PEP
         if do_orf_filter:
@@ -372,7 +372,7 @@ def _run_one_sample(
                 "--sample-dir", OPT,
                 "-o", DIR08_ORF,
                 "--orf-annotation-dir", DIR07_ORF,
-            ])
+            ], display_name="ORF annotation filtering")
             binding_pep_fasta = ORF_FILTERED_AESEPs_PEP
 
         # ---------- 09 HLA binding prediction ----------
