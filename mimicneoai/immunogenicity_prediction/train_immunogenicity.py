@@ -55,7 +55,8 @@ FEATURE_COLUMNS = [
     "aliphatic_index",
     "isoelectric_point",
 ]
-ENCODING_CACHE_VERSION = "peptide_hla_tensor_v1"
+ENCODING_CACHE_VERSION = "peptide_hla_tensor_v2_explicit_lengths"
+ZERO_AA_COMPOSITION = ", ".join(["0"] * 18)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -102,13 +103,19 @@ class Vocab:
         return [self.__getitem__(token) for token in tokens]
 
 
-def load_new_bilstm(model_file: Path):
+def load_model_class(model_file: Path, architecture: str):
     spec = importlib.util.spec_from_file_location("mimicneoai_model", model_file)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Cannot import model file: {model_file}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.NewBiLSTM
+    if architecture == "phla":
+        return module.NewBiLSTM
+    if architecture == "source_aware":
+        if not hasattr(module, "SourceAwareBiLSTM"):
+            raise AttributeError(f"{model_file} does not define SourceAwareBiLSTM")
+        return module.SourceAwareBiLSTM
+    raise ValueError(f"Unsupported architecture: {architecture}")
 
 
 def read_table_auto(path: Path) -> pd.DataFrame:
@@ -361,6 +368,15 @@ def ensure_peptide_features(
     return df.merge(feat[[peptide_col] + FEATURE_COLUMNS], on=peptide_col, how="left")
 
 
+def add_zero_peptide_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add an explicit zero x2 block for sequence-only Stage 1 encoding."""
+    out = df.copy()
+    out["aa_composition"] = ZERO_AA_COMPOSITION
+    for column in FEATURE_COLUMNS[1:]:
+        out[column] = 0.0
+    return out
+
+
 def aaindex_vocab(seq: str, vocab_map: Dict[str, int]) -> np.ndarray:
     encoded = np.empty([len(seq)], dtype=np.float32)
     for i, aa in enumerate(seq):
@@ -398,6 +414,7 @@ def _encode_dataframe_chunk(args):
     encoded_rows: List[np.ndarray] = []
     labels: List[int] = []
     kept_indices: List[int] = []
+    peptide_lengths: List[int] = []
     missing_hla = 0
 
     for idx, row in chunk_df.iterrows():
@@ -416,12 +433,13 @@ def _encode_dataframe_chunk(args):
         encoded_rows.append(np.pad(merged, (0, pad_len), "constant").astype(np.float32))
         labels.append(int(row["label"]))
         kept_indices.append(int(idx))
+        peptide_lengths.append(len(str(row["peptide"])))
 
     if encoded_rows:
         encoded = np.stack(encoded_rows, axis=0)
     else:
         encoded = np.empty((0, padding_length), dtype=np.float32)
-    return encoded, labels, kept_indices, missing_hla
+    return encoded, labels, peptide_lengths, kept_indices, missing_hla
 
 
 def _split_dataframe_rows(df: pd.DataFrame, chunk_size: int) -> List[pd.DataFrame]:
@@ -438,7 +456,7 @@ def encode_dataset(
     padding_length: int,
     encode_workers: int = 1,
     encode_chunk_size: int = 100000,
-) -> Tuple[torch.Tensor, torch.Tensor, pd.DataFrame]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, pd.DataFrame]:
     reset_df = df.reset_index(drop=True)
     chunks = _split_dataframe_rows(reset_df, encode_chunk_size)
     log_step(
@@ -449,15 +467,17 @@ def encode_dataset(
 
     encoded_parts: List[np.ndarray] = []
     labels: List[int] = []
+    peptide_lengths: List[int] = []
     kept_indices: List[int] = []
     missing_hla = 0
     if encode_workers <= 1 or len(chunks) <= 1:
         iterator = tqdm(worker_args, total=len(worker_args), desc="Encoding peptide-HLA chunks", leave=False)
         for args in iterator:
-            encoded, chunk_labels, chunk_indices, chunk_missing = _encode_dataframe_chunk(args)
+            encoded, chunk_labels, chunk_lengths, chunk_indices, chunk_missing = _encode_dataframe_chunk(args)
             if len(encoded):
                 encoded_parts.append(encoded)
             labels.extend(chunk_labels)
+            peptide_lengths.extend(chunk_lengths)
             kept_indices.extend(chunk_indices)
             missing_hla += chunk_missing
     else:
@@ -470,10 +490,11 @@ def encode_dataset(
                 desc=f"Encoding peptide-HLA chunks ({max_workers} workers)",
                 leave=False,
             ):
-                encoded, chunk_labels, chunk_indices, chunk_missing = future.result()
+                encoded, chunk_labels, chunk_lengths, chunk_indices, chunk_missing = future.result()
                 if len(encoded):
                     encoded_parts.append(encoded)
                 labels.extend(chunk_labels)
+                peptide_lengths.extend(chunk_lengths)
                 kept_indices.extend(chunk_indices)
                 missing_hla += chunk_missing
 
@@ -483,9 +504,10 @@ def encode_dataset(
         raise RuntimeError("No rows could be encoded. Check HLA fasta coverage.")
     encoded = torch.from_numpy(np.concatenate(encoded_parts, axis=0))
     y = torch.tensor(labels, dtype=torch.long)
+    lengths = torch.tensor(peptide_lengths, dtype=torch.long)
     kept = df.reset_index(drop=True).iloc[kept_indices].reset_index(drop=True)
     kept.attrs["_kept_indices"] = kept_indices
-    return encoded, y, kept
+    return encoded, y, lengths, kept
 
 
 def encode_dataset_cached(
@@ -500,7 +522,7 @@ def encode_dataset_cached(
     enabled: bool = True,
     encode_workers: int = 1,
     encode_chunk_size: int = 100000,
-) -> Tuple[torch.Tensor, torch.Tensor, pd.DataFrame]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, pd.DataFrame]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     encoded_columns = ["peptide", "_norm_hla", "label"] + FEATURE_COLUMNS
     data_digest = sha_for_dataframe_columns(df, encoded_columns)
@@ -533,10 +555,10 @@ def encode_dataset_cached(
             log_step(
                 f"[encode] cache hit split={split_name} file={cache_path.name} rows={len(kept_indices)}"
             )
-            return payload["x"], payload["y"], kept
+            return payload["x"], payload["y"], payload["peptide_lengths"], kept
         log_step(f"[encode] cache metadata mismatch, rebuilding split={split_name}: {cache_path.name}")
 
-    x, y, kept = encode_dataset(
+    x, y, peptide_lengths, kept = encode_dataset(
         reset_df,
         hla2prot,
         vocab,
@@ -550,44 +572,405 @@ def encode_dataset_cached(
             {
                 "x": x.cpu(),
                 "y": y.cpu(),
+                "peptide_lengths": peptide_lengths.cpu(),
                 "kept_indices": kept_indices,
                 "metadata": cache_key_payload,
             },
             cache_path,
         )
         log_step(f"[encode] cache write split={split_name} file={cache_path.name} rows={len(kept_indices)}")
-    return x, y, kept
+    return x, y, peptide_lengths, kept
 
 
-def initialize_model(new_bilstm, after_pca_path: Path, device: torch.device) -> nn.Module:
+def apply_physchem_mode(features: torch.Tensor, mode: str) -> torch.Tensor:
+    """Return encoded features with the 25-dimensional x2 block configured for an ablation."""
+    if mode == "full":
+        return features
+    if mode != "zero":
+        raise ValueError(f"Unsupported physicochemical feature mode: {mode}")
+    ablated = features.clone()
+    ablated[:, :X2_DIM] = 0
+    if torch.count_nonzero(ablated[:, :X2_DIM]).item() != 0:
+        raise RuntimeError("Physicochemical feature ablation failed to zero the x2 block")
+    return ablated
+
+
+def fit_physchem_scaler(features: torch.Tensor) -> Dict[str, List[float]]:
+    x2 = features[:, :X2_DIM].float()
+    if not torch.isfinite(x2).all():
+        raise ValueError("Cannot fit physicochemical scaler with NaN or infinite values")
+    mean = x2.mean(dim=0)
+    scale = x2.std(dim=0, unbiased=False)
+    zero_variance = scale < 1e-8
+    scale = scale.clone()
+    scale[zero_variance] = 1.0
+    return {
+        "mean": mean.cpu().tolist(),
+        "scale": scale.cpu().tolist(),
+        "zero_variance_dimensions": torch.where(zero_variance)[0].cpu().tolist(),
+        "n_fit": int(x2.shape[0]),
+    }
+
+
+def load_physchem_scaler(path: Path) -> Dict[str, List[float]]:
+    scaler = json.loads(path.read_text(encoding="utf-8"))
+    for key in ("mean", "scale"):
+        if key not in scaler or len(scaler[key]) != X2_DIM:
+            raise ValueError(f"Invalid physicochemical scaler {path}: {key} must have {X2_DIM} values")
+    return scaler
+
+
+def load_checkpoint_physchem_scaler(path: Path, device: torch.device) -> Dict[str, List[float]]:
+    payload = torch.load(path, map_location=device)
+    if not isinstance(payload, dict) or "metadata" not in payload:
+        raise RuntimeError(f"Checkpoint does not contain bound metadata: {path}")
+    scaler = payload["metadata"].get("physchem_scaler")
+    if scaler is None:
+        raise RuntimeError(f"Checkpoint does not contain a bound physicochemical scaler: {path}")
+    for key in ("mean", "scale"):
+        if key not in scaler or len(scaler[key]) != X2_DIM:
+            raise ValueError(f"Invalid checkpoint-bound scaler {path}: {key} must have {X2_DIM} values")
+    return dict(scaler)
+
+
+def transform_physchem_features(
+    features: torch.Tensor,
+    scaler: Dict[str, List[float]],
+    clip: float,
+) -> torch.Tensor:
+    transformed = features.clone()
+    mean = torch.tensor(scaler["mean"], dtype=transformed.dtype, device=transformed.device)
+    scale = torch.tensor(scaler["scale"], dtype=transformed.dtype, device=transformed.device)
+    x2 = (transformed[:, :X2_DIM] - mean) / scale
+    if clip > 0:
+        x2 = x2.clamp(min=-clip, max=clip)
+    if not torch.isfinite(x2).all():
+        raise ValueError("Physicochemical standardization produced NaN or infinite values")
+    transformed[:, :X2_DIM] = x2
+    return transformed
+
+
+def initialize_model(
+    model_cls,
+    after_pca_path: Path,
+    device: torch.device,
+    *,
+    architecture: str,
+    source_count: int = 0,
+    source_embedding_dim: int = 8,
+    physchem_fusion: str = "legacy_concat",
+    physchem_adapter_dim: int = 64,
+    physchem_dropout: float = 0.2,
+    refiner_embedding_dim: int = 64,
+    refiner_composition_dim: int = 18,
+    refiner_composition_hidden_dim: int = 48,
+    refiner_scalar_hidden_dim: int = 32,
+    refiner_fusion_hidden_dim: int = 128,
+    refiner_gate_hidden_dim: int = 64,
+    refiner_dropout: float = 0.1,
+    refiner_layer_scale_init: float = 0.1,
+    late_physchem_dim: int = 32,
+    late_group_hidden_dim: int = 16,
+    late_gate_hidden_dim: int = 64,
+    late_alpha_init: float = 0.1,
+    late_alpha_max: float = 0.5,
+    film_physchem_dim: int = 32,
+    film_group_hidden_dim: int = 16,
+    film_scale: float = 0.1,
+) -> nn.Module:
     after_pca = np.loadtxt(after_pca_path)
     zero_row = np.zeros((1, after_pca.shape[1]), dtype=np.float32)
     embeds = torch.tensor(np.vstack([zero_row, after_pca]), dtype=torch.float32)
     vocab = Vocab(list(AMINO), min_freq=1)
-    model = new_bilstm(
-        vocab_size=len(vocab),
-        embedding_dim=12,
-        hidden_dim_x1=256,
-        hidden_dim_x2=16,
-        output_dim=2,
-        n_layers=2,
-        bidirectional=True,
-        dropout=0.5,
-        pad_idx=vocab["<pad>"],
-        x2_dim=25,
-    )
+    common_kwargs = {
+        "vocab_size": len(vocab),
+        "embedding_dim": 12,
+        "hidden_dim_x1": 256,
+        "hidden_dim_x2": 16,
+        "output_dim": 2,
+        "n_layers": 2,
+        "bidirectional": True,
+        "dropout": 0.5,
+        "pad_idx": vocab["<pad>"],
+        "x2_dim": 25,
+        "physchem_fusion": physchem_fusion,
+        "physchem_adapter_dim": physchem_adapter_dim,
+        "physchem_dropout": physchem_dropout,
+        "refiner_embedding_dim": refiner_embedding_dim,
+        "refiner_composition_dim": refiner_composition_dim,
+        "refiner_composition_hidden_dim": refiner_composition_hidden_dim,
+        "refiner_scalar_hidden_dim": refiner_scalar_hidden_dim,
+        "refiner_fusion_hidden_dim": refiner_fusion_hidden_dim,
+        "refiner_gate_hidden_dim": refiner_gate_hidden_dim,
+        "refiner_dropout": refiner_dropout,
+        "refiner_layer_scale_init": refiner_layer_scale_init,
+        "late_physchem_dim": late_physchem_dim,
+        "late_group_hidden_dim": late_group_hidden_dim,
+        "late_gate_hidden_dim": late_gate_hidden_dim,
+        "late_alpha_init": late_alpha_init,
+        "late_alpha_max": late_alpha_max,
+        "film_physchem_dim": film_physchem_dim,
+        "film_group_hidden_dim": film_group_hidden_dim,
+        "film_scale": film_scale,
+    }
+    if architecture == "source_aware":
+        if source_count <= 0:
+            raise ValueError("source-aware architecture requires source_count > 0")
+        model = model_cls(
+            **common_kwargs,
+            source_count=source_count,
+            source_embedding_dim=source_embedding_dim,
+        )
+    else:
+        model = model_cls(
+            **common_kwargs,
+        )
     model.embedding.weight.data.copy_(embeds)
     model.embedding.weight.requires_grad = False
     return model.to(device)
 
 
-def load_initial_weights(model: nn.Module, model_path: Path, device: torch.device) -> None:
-    state = torch.load(model_path, map_location=device)
-    if isinstance(state, dict) and "model_state" in state:
-        state = state["model_state"]
+def unpack_batch(batch, device: torch.device):
+    if len(batch) == 5:
+        features, labels, peptide_lengths, physchem_present, source_ids = batch
+        source_ids = source_ids.to(device)
+    elif len(batch) == 4:
+        features, labels, peptide_lengths, physchem_present = batch
+        source_ids = None
+    elif len(batch) in {2, 3}:
+        # Backward-compatible loader contract for legacy checkpoints only.
+        features, labels = batch[:2]
+        source_ids = batch[2].to(device) if len(batch) == 3 else None
+        peptide_lengths = None
+        physchem_present = None
+    else:
+        raise ValueError(f"Unsupported batch structure with {len(batch)} tensors")
+    features = features.to(device)
+    labels = labels.to(device)
+    if peptide_lengths is not None:
+        peptide_lengths = peptide_lengths.to(device)
+        physchem_present = physchem_present.to(device)
+    return features, labels, peptide_lengths, physchem_present, source_ids
+
+
+def model_logits(
+    model: nn.Module,
+    features: torch.Tensor,
+    peptide_lengths: torch.Tensor | None = None,
+    physchem_present: torch.Tensor | None = None,
+    source_ids: torch.Tensor | None = None,
+    return_diagnostics: bool = False,
+    return_components: bool = False,
+):
+    x1 = features[:, X2_DIM:].long()
+    x2 = features[:, 0:X2_DIM].float()
+    kwargs = {
+        "peptide_lengths": peptide_lengths,
+        "physchem_present": physchem_present,
+        "return_diagnostics": return_diagnostics,
+    }
+    if return_components:
+        kwargs["return_components"] = True
+    if source_ids is None:
+        return model(x1, x2, **kwargs)
+    return model(x1, x2, source_ids, **kwargs)
+
+
+def select_prediction_logits(output, prediction_head: str = "fused") -> torch.Tensor:
+    if isinstance(output, torch.Tensor):
+        if prediction_head not in {"fused", "sequence"}:
+            raise ValueError(f"Model does not expose prediction head: {prediction_head}")
+        return output
+    if not isinstance(output, dict):
+        raise TypeError(f"Unsupported model output type: {type(output)!r}")
+    key = {
+        "fused": "fused_logits",
+        "sequence": "sequence_logits",
+        "physchem": "physchem_logits",
+    }[prediction_head]
+    return output[key]
+
+
+def _migrate_legacy_phla_state(model: nn.Module, state: Dict[str, torch.Tensor]) -> List[str]:
+    """Load a legacy late-concatenation checkpoint into the residual pHLA model."""
+    target = model.state_dict()
+    migrated = OrderedDict((key, value.clone()) for key, value in target.items())
+    loaded: List[str] = []
+    for key, target_value in target.items():
+        source_value = state.get(key)
+        if source_value is None and key.startswith("encoder."):
+            source_value = state.get(key.removeprefix("encoder."))
+        if source_value is not None and source_value.shape == target_value.shape:
+            migrated[key] = source_value
+            loaded.append(key)
+
+    source_fc = state.get("fc.weight")
+    target_fc = target.get("fc.weight")
+    if (
+        source_fc is not None
+        and target_fc is not None
+        and source_fc.ndim == 2
+        and target_fc.ndim == 2
+        and source_fc.shape[0] == target_fc.shape[0]
+        and source_fc.shape[1] > target_fc.shape[1]
+    ):
+        migrated["fc.weight"] = source_fc[:, : target_fc.shape[1]].clone()
+        if "fc.weight" not in loaded:
+            loaded.append("fc.weight")
+
+    required_prefixes = ("encoder.embedding.", "encoder.lstm.")
+    if not all(any(key.startswith(prefix) for key in loaded) for prefix in required_prefixes):
+        raise RuntimeError("Legacy checkpoint migration did not recover embedding and LSTM weights")
+    if "fc.weight" not in loaded or "fc.bias" not in loaded:
+        raise RuntimeError("Legacy checkpoint migration did not recover the sequence classifier")
+    model.load_state_dict(migrated, strict=True)
+    return loaded
+
+
+def _load_encoder_only_weights(
+    model: nn.Module,
+    state: Dict[str, torch.Tensor],
+) -> List[str]:
+    normalized = OrderedDict()
+    for key, value in state.items():
+        clean = key.replace("module.", "", 1)
+        if clean.startswith("embedding.") or clean.startswith("lstm."):
+            clean = f"encoder.{clean}"
+        normalized[clean] = value
+
+    target = model.state_dict()
+    required = [
+        key
+        for key in target
+        if key.startswith("encoder.embedding.") or key.startswith("encoder.lstm.")
+    ]
+    loaded: List[str] = []
+    for key in required:
+        source_value = normalized.get(key)
+        if source_value is not None and source_value.shape == target[key].shape:
+            target[key] = source_value
+            loaded.append(key)
+    missing = sorted(set(required) - set(loaded))
+    if missing:
+        raise RuntimeError(
+            "Could not recover the complete sequence encoder from the checkpoint; "
+            f"missing={missing}"
+        )
+    model.load_state_dict(target, strict=True)
+    return loaded
+
+
+def _load_encoder_and_source_weights(
+    model: nn.Module,
+    state: Dict[str, torch.Tensor],
+) -> List[str]:
+    """Load the shared sequence encoder and source embedding, but not task heads."""
+    if not hasattr(model, "source_embedding"):
+        raise RuntimeError("encoder_source initialization requires a source-aware model")
+
+    normalized = OrderedDict()
+    for key, value in state.items():
+        clean = key.replace("module.", "", 1)
+        if clean.startswith("embedding.") or clean.startswith("lstm."):
+            clean = f"encoder.{clean}"
+        normalized[clean] = value
+
+    target = model.state_dict()
+    required = [
+        key
+        for key in target
+        if key.startswith("encoder.embedding.")
+        or key.startswith("encoder.embedding_projection.")
+        or key.startswith("encoder.lstm.")
+        or key.startswith("source_embedding.")
+    ]
+    loaded: List[str] = []
+    for key in required:
+        source_value = normalized.get(key)
+        if source_value is not None and source_value.shape == target[key].shape:
+            target[key] = source_value
+            loaded.append(key)
+    missing = sorted(set(required) - set(loaded))
+    if missing:
+        raise RuntimeError(
+            "Could not recover the complete sequence encoder and source embedding from "
+            f"the checkpoint; missing={missing}"
+        )
+    model.load_state_dict(target, strict=True)
+    return loaded
+
+
+def load_initial_weights(
+    model: nn.Module,
+    model_path: Path,
+    device: torch.device,
+    scope: str = "all",
+) -> None:
+    payload = torch.load(model_path, map_location=device)
+    metadata = payload.get("metadata", {}) if isinstance(payload, dict) else {}
+    state = payload["model_state"] if isinstance(payload, dict) and "model_state" in payload else payload
     if not isinstance(state, dict):
         raise RuntimeError(f"Unsupported checkpoint format: {model_path}")
-
+    if scope == "encoder":
+        loaded = _load_encoder_only_weights(model, state)
+        log_step(
+            f"[init] loaded sequence encoder only: loaded={len(loaded)} "
+            "temporary_head_and_physchem_branch_skipped=True"
+        )
+        return
+    if scope == "encoder_source":
+        loaded = _load_encoder_and_source_weights(model, state)
+        log_step(
+            f"[init] loaded sequence encoder and source embedding: loaded={len(loaded)} "
+            "temporary_head_and_physchem_branch_skipped=True"
+        )
+        return
+    if scope != "all":
+        raise ValueError(f"Unsupported checkpoint loading scope: {scope}")
+    if getattr(model, "physchem_fusion", None) == "embedding_refine":
+        source_fusion = metadata.get("model_config", {}).get("physchem_fusion")
+        if source_fusion != "embedding_refine":
+            raise RuntimeError(
+                "embedding_refine models may only initialize from an embedding_refine checkpoint; "
+                "legacy Stage 1 weights are intentionally not reusable"
+            )
+    target_fusion = getattr(model, "physchem_fusion", None)
+    if target_fusion in {"gated_late", "film_aux"}:
+        source_fusion = metadata.get("model_config", {}).get("physchem_fusion")
+        source_mode = metadata.get("physchem_mode")
+        if source_fusion == "embedding_refine" and source_mode == "zero":
+            state = payload["model_state"] if isinstance(payload, dict) and "model_state" in payload else payload
+            normalized = OrderedDict((key.replace("module.", "", 1), value) for key, value in state.items())
+            target = model.state_dict()
+            prefixes = (
+                "encoder.embedding.",
+                "encoder.embedding_projection.",
+                "encoder.lstm.",
+            )
+            required = [key for key in target if key.startswith(prefixes)]
+            loaded = []
+            for key in required:
+                source_value = normalized.get(key)
+                if source_value is not None and source_value.shape == target[key].shape:
+                    target[key] = source_value
+                    loaded.append(key)
+            missing = sorted(set(required) - set(loaded))
+            if missing:
+                raise RuntimeError(
+                    "Could not recover the complete sequence encoder from the embedding_refine "
+                    f"Zero checkpoint; missing={missing}"
+                )
+            model.load_state_dict(target, strict=True)
+            log_step(
+                f"[init] loaded sequence encoder from embedding_refine Zero checkpoint: "
+                f"loaded={len(loaded)} {target_fusion}_new_parameters=True"
+            )
+            return
+        if source_fusion != target_fusion:
+            raise RuntimeError(
+                f"{target_fusion} models may initialize from an embedding_refine Zero Stage 1 "
+                f"checkpoint or another {target_fusion} checkpoint"
+            )
     candidates = [state]
 
     stripped = OrderedDict()
@@ -599,6 +982,13 @@ def load_initial_weights(model: nn.Module, model_path: Path, device: torch.devic
     for key, value in state.items():
         prefixed[key if key.startswith("module.") else f"module.{key}"] = value
     candidates.append(prefixed)
+    remapped = OrderedDict()
+    for key, value in state.items():
+        clean = key.replace("module.", "", 1)
+        if clean.startswith("embedding.") or clean.startswith("lstm."):
+            clean = f"encoder.{clean}"
+        remapped[clean] = value
+    candidates.append(remapped)
 
     last_error = None
     for candidate in candidates:
@@ -607,6 +997,14 @@ def load_initial_weights(model: nn.Module, model_path: Path, device: torch.devic
             return
         except RuntimeError as exc:
             last_error = exc
+    if getattr(model, "physchem_fusion", None) == "residual":
+        normalized = OrderedDict((key.replace("module.", "", 1), value) for key, value in state.items())
+        loaded = _migrate_legacy_phla_state(model, normalized)
+        log_step(
+            f"[init] migrated legacy late-concatenation checkpoint: loaded={len(loaded)} "
+            f"new_adapter_zero_initialized=True"
+        )
+        return
     raise RuntimeError(f"Failed to load initial weights from {model_path}. Last error: {last_error}")
 
 
@@ -614,7 +1012,12 @@ def accuracy(logits: torch.Tensor, labels: torch.Tensor) -> float:
     return float((logits.argmax(dim=1) == labels).sum().item())
 
 
-def evaluate(model: nn.Module, loader: data.DataLoader, device: torch.device) -> Dict[str, float]:
+def evaluate(
+    model: nn.Module,
+    loader: data.DataLoader,
+    device: torch.device,
+    prediction_head: str = "fused",
+) -> Dict[str, float]:
     model.eval()
     labels_all: List[int] = []
     probs_all: List[float] = []
@@ -622,12 +1025,17 @@ def evaluate(model: nn.Module, loader: data.DataLoader, device: torch.device) ->
     correct = 0.0
     total = 0
     with torch.no_grad():
-        for features, labels in tqdm(loader, desc="Evaluating", leave=False):
-            features = features.to(device)
-            labels = labels.to(device)
-            x1 = features[:, X2_DIM:].long()
-            x2 = features[:, 0:X2_DIM].float()
-            logits = model(x1, x2)
+        for batch in tqdm(loader, desc="Evaluating", leave=False):
+            features, labels, peptide_lengths, physchem_present, source_ids = unpack_batch(batch, device)
+            output = model_logits(
+                model,
+                features,
+                peptide_lengths,
+                physchem_present,
+                source_ids,
+                return_components=prediction_head != "fused",
+            )
+            logits = select_prediction_logits(output, prediction_head)
             probs = torch.softmax(logits, dim=1)[:, 1]
             correct += accuracy(logits, labels)
             total += labels.numel()
@@ -644,23 +1052,153 @@ def evaluate(model: nn.Module, loader: data.DataLoader, device: torch.device) ->
     return metrics
 
 
-def predict(model: nn.Module, loader: data.DataLoader, device: torch.device) -> Tuple[List[int], List[float], List[int]]:
+def predict(
+    model: nn.Module,
+    loader: data.DataLoader,
+    device: torch.device,
+    prediction_head: str = "fused",
+) -> Tuple[List[int], List[float], List[int]]:
     model.eval()
     labels_all: List[int] = []
     probs_all: List[float] = []
     pred_all: List[int] = []
     with torch.no_grad():
-        for features, labels in tqdm(loader, desc="Predicting", leave=False):
-            features = features.to(device)
-            labels = labels.to(device)
-            x1 = features[:, X2_DIM:].long()
-            x2 = features[:, 0:X2_DIM].float()
-            logits = model(x1, x2)
+        for batch in tqdm(loader, desc="Predicting", leave=False):
+            features, labels, peptide_lengths, physchem_present, source_ids = unpack_batch(batch, device)
+            output = model_logits(
+                model,
+                features,
+                peptide_lengths,
+                physchem_present,
+                source_ids,
+                return_components=prediction_head != "fused",
+            )
+            logits = select_prediction_logits(output, prediction_head)
             probs = torch.softmax(logits, dim=1)[:, 1]
             labels_all.extend(labels.detach().cpu().numpy().astype(int).tolist())
             probs_all.extend(probs.detach().cpu().numpy().astype(float).tolist())
             pred_all.extend(logits.argmax(dim=1).detach().cpu().numpy().astype(int).tolist())
     return labels_all, probs_all, pred_all
+
+
+def collect_refiner_diagnostics(
+    model: nn.Module,
+    loader: data.DataLoader,
+    device: torch.device,
+    max_batches: int = 32,
+) -> Dict[str, float]:
+    fusion = getattr(model, "physchem_fusion", None)
+    if fusion not in {"embedding_refine", "gated_late", "film_aux"}:
+        return {}
+    model.eval()
+    if fusion == "embedding_refine":
+        keys = [
+            "base_embedding_norm",
+            "delta_norm",
+            "delta_to_base_ratio",
+            "gate_mean",
+            "gate_std",
+            "gate_min",
+            "gate_max",
+            "gamma_norm",
+            "beta_norm",
+            "layer_scale_norm",
+        ]
+    elif fusion == "gated_late":
+        keys = [
+            "base_representation_norm",
+            "delta_norm",
+            "delta_to_base_ratio",
+            "physchem_embedding_norm",
+            "gate_mean",
+            "gate_std",
+            "gate_min",
+            "gate_max",
+            "alpha",
+        ]
+    else:
+        keys = [
+            "base_representation_norm",
+            "modulation_norm",
+            "modulation_to_base_ratio",
+            "physchem_embedding_norm",
+            "gamma_abs_mean",
+            "beta_abs_mean",
+            "film_scale",
+        ]
+    values = {key: [] for key in keys}
+    with torch.no_grad():
+        for batch_index, batch in enumerate(loader):
+            if batch_index >= max_batches:
+                break
+            features, _, peptide_lengths, physchem_present, source_ids = unpack_batch(batch, device)
+            _, diagnostics = model_logits(
+                model,
+                features,
+                peptide_lengths,
+                physchem_present,
+                source_ids,
+                return_diagnostics=True,
+            )
+            for key in keys:
+                values[key].append(float(diagnostics[key].detach().cpu()))
+    summary = {key: float(np.mean(items)) for key, items in values.items() if items}
+    summary["batches"] = min(len(loader), max_batches)
+    return summary
+
+
+def set_sequence_encoder_trainable(model: nn.Module, trainable: bool) -> None:
+    encoder = getattr(model, "encoder", None)
+    if encoder is None:
+        return
+    for name, parameter in encoder.named_parameters():
+        if name == "embedding.weight":
+            parameter.requires_grad = False
+        else:
+            parameter.requires_grad = trainable
+
+
+def training_optimizer(model: nn.Module, head_lr: float, encoder_lr: float) -> torch.optim.Optimizer:
+    encoder = getattr(model, "encoder", None)
+    if encoder is None:
+        return torch.optim.Adam(model.parameters(), lr=head_lr)
+    encoder_parameters = list(encoder.parameters())
+    encoder_ids = {id(parameter) for parameter in encoder_parameters}
+    head_parameters = [parameter for parameter in model.parameters() if id(parameter) not in encoder_ids]
+    return torch.optim.Adam(
+        [
+            {"params": encoder_parameters, "lr": encoder_lr},
+            {"params": head_parameters, "lr": head_lr},
+        ]
+    )
+
+
+def film_aux_multitask_loss(
+    output: Dict[str, torch.Tensor],
+    labels: torch.Tensor,
+    physchem_present: torch.Tensor,
+    loss_fn: nn.Module,
+    aux_physchem_loss_weight: float,
+    aux_sequence_loss_weight: float,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return a controlled Full/Zero FiLM loss and its components.
+
+    The denominator is deliberately identical in Full and Zero conditions.
+    Otherwise disabling the physicochemical branch would increase the effective
+    sequence learning rate and bias the ablation in favor of Zero.
+    """
+    fused_loss = loss_fn(output["fused_logits"], labels)
+    sequence_loss = loss_fn(output["sequence_logits"], labels)
+    physchem_loss = loss_fn(output["physchem_logits"], labels)
+    present = physchem_present.to(dtype=physchem_loss.dtype)
+    active_physchem_loss = physchem_loss * present
+    normalizer = 1.0 + aux_sequence_loss_weight + aux_physchem_loss_weight
+    loss = (
+        fused_loss
+        + aux_sequence_loss_weight * sequence_loss
+        + aux_physchem_loss_weight * active_physchem_loss
+    ) / normalizer
+    return loss, fused_loss, sequence_loss, physchem_loss
 
 
 def train_one_model(
@@ -674,9 +1212,16 @@ def train_one_model(
     model_name: str,
     loss_reduction: str,
     class_weights: torch.Tensor | None = None,
+    checkpoint_metadata: Dict | None = None,
+    prediction_head: str = "fused",
+    aux_physchem_loss_weight: float = 0.0,
+    aux_sequence_loss_weight: float = 0.0,
+    encoder_warmup_epochs: int = 0,
+    encoder_lr: float | None = None,
 ) -> Tuple[nn.Module, List[Dict[str, float]], Dict[str, Path]]:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    trainer = torch.optim.Adam(model.parameters(), lr=lr)
+    encoder_lr = lr if encoder_lr is None else encoder_lr
+    trainer = training_optimizer(model, lr, encoder_lr)
     loss_fn = nn.CrossEntropyLoss(
         reduction="none",
         weight=class_weights.to(device) if class_weights is not None else None,
@@ -690,9 +1235,23 @@ def train_one_model(
         "val_roc_auc": checkpoint_dir / f"{model_name}_best_val_roc_auc.pth",
         "val_average_precision": checkpoint_dir / f"{model_name}_best_val_average_precision.pth",
     }
+    uses_film_aux = getattr(model, "physchem_fusion", None) == "film_aux"
+    if prediction_head != "fused" and not uses_film_aux:
+        raise ValueError(f"prediction_head={prediction_head} requires physchem_fusion=film_aux")
+    permanently_freeze_encoder = prediction_head == "physchem"
     for epoch in range(epochs):
+        encoder_trainable = not permanently_freeze_encoder and epoch >= encoder_warmup_epochs
+        set_sequence_encoder_trainable(model, encoder_trainable)
+        if epoch == 0 or epoch == encoder_warmup_epochs:
+            log_step(
+                f"[{model_name}] encoder_trainable={encoder_trainable} "
+                f"head_lr={lr} encoder_lr={encoder_lr}"
+            )
         model.train()
         loss_sum = 0.0
+        fused_loss_sum = 0.0
+        sequence_loss_sum = 0.0
+        physchem_loss_sum = 0.0
         correct = 0.0
         n = 0
         batch_iter = tqdm(
@@ -700,14 +1259,43 @@ def train_one_model(
             desc=f"{model_name} epoch {epoch + 1}/{epochs}",
             leave=False,
         )
-        for features, labels in batch_iter:
-            features = features.to(device)
-            labels = labels.to(device)
-            x1 = features[:, X2_DIM:].long()
-            x2 = features[:, 0:X2_DIM].float()
+        for batch in batch_iter:
+            features, labels, peptide_lengths, physchem_present, source_ids = unpack_batch(batch, device)
             trainer.zero_grad()
-            logits = model(x1, x2)
-            loss = loss_fn(logits, labels)
+            output = model_logits(
+                model,
+                features,
+                peptide_lengths,
+                physchem_present,
+                source_ids,
+                return_components=uses_film_aux,
+            )
+            logits = select_prediction_logits(output, prediction_head)
+            if uses_film_aux:
+                if prediction_head == "physchem":
+                    fused_loss = loss_fn(output["fused_logits"], labels)
+                    sequence_loss = loss_fn(output["sequence_logits"], labels)
+                    physchem_loss = loss_fn(output["physchem_logits"], labels)
+                    loss = physchem_loss
+                elif prediction_head == "sequence":
+                    fused_loss = loss_fn(output["fused_logits"], labels)
+                    sequence_loss = loss_fn(output["sequence_logits"], labels)
+                    physchem_loss = loss_fn(output["physchem_logits"], labels)
+                    loss = sequence_loss
+                else:
+                    loss, fused_loss, sequence_loss, physchem_loss = film_aux_multitask_loss(
+                        output,
+                        labels,
+                        physchem_present,
+                        loss_fn,
+                        aux_physchem_loss_weight,
+                        aux_sequence_loss_weight,
+                    )
+                fused_loss_sum += float(fused_loss.sum().detach().cpu().item())
+                sequence_loss_sum += float(sequence_loss.sum().detach().cpu().item())
+                physchem_loss_sum += float(physchem_loss.sum().detach().cpu().item())
+            else:
+                loss = loss_fn(logits, labels)
             if loss_reduction == "mean":
                 loss.mean().backward()
             else:
@@ -725,8 +1313,21 @@ def train_one_model(
             "train_loss": loss_sum / max(n, 1),
             "train_accuracy": correct / max(n, 1),
         }
+        if uses_film_aux:
+            row.update(
+                {
+                    "train_fused_loss": fused_loss_sum / max(n, 1),
+                    "train_sequence_loss": sequence_loss_sum / max(n, 1),
+                    "train_physchem_loss": physchem_loss_sum / max(n, 1),
+                }
+            )
         if val_loader is not None:
-            row.update({f"val_{k}": v for k, v in evaluate(model, val_loader, device).items()})
+            row.update(
+                {
+                    f"val_{k}": v
+                    for k, v in evaluate(model, val_loader, device, prediction_head).items()
+                }
+            )
             for metric_name, best_path in best_paths.items():
                 metric_value = float(row.get(metric_name, float("nan")))
                 if np.isfinite(metric_value) and metric_value > best_values[metric_name]:
@@ -739,6 +1340,7 @@ def train_one_model(
                             "history": history + [row],
                             "best_metric": metric_name,
                             "best_value": metric_value,
+                            "metadata": checkpoint_metadata or {},
                         },
                         best_path,
                     )
@@ -761,6 +1363,7 @@ def train_one_model(
                     "model_state": model.state_dict(),
                     "optimizer_state": trainer.state_dict(),
                     "history": history,
+                    "metadata": checkpoint_metadata or {},
                 },
                 checkpoint_dir / f"{model_name}_epoch_{epoch}.pth",
             )
@@ -794,8 +1397,38 @@ def old_notebook_kfold_indices(labels: Sequence[int], k: int) -> Iterable[Tuple[
         yield np.asarray(train_idx, dtype=int), np.asarray(test_idx, dtype=int)
 
 
-def make_loader(features: torch.Tensor, labels: torch.Tensor, indices: np.ndarray, batch_size: int, shuffle: bool) -> data.DataLoader:
-    ds = data.TensorDataset(features[indices], labels[indices])
+def source_ids_from_metadata(
+    kept_df: pd.DataFrame,
+    source_col: str,
+    source_to_idx: Dict[str, int],
+) -> torch.Tensor:
+    if source_col not in kept_df.columns:
+        raise KeyError(f"Missing source column for source-aware model: {source_col}")
+    values = kept_df[source_col].astype(str).tolist()
+    missing = sorted(set(values) - set(source_to_idx))
+    if missing:
+        raise KeyError(f"Source mapping missing values from {source_col}: {missing}")
+    return torch.tensor([source_to_idx[value] for value in values], dtype=torch.long)
+
+
+def make_loader(
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    indices: np.ndarray,
+    batch_size: int,
+    shuffle: bool,
+    peptide_lengths: torch.Tensor,
+    physchem_present: torch.Tensor,
+    source_ids: torch.Tensor | None = None,
+) -> data.DataLoader:
+    if source_ids is None:
+        ds = data.TensorDataset(
+            features[indices], labels[indices], peptide_lengths[indices], physchem_present[indices]
+        )
+    else:
+        ds = data.TensorDataset(
+            features[indices], labels[indices], peptide_lengths[indices], physchem_present[indices], source_ids[indices]
+        )
     return data.DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=False)
 
 
@@ -807,8 +1440,14 @@ def make_training_loader(
     sampler_mode: str,
     sampler_source_col: str,
     outdir: Path,
+    peptide_lengths: torch.Tensor,
+    physchem_present: torch.Tensor,
+    source_ids: torch.Tensor | None = None,
 ) -> data.DataLoader:
-    ds = data.TensorDataset(features, labels)
+    if source_ids is None:
+        ds = data.TensorDataset(features, labels, peptide_lengths, physchem_present)
+    else:
+        ds = data.TensorDataset(features, labels, peptide_lengths, physchem_present, source_ids)
     if sampler_mode == "shuffle":
         return data.DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=False)
 
@@ -872,6 +1511,24 @@ def main() -> None:
     parser.add_argument("--outdir", required=True, type=Path)
     parser.add_argument("--model-file", default=DEFAULT_MODEL_FILE, type=Path)
     parser.add_argument(
+        "--architecture",
+        choices=["phla", "source_aware"],
+        default="phla",
+        help="Model architecture for architecture-ablation experiments.",
+    )
+    parser.add_argument(
+        "--source-col",
+        default="antigen_class",
+        help="Column used as source label when --architecture source_aware.",
+    )
+    parser.add_argument(
+        "--source-labels",
+        nargs="*",
+        default=None,
+        help="Optional stable source label order for source-aware embeddings.",
+    )
+    parser.add_argument("--source-embedding-dim", default=8, type=int)
+    parser.add_argument(
         "--hla-source",
         choices=["fasta", "netmhc-pseudoseq"],
         default="fasta",
@@ -898,6 +1555,75 @@ def main() -> None:
     parser.add_argument("--encode-workers", default=1, type=int)
     parser.add_argument("--encode-chunk-size", default=100000, type=int)
     parser.add_argument(
+        "--physchem-mode",
+        choices=["full", "zero"],
+        default="full",
+        help="Keep the 25-dimensional peptide physicochemical block or replace it with zeros.",
+    )
+    parser.add_argument(
+        "--physchem-fusion",
+        choices=["sequence_only", "legacy_concat", "residual", "embedding_refine", "gated_late", "film_aux"],
+        default="legacy_concat",
+        help=(
+            "Physicochemical fusion strategy; embedding_refine modifies peptide token embeddings, "
+            "gated_late conditions the pooled pHLA representation, and film_aux adds "
+            "auxiliary-supervised residual FiLM."
+        ),
+    )
+    parser.add_argument(
+        "--physchem-scaling",
+        choices=["none", "standardize"],
+        default="none",
+        help="Optionally standardize each physicochemical dimension using training-only statistics.",
+    )
+    parser.add_argument(
+        "--physchem-scaler-in",
+        default=None,
+        type=Path,
+        help="Optional saved training-only scaler. If omitted, standardize mode fits on the current train split.",
+    )
+    parser.add_argument("--physchem-clip", default=5.0, type=float)
+    parser.add_argument("--physchem-adapter-dim", default=64, type=int)
+    parser.add_argument("--physchem-dropout", default=0.2, type=float)
+    parser.add_argument("--refiner-embedding-dim", default=64, type=int)
+    parser.add_argument("--refiner-composition-dim", default=18, type=int)
+    parser.add_argument("--refiner-composition-hidden-dim", default=48, type=int)
+    parser.add_argument("--refiner-scalar-hidden-dim", default=32, type=int)
+    parser.add_argument("--refiner-fusion-hidden-dim", default=128, type=int)
+    parser.add_argument("--refiner-gate-hidden-dim", default=64, type=int)
+    parser.add_argument("--refiner-dropout", default=0.1, type=float)
+    parser.add_argument("--refiner-layer-scale-init", default=0.1, type=float)
+    parser.add_argument("--late-physchem-dim", default=32, type=int)
+    parser.add_argument("--late-group-hidden-dim", default=16, type=int)
+    parser.add_argument("--late-gate-hidden-dim", default=64, type=int)
+    parser.add_argument("--late-alpha-init", default=0.1, type=float)
+    parser.add_argument("--late-alpha-max", default=0.5, type=float)
+    parser.add_argument("--film-physchem-dim", default=32, type=int)
+    parser.add_argument("--film-group-hidden-dim", default=16, type=int)
+    parser.add_argument("--film-scale", default=0.1, type=float)
+    parser.add_argument(
+        "--prediction-head",
+        choices=["fused", "sequence", "physchem"],
+        default="fused",
+        help="Prediction head optimized and reported; sequence/physchem require film_aux.",
+    )
+    parser.add_argument("--aux-physchem-loss-weight", default=0.2, type=float)
+    parser.add_argument("--aux-sequence-loss-weight", default=0.1, type=float)
+    parser.add_argument("--encoder-warmup-epochs", default=0, type=int)
+    parser.add_argument(
+        "--encoder-lr",
+        default=None,
+        type=float,
+        help="Optional sequence-encoder learning rate; defaults to --lr.",
+    )
+    parser.add_argument("--diagnostic-batches", default=32, type=int)
+    parser.add_argument(
+        "--cache-dir",
+        default=None,
+        type=Path,
+        help="Optional shared feature/encoding cache directory. Defaults to OUTDIR/cache.",
+    )
+    parser.add_argument(
         "--no-encoded-cache",
         dest="encoded_cache",
         action="store_false",
@@ -905,6 +1631,15 @@ def main() -> None:
     )
     parser.set_defaults(encoded_cache=True)
     parser.add_argument("--init-from", default=None, type=Path)
+    parser.add_argument(
+        "--init-scope",
+        choices=["all", "encoder", "encoder_source"],
+        default="all",
+        help=(
+            "Load a complete compatible checkpoint, only its sequence encoder, or the "
+            "sequence encoder plus source embedding for source-aware Stage 2 training."
+        ),
+    )
     parser.add_argument(
         "--select-best-metric",
         choices=["last", "val_roc_auc", "val_average_precision"],
@@ -944,19 +1679,45 @@ def main() -> None:
     parser.add_argument("--skip-kfold", action="store_true")
     args = parser.parse_args()
 
+    if args.physchem_fusion in {"embedding_refine", "gated_late", "film_aux"} and args.physchem_scaling != "standardize":
+        parser.error(f"--physchem-fusion {args.physchem_fusion} requires --physchem-scaling standardize")
+    if args.physchem_fusion == "sequence_only" and args.physchem_mode != "zero":
+        parser.error("--physchem-fusion sequence_only requires --physchem-mode zero")
+    if args.physchem_fusion == "sequence_only" and args.physchem_scaling != "none":
+        parser.error("--physchem-fusion sequence_only requires --physchem-scaling none")
+    if args.physchem_fusion == "gated_late" and not 0 < args.late_alpha_init < args.late_alpha_max:
+        parser.error("gated_late requires 0 < --late-alpha-init < --late-alpha-max")
+    if args.physchem_fusion == "film_aux" and args.film_scale <= 0:
+        parser.error("film_aux requires --film-scale > 0")
+    if args.prediction_head != "fused" and args.physchem_fusion != "film_aux":
+        parser.error("--prediction-head sequence/physchem requires --physchem-fusion film_aux")
+    if args.prediction_head == "physchem" and args.physchem_mode != "full":
+        parser.error("--prediction-head physchem requires --physchem-mode full")
+    if args.aux_physchem_loss_weight < 0 or args.aux_sequence_loss_weight < 0:
+        parser.error("auxiliary loss weights must be non-negative")
+    if args.encoder_warmup_epochs < 0:
+        parser.error("--encoder-warmup-epochs must be non-negative")
+
     t0 = time.time()
     set_seed(args.seed)
-    log_step(f"[start] antigen={args.antigen} epochs={args.epochs} batch_size={args.batch_size}")
+    log_step(
+        f"[start] antigen={args.antigen} architecture={args.architecture} "
+        f"epochs={args.epochs} batch_size={args.batch_size} physchem_mode={args.physchem_mode} "
+        f"physchem_fusion={args.physchem_fusion} physchem_scaling={args.physchem_scaling}"
+    )
     args.outdir.mkdir(parents=True, exist_ok=True)
     for sub in ["cache", "models", "metrics", "predictions"]:
         (args.outdir / sub).mkdir(exist_ok=True)
+    run_cache_dir = args.cache_dir if args.cache_dir is not None else args.outdir / "cache"
+    run_cache_dir.mkdir(parents=True, exist_ok=True)
     config = vars(args).copy()
     config = {k: str(v) if isinstance(v, Path) else v for k, v in config.items()}
+    config["resolved_cache_dir"] = str(run_cache_dir)
     (args.outdir / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
 
     device = torch.device("cuda:0" if args.device == "auto" and torch.cuda.is_available() else args.device)
     log_step(f"[env] device={device} cuda_available={torch.cuda.is_available()}")
-    NewBiLSTM = load_new_bilstm(args.model_file)
+    ModelClass = load_model_class(args.model_file, args.architecture)
     vocab = Vocab(list(AMINO), min_freq=1)
     hla2prot = load_hla_sequences(args.hla_source, args.hla_fasta, args.hla_pseudoseq_csv)
     hla_digest = sha_for_hla_sequences(hla2prot)
@@ -991,13 +1752,42 @@ def main() -> None:
     if test_df is not None:
         split_frames.append(test_df.assign(_split="test"))
     combined = pd.concat(split_frames, ignore_index=True)
-    combined = ensure_peptide_features(
-        combined,
-        args.outdir / "cache",
-        args.feature_rscript,
-        feature_workers=args.feature_workers,
-        feature_chunk_size=args.feature_chunk_size,
-    )
+    if args.architecture == "source_aware":
+        if args.source_col not in combined.columns:
+            raise KeyError(f"--architecture source_aware requires source column: {args.source_col}")
+        source_labels = args.source_labels or sorted(combined[args.source_col].astype(str).dropna().unique().tolist())
+        if not source_labels:
+            raise ValueError("No source labels available for source-aware model.")
+        source_to_idx = {str(label): idx for idx, label in enumerate(source_labels)}
+        missing_sources = sorted(set(combined[args.source_col].astype(str)) - set(source_to_idx))
+        if missing_sources:
+            raise ValueError(f"Input contains sources not listed in --source-labels: {missing_sources}")
+        (args.outdir / "source_mapping.json").write_text(
+            json.dumps(
+                {
+                    "source_col": args.source_col,
+                    "source_to_idx": source_to_idx,
+                    "source_embedding_dim": args.source_embedding_dim,
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        log_step(f"[source_aware] source_col={args.source_col} mapping={source_to_idx}")
+    else:
+        source_to_idx = {}
+    if args.physchem_fusion == "sequence_only":
+        combined = add_zero_peptide_features(combined)
+        log_step("[features] sequence_only: skipped physicochemical feature calculation")
+    else:
+        combined = ensure_peptide_features(
+            combined,
+            run_cache_dir,
+            args.feature_rscript,
+            feature_workers=args.feature_workers,
+            feature_chunk_size=args.feature_chunk_size,
+        )
     padding_length = resolve_padding_length(args.padding_length, args.hla_source, combined, hla2prot)
     log_step(f"[encode] padding_length={padding_length}")
     train_feat = combined[combined["_split"] == "train"].drop(columns=["_split"]).reset_index(drop=True)
@@ -1009,12 +1799,12 @@ def main() -> None:
     )
 
     log_step("[encode] training set")
-    train_x, train_y, train_kept = encode_dataset_cached(
+    train_x, train_y, train_lengths, train_kept = encode_dataset_cached(
         train_feat,
         hla2prot,
         vocab,
         padding_length,
-        args.outdir / "cache",
+        run_cache_dir,
         "train",
         args.hla_source,
         hla_digest,
@@ -1023,12 +1813,12 @@ def main() -> None:
         encode_chunk_size=args.encode_chunk_size,
     )
     log_step("[encode] validation set")
-    val_x, val_y, val_kept = encode_dataset_cached(
+    val_x, val_y, val_lengths, val_kept = encode_dataset_cached(
         val_feat,
         hla2prot,
         vocab,
         padding_length,
-        args.outdir / "cache",
+        run_cache_dir,
         "validation",
         args.hla_source,
         hla_digest,
@@ -1038,12 +1828,12 @@ def main() -> None:
     )
     if test_feat is not None:
         log_step("[encode] test set")
-        test_x, test_y, test_kept = encode_dataset_cached(
+        test_x, test_y, test_lengths, test_kept = encode_dataset_cached(
             test_feat,
             hla2prot,
             vocab,
             padding_length,
-            args.outdir / "cache",
+            run_cache_dir,
             "test",
             args.hla_source,
             hla_digest,
@@ -1052,22 +1842,190 @@ def main() -> None:
             encode_chunk_size=args.encode_chunk_size,
         )
     else:
-        test_x, test_y, test_kept = None, None, None
+        test_x, test_y, test_lengths, test_kept = None, None, None, None
+    scaler = None
+    if args.physchem_scaling == "standardize":
+        if args.physchem_scaler_in is not None:
+            scaler = load_physchem_scaler(args.physchem_scaler_in)
+            scaler_fit_source = str(args.physchem_scaler_in)
+        elif args.init_from is not None and args.physchem_fusion == "embedding_refine":
+            scaler = load_checkpoint_physchem_scaler(args.init_from, device)
+            scaler_fit_source = f"checkpoint:{args.init_from}"
+            checkpoint_clip = float(scaler.get("clip", args.physchem_clip))
+            if not math.isclose(checkpoint_clip, float(args.physchem_clip), rel_tol=0.0, abs_tol=1e-12):
+                raise ValueError(
+                    f"--physchem-clip={args.physchem_clip} does not match checkpoint-bound clip={checkpoint_clip}"
+                )
+        else:
+            scaler = fit_physchem_scaler(train_x)
+            scaler_fit_source = "train_split"
+        scaler.update(
+            {
+                "clip": float(args.physchem_clip),
+                "fit_source": scaler_fit_source,
+            }
+        )
+        scaler_path = args.outdir / "physchem_scaler.json"
+        scaler_path.write_text(json.dumps(scaler, indent=2), encoding="utf-8")
+        train_x = transform_physchem_features(train_x, scaler, args.physchem_clip)
+        val_x = transform_physchem_features(val_x, scaler, args.physchem_clip)
+        if test_x is not None:
+            test_x = transform_physchem_features(test_x, scaler, args.physchem_clip)
+        log_step(
+            f"[physchem] standardized n_fit={scaler['n_fit']} clip={args.physchem_clip} "
+            f"zero_variance={scaler['zero_variance_dimensions']} saved={scaler_path}"
+        )
+    train_x = apply_physchem_mode(train_x, args.physchem_mode)
+    val_x = apply_physchem_mode(val_x, args.physchem_mode)
+    if test_x is not None:
+        test_x = apply_physchem_mode(test_x, args.physchem_mode)
+    presence_value = 1.0 if args.physchem_mode == "full" else 0.0
+    train_presence = torch.full((len(train_y),), presence_value, dtype=torch.float32)
+    val_presence = torch.full((len(val_y),), presence_value, dtype=torch.float32)
+    test_presence = (
+        torch.full((len(test_y),), presence_value, dtype=torch.float32) if test_y is not None else None
+    )
+    log_step(
+        f"[physchem] mode={args.physchem_mode} x2_dim={X2_DIM} "
+        f"train_nonzero={int(torch.count_nonzero(train_x[:, :X2_DIM]).item())}"
+    )
     log_step(
         f"[data] train rows={len(train_df)} encoded={len(train_kept)} "
         f"validation rows={len(val_df)} encoded={len(val_kept)} device={device}"
     )
+    if args.architecture == "source_aware":
+        train_source_ids = source_ids_from_metadata(train_kept, args.source_col, source_to_idx)
+        val_source_ids = source_ids_from_metadata(val_kept, args.source_col, source_to_idx)
+        test_source_ids = (
+            source_ids_from_metadata(test_kept, args.source_col, source_to_idx)
+            if test_kept is not None
+            else None
+        )
+    else:
+        train_source_ids = None
+        val_source_ids = None
+        test_source_ids = None
     class_weights = compute_class_weights(train_y, args.class_weight_mode)
+    model_config = {
+        "architecture": args.architecture,
+        "embedding_dim": 12,
+        "hidden_dim_x1": 256,
+        "hidden_dim_x2": 16,
+        "output_dim": 2,
+        "n_layers": 2,
+        "bidirectional": True,
+        "dropout": 0.5,
+        "x2_dim": X2_DIM,
+        "physchem_fusion": args.physchem_fusion,
+        "physchem_adapter_dim": args.physchem_adapter_dim,
+        "physchem_dropout": args.physchem_dropout,
+        "refiner_embedding_dim": args.refiner_embedding_dim,
+        "refiner_composition_dim": args.refiner_composition_dim,
+        "refiner_composition_hidden_dim": args.refiner_composition_hidden_dim,
+        "refiner_scalar_hidden_dim": args.refiner_scalar_hidden_dim,
+        "refiner_fusion_hidden_dim": args.refiner_fusion_hidden_dim,
+        "refiner_gate_hidden_dim": args.refiner_gate_hidden_dim,
+        "refiner_dropout": args.refiner_dropout,
+        "refiner_layer_scale_init": args.refiner_layer_scale_init,
+        "late_physchem_dim": args.late_physchem_dim,
+        "late_group_hidden_dim": args.late_group_hidden_dim,
+        "late_gate_hidden_dim": args.late_gate_hidden_dim,
+        "late_alpha_init": args.late_alpha_init,
+        "late_alpha_max": args.late_alpha_max,
+        "film_physchem_dim": args.film_physchem_dim,
+        "film_group_hidden_dim": args.film_group_hidden_dim,
+        "film_scale": args.film_scale,
+    }
+    if args.architecture == "source_aware":
+        model_config.update(
+            source_count=len(source_to_idx),
+            source_embedding_dim=args.source_embedding_dim,
+        )
+    scaler_digest = (
+        hashlib.sha256(json.dumps(scaler, sort_keys=True).encode("utf-8")).hexdigest()
+        if scaler is not None
+        else None
+    )
+    checkpoint_metadata = {
+        "format_version": "mimicneoai_immunogenicity_checkpoint_v2",
+        "model_config": model_config,
+        "physchem_scaler": scaler,
+        "physchem_scaler_sha256": scaler_digest,
+        "physchem_mode": args.physchem_mode,
+        "prediction_head": args.prediction_head,
+        "aux_physchem_loss_weight": args.aux_physchem_loss_weight,
+        "aux_sequence_loss_weight": args.aux_sequence_loss_weight,
+        "encoder_warmup_epochs": args.encoder_warmup_epochs,
+        "encoder_lr": args.encoder_lr,
+        "encoding_cache_version": ENCODING_CACHE_VERSION,
+        "hla_source": args.hla_source,
+        "padding_length": padding_length,
+        "source_mapping": source_to_idx,
+    }
+    config["model_config"] = model_config
+    config["physchem_scaler_sha256"] = scaler_digest
+    (args.outdir / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+    init_kwargs = {
+        "architecture": args.architecture,
+        "physchem_fusion": args.physchem_fusion,
+        "physchem_adapter_dim": args.physchem_adapter_dim,
+        "physchem_dropout": args.physchem_dropout,
+        "refiner_embedding_dim": args.refiner_embedding_dim,
+        "refiner_composition_dim": args.refiner_composition_dim,
+        "refiner_composition_hidden_dim": args.refiner_composition_hidden_dim,
+        "refiner_scalar_hidden_dim": args.refiner_scalar_hidden_dim,
+        "refiner_fusion_hidden_dim": args.refiner_fusion_hidden_dim,
+        "refiner_gate_hidden_dim": args.refiner_gate_hidden_dim,
+        "refiner_dropout": args.refiner_dropout,
+        "refiner_layer_scale_init": args.refiner_layer_scale_init,
+        "late_physchem_dim": args.late_physchem_dim,
+        "late_group_hidden_dim": args.late_group_hidden_dim,
+        "late_gate_hidden_dim": args.late_gate_hidden_dim,
+        "late_alpha_init": args.late_alpha_init,
+        "late_alpha_max": args.late_alpha_max,
+        "film_physchem_dim": args.film_physchem_dim,
+        "film_group_hidden_dim": args.film_group_hidden_dim,
+        "film_scale": args.film_scale,
+    }
+    if args.architecture == "source_aware":
+        init_kwargs.update(
+            source_count=len(source_to_idx),
+            source_embedding_dim=args.source_embedding_dim,
+        )
 
     all_fold_rows: List[Dict[str, float]] = []
     if not args.skip_kfold:
         for fold, (train_idx, test_idx) in enumerate(old_notebook_kfold_indices(train_y.numpy(), args.kfold)):
             log_step(f"[kfold] fold={fold} train={len(train_idx)} test={len(test_idx)}")
-            model = initialize_model(NewBiLSTM, args.after_pca, device)
+            model = initialize_model(
+                ModelClass,
+                args.after_pca,
+                device,
+                **init_kwargs,
+            )
             if args.init_from is not None:
-                load_initial_weights(model, args.init_from, device)
-            train_loader = make_loader(train_x, train_y, train_idx, args.batch_size, shuffle=True)
-            test_loader = make_loader(train_x, train_y, test_idx, args.batch_size, shuffle=False)
+                load_initial_weights(model, args.init_from, device, scope=args.init_scope)
+            train_loader = make_loader(
+                train_x,
+                train_y,
+                train_idx,
+                args.batch_size,
+                shuffle=True,
+                peptide_lengths=train_lengths,
+                physchem_present=train_presence,
+                source_ids=train_source_ids,
+            )
+            test_loader = make_loader(
+                train_x,
+                train_y,
+                test_idx,
+                args.batch_size,
+                shuffle=False,
+                peptide_lengths=train_lengths,
+                physchem_present=train_presence,
+                source_ids=train_source_ids,
+            )
             model, history, _ = train_one_model(
                 model,
                 train_loader,
@@ -1079,17 +2037,28 @@ def main() -> None:
                 f"{args.antigen}_fold_{fold}",
                 args.loss_reduction,
                 class_weights,
+                checkpoint_metadata,
+                prediction_head=args.prediction_head,
+                aux_physchem_loss_weight=args.aux_physchem_loss_weight,
+                aux_sequence_loss_weight=args.aux_sequence_loss_weight,
+                encoder_warmup_epochs=args.encoder_warmup_epochs,
+                encoder_lr=args.encoder_lr,
             )
-            final_metrics = evaluate(model, test_loader, device)
+            final_metrics = evaluate(model, test_loader, device, args.prediction_head)
             final_metrics.update({"fold": fold, "n_train": len(train_idx), "n_test": len(test_idx)})
             all_fold_rows.append(final_metrics)
             write_metrics(args.outdir / "metrics" / f"fold_{fold}_history.tsv", history)
         write_metrics(args.outdir / "metrics" / "kfold_metrics.tsv", all_fold_rows)
 
-    final_model = initialize_model(NewBiLSTM, args.after_pca, device)
+    final_model = initialize_model(
+        ModelClass,
+        args.after_pca,
+        device,
+        **init_kwargs,
+    )
     if args.init_from is not None:
         log_step(f"[init] loading weights from {args.init_from}")
-        load_initial_weights(final_model, args.init_from, device)
+        load_initial_weights(final_model, args.init_from, device, scope=args.init_scope)
     final_train_loader = make_training_loader(
         train_x,
         train_y,
@@ -1098,13 +2067,15 @@ def main() -> None:
         args.train_sampler,
         args.sampler_source_col,
         args.outdir,
+        train_lengths,
+        train_presence,
+        source_ids=train_source_ids,
     )
-    val_loader = data.DataLoader(
-        data.TensorDataset(val_x, val_y),
-        batch_size=args.batch_size,
-        shuffle=False,
-        drop_last=False,
-    )
+    if val_source_ids is None:
+        val_ds = data.TensorDataset(val_x, val_y, val_lengths, val_presence)
+    else:
+        val_ds = data.TensorDataset(val_x, val_y, val_lengths, val_presence, val_source_ids)
+    val_loader = data.DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, drop_last=False)
     final_model, final_history, final_best_paths = train_one_model(
         final_model,
         final_train_loader,
@@ -1116,16 +2087,25 @@ def main() -> None:
         f"{args.antigen}_final",
         args.loss_reduction,
         class_weights,
+        checkpoint_metadata,
+        prediction_head=args.prediction_head,
+        aux_physchem_loss_weight=args.aux_physchem_loss_weight,
+        aux_sequence_loss_weight=args.aux_sequence_loss_weight,
+        encoder_warmup_epochs=args.encoder_warmup_epochs,
+        encoder_lr=args.encoder_lr,
     )
     selected_checkpoint = None
     if args.select_best_metric != "last":
         selected_checkpoint = final_best_paths[args.select_best_metric]
         log_step(f"[select] loading best checkpoint by {args.select_best_metric}: {selected_checkpoint}")
-        load_initial_weights(final_model, selected_checkpoint, device)
-    torch.save(final_model.state_dict(), args.outdir / "models" / f"MimicNeoAI_{args.antigen}_final.pth")
+        load_initial_weights(final_model, selected_checkpoint, device, scope="all")
+    torch.save(
+        {"model_state": final_model.state_dict(), "metadata": checkpoint_metadata},
+        args.outdir / "models" / f"MimicNeoAI_{args.antigen}_final.pth",
+    )
     write_metrics(args.outdir / "metrics" / "final_history.tsv", final_history)
 
-    labels, probs, preds = predict(final_model, val_loader, device)
+    labels, probs, preds = predict(final_model, val_loader, device, args.prediction_head)
     pred_df = val_kept.copy()
     pred_df["true_label"] = labels
     pred_df["pred_label"] = preds
@@ -1140,14 +2120,37 @@ def main() -> None:
         "selected_checkpoint": str(selected_checkpoint) if selected_checkpoint is not None else "last",
     }
     write_metrics(args.outdir / "metrics" / "validation_metrics.tsv", [final_metrics])
-    if test_x is not None and test_y is not None and test_kept is not None:
-        test_loader = data.DataLoader(
-            data.TensorDataset(test_x, test_y),
-            batch_size=args.batch_size,
-            shuffle=False,
-            drop_last=False,
+    diagnostics = collect_refiner_diagnostics(
+        final_model,
+        val_loader,
+        device,
+        max_batches=args.diagnostic_batches,
+    )
+    if diagnostics:
+        diagnostics.update(
+            physchem_mode=args.physchem_mode,
+            split="validation",
         )
-        test_labels, test_probs, test_preds = predict(final_model, test_loader, device)
+        diagnostics_name = {
+            "embedding_refine": "physchem_refiner_diagnostics.json",
+            "gated_late": "physchem_gated_late_diagnostics.json",
+            "film_aux": "physchem_film_aux_diagnostics.json",
+        }.get(args.physchem_fusion, "physchem_diagnostics.json")
+        diagnostics_path = args.outdir / "metrics" / diagnostics_name
+        diagnostics_path.write_text(json.dumps(diagnostics, indent=2), encoding="utf-8")
+        log_step("[physchem_diagnostics] " + json.dumps(diagnostics, sort_keys=True))
+    if test_x is not None and test_y is not None and test_kept is not None:
+        if test_source_ids is None:
+            test_ds = data.TensorDataset(test_x, test_y, test_lengths, test_presence)
+        else:
+            test_ds = data.TensorDataset(test_x, test_y, test_lengths, test_presence, test_source_ids)
+        test_loader = data.DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, drop_last=False)
+        test_labels, test_probs, test_preds = predict(
+            final_model,
+            test_loader,
+            device,
+            args.prediction_head,
+        )
         test_pred_df = test_kept.copy()
         test_pred_df["true_label"] = test_labels
         test_pred_df["pred_label"] = test_preds

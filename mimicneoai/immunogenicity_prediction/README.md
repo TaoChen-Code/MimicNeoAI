@@ -20,16 +20,18 @@ Example files are organized under:
 ```text
 mimicneoai/example/immunogenicity_prediction/
 ├── config/
-│   └── microbial_pred_test.yaml
+│   ├── microbial.yaml
+│   ├── mutation_derived.yaml
+│   └── cryptic.yaml
 ├── input/
 │   └── input_peptide_hla.csv
 ├── models/
-│   ├── hla_prot.fasta
-│   ├── MimicNeoAI_Microbial_Pred.pth
-│   ├── MimicNeoAI_Cryptic_Pred.pth
-│   └── MimicNeoAI_Mutation-derived_Pred.pth
+│   └── hla_prot.fasta  # retained for the legacy example
+├── run_cryptic_ensemble.py
 └── output/
-    └── predictions.csv
+    ├── microbial_predictions.csv
+    ├── mutation_derived_predictions.csv
+    └── cryptic_predictions.csv
 ```
 
 ### Input CSV format (`input/input_peptide_hla.csv`)
@@ -53,46 +55,55 @@ HLA-A*02:01,HLA-I,ALGDWRAEV
 HLA-A*02:01,HLA-I,GMLAAKTTV
 ```
 
-## Test Config (Microbial_Pred)
+## Source-specific examples
 
-For immunogenicity testing, use the `Microbial_Pred` model:
+The runtime model files are recovered separately and are not included in the
+repository. Place them under:
 
-- `mimicneoai/example/immunogenicity_prediction/config/microbial_pred_test.yaml`
-
-Config content:
-
-```yaml
-path:
-  input_csv: "mimicneoai/example/immunogenicity_prediction/input/input_peptide_hla.csv"
-  output_csv: "mimicneoai/example/immunogenicity_prediction/output/predictions.csv"
-  model_path: "mimicneoai/example/immunogenicity_prediction/models/MimicNeoAI_Microbial_Pred.pth"
-  hla_fasta: "mimicneoai/example/immunogenicity_prediction/models/hla_prot.fasta"
-  export_onnx: ""
-
-args:
-  batch_size: 512
-  num_processes: 8
-  verbose: true
-  device: "auto"
-  export_onnx_only: false
-  onnx_opset: 17
-
-io:
-  peptide_col: "peptide"
-  hla_col: "hla"
-  score_col: "immunogenicity_score"
+```text
+mimicneoai/immunogenicity_prediction/models/default/
+├── microbial/model.pth
+├── mutation_derived/model.pth
+└── cryptic/member_01.pth ... member_10.pth
 ```
 
-Run with:
+Run the microbial and mutation-derived examples with the standard CLI:
 
 ```bash
 python -m mimicneoai.immunogenicity_prediction.immunogenicity_prediction \
-  -c mimicneoai/example/immunogenicity_prediction/config/microbial_pred_test.yaml
+  -c mimicneoai/example/immunogenicity_prediction/config/microbial.yaml
 
-# or
-mimicneoai immunogenicity-prediction \
-  -c mimicneoai/example/immunogenicity_prediction/config/microbial_pred_test.yaml
+python -m mimicneoai.immunogenicity_prediction.immunogenicity_prediction \
+  -c mimicneoai/example/immunogenicity_prediction/config/mutation_derived.yaml
 ```
+
+Run the cryptic example with its bundled ensemble runner:
+
+```bash
+python mimicneoai/example/immunogenicity_prediction/run_cryptic_ensemble.py \
+  -c mimicneoai/example/immunogenicity_prediction/config/cryptic.yaml
+```
+
+For pipeline code, use `run_default_inference` with `microbial`,
+`mutation_derived`, or `cryptic`. It resolves the recovered runtime payloads
+and averages the ten cryptic members. `run_inference` remains available for an
+explicit model path and for legacy configurations.
+
+To verify a recovered runtime payload against a locked Fig. 2 prediction file
+without copying manuscript data into this repository:
+
+```bash
+python -m mimicneoai.immunogenicity_prediction.tests.verify_locked_prediction_reproduction \
+  --reference-tsv /path/to/three_antigen_specific_models.test_predictions.tsv \
+  --antigen-class microbial --device cuda
+```
+
+The verifier defaults to an absolute score tolerance of `1e-3` to allow the
+small R/float differences observed when recalculating peptide features across
+runtime environments.
+
+The legacy `microbial_pred_test.yaml` and the files in the example `models/`
+directory are retained for backwards compatibility.
 
 ## Config Template
 

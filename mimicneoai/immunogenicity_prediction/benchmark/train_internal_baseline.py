@@ -25,7 +25,7 @@ def main() -> None:
     parser.add_argument("--val-csv", default=None, type=Path)
     parser.add_argument("--test-csv", required=True, type=Path)
     parser.add_argument("--outdir", required=True, type=Path)
-    parser.add_argument("--baseline", required=True, choices=["aa_composition", "peptide_only", "hla_only"])
+    parser.add_argument("--baseline", required=True, choices=["aa_composition", "peptide_only", "hla_only", "full_phla"])
     parser.add_argument("--benchmark", required=True)
     parser.add_argument("--peptide-col", default="peptide")
     parser.add_argument("--hla-col", default="hla")
@@ -121,6 +121,8 @@ def make_input_table(df: pd.DataFrame, baseline: str) -> pd.DataFrame:
         return pd.DataFrame({"peptide_text": df["peptide"]})
     if baseline == "hla_only":
         return pd.DataFrame({"hla_text": df["hla"]})
+    if baseline == "full_phla":
+        return pd.DataFrame({"peptide_text": df["peptide"], "hla_text": df["hla"]})
     raise ValueError(f"Unsupported baseline: {baseline}")
 
 
@@ -152,6 +154,14 @@ def build_estimator(baseline: str, c: float, class_weight: str) -> Pipeline:
     if baseline == "hla_only":
         transform = ColumnTransformer([("hla", TfidfVectorizer(analyzer="char", ngram_range=(1, 4)), "hla_text")])
         return Pipeline([("features", transform), ("clf", clf)])
+    if baseline == "full_phla":
+        transform = ColumnTransformer(
+            [
+                ("peptide", TfidfVectorizer(analyzer="char", ngram_range=(1, 3)), "peptide_text"),
+                ("hla", TfidfVectorizer(analyzer="char", ngram_range=(1, 4)), "hla_text"),
+            ]
+        )
+        return Pipeline([("features", transform), ("clf", clf)])
     raise ValueError(f"Unsupported baseline: {baseline}")
 
 
@@ -171,4 +181,3 @@ def write_predictions(estimator: Pipeline, df: pd.DataFrame, out_path: Path, bas
 
 if __name__ == "__main__":
     main()
-
