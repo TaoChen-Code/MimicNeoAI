@@ -64,8 +64,8 @@ def HostSequencesRemoving(sample, configure, paths, tool):
     # ------------------------------------------------------------------
     # 1) Utilities (centralize command construction)
     # ------------------------------------------------------------------
-    def _mkdir(p: str):
-        tool.judge_then_exec(sample, f"mkdir -p {p}", p)
+    def _mkdir(p: str, display_name: str = "Prepare output directory"):
+        tool.judge_then_exec(sample, f"mkdir -p {p}", p, display_name=display_name)
 
     def _rg() -> str:
         # Note: keep exact escaping required by bwa
@@ -134,10 +134,10 @@ def HostSequencesRemoving(sample, configure, paths, tool):
 
     final_unmap_bam = mm10_final_unmap_bam if remove_mouse_host else t2t_unmap_bam
 
-    _mkdir(out_hg38_dir)
-    _mkdir(out_t2t_dir)
+    _mkdir(out_hg38_dir, display_name="Prepare hg38 host depletion directory")
+    _mkdir(out_t2t_dir, display_name="Prepare T2T host depletion directory")
     if remove_mouse_host:
-        _mkdir(out_mm10_dir)
+        _mkdir(out_mm10_dir, display_name="Prepare mouse host depletion directory")
 
     # ------------------------------------------------------------------
     # 3) Decide whether to run full pipeline
@@ -160,10 +160,10 @@ def HostSequencesRemoving(sample, configure, paths, tool):
             f"samtools sort -n -@ {thread} -m {mem_perthread} "
             f"-o {hg38_name_bam} -"
         )
-        tool.judge_then_exec(sample, cmd_align_sort_hg38, hg38_name_bam)
+        tool.judge_then_exec(sample, cmd_align_sort_hg38, hg38_name_bam, display_name="Host depletion against hg38")
 
         # 4.4 stats on name-sorted BAM
-        tool.judge_then_exec(sample, _flagstat_cmd(hg38_name_bam), f"{hg38_name_bam}.flagstat.txt")
+        tool.judge_then_exec(sample, _flagstat_cmd(hg38_name_bam), f"{hg38_name_bam}.flagstat.txt", display_name="hg38 host alignment QC")
 
 
         # 4.5 extract unmapped
@@ -172,7 +172,7 @@ def HostSequencesRemoving(sample, configure, paths, tool):
             f"samtools view -b -@ {thread} -f {flag} "
             f"-o {hg38_unmap_bam} {hg38_name_bam}"
         )
-        tool.judge_then_exec(sample, cmd_extract_hg38_unmap, hg38_unmap_bam)
+        tool.judge_then_exec(sample, cmd_extract_hg38_unmap, hg38_unmap_bam, display_name="Extract hg38-unmapped reads")
 
         # 4.6 BAM -> FASTQ(s) for T2T
         if pair:
@@ -186,10 +186,10 @@ def HostSequencesRemoving(sample, configure, paths, tool):
                 f"-0 {hg38_unmap_anom} "
                 f"-s {hg38_unmap_single}"
             )
-            tool.judge_then_exec(sample, cmd_bam2fq, hg38_unmap_r1)
+            tool.judge_then_exec(sample, cmd_bam2fq, hg38_unmap_r1, display_name="Convert hg38-unmapped BAM to FASTQ")
         else:
             cmd_bam2fq = f"samtools fastq -@ {thread} {hg38_unmap_bam} > {hg38_unmap_se}"
-            tool.judge_then_exec(sample, cmd_bam2fq, hg38_unmap_se)
+            tool.judge_then_exec(sample, cmd_bam2fq, hg38_unmap_se, display_name="Convert hg38-unmapped BAM to FASTQ")
 
         # ------------------------------------------------------------------
         # 5) T2T stage: hg38-unmapped FASTQ -> T2T align+name-sort -> extract unmapped
@@ -208,7 +208,7 @@ def HostSequencesRemoving(sample, configure, paths, tool):
             f"samtools sort -n -@ {thread} -m {mem_perthread} "
             f"-o {t2t_name_bam} -"
         )
-        tool.judge_then_exec(sample, cmd_align_sort_t2t, t2t_name_bam)
+        tool.judge_then_exec(sample, cmd_align_sort_t2t, t2t_name_bam, display_name="Host depletion against T2T")
 
 
         t2t_flag = _unmapped_flag()
@@ -216,7 +216,7 @@ def HostSequencesRemoving(sample, configure, paths, tool):
             f"samtools view -b -@ {thread} -f {t2t_flag} "
             f"-o {t2t_unmap_bam} {t2t_name_bam}"
         )
-        tool.judge_then_exec(sample, cmd_extract_t2t_unmap, t2t_unmap_bam)
+        tool.judge_then_exec(sample, cmd_extract_t2t_unmap, t2t_unmap_bam, display_name="Extract T2T-unmapped reads")
 
         if remove_mouse_host:
             if pair:
@@ -227,11 +227,11 @@ def HostSequencesRemoving(sample, configure, paths, tool):
                     f"-0 {t2t_unmap_for_mm10_anom} "
                     f"-s {t2t_unmap_for_mm10_single}"
                 )
-                tool.judge_then_exec(sample, cmd_t2t_bam2fq, t2t_unmap_for_mm10_r1)
+                tool.judge_then_exec(sample, cmd_t2t_bam2fq, t2t_unmap_for_mm10_r1, display_name="Convert T2T-unmapped BAM to FASTQ")
                 mm10_fastqs = (t2t_unmap_for_mm10_r1, t2t_unmap_for_mm10_r2)
             else:
                 cmd_t2t_bam2fq = f"samtools fastq -@ {thread} {t2t_unmap_bam} > {t2t_unmap_for_mm10_se}"
-                tool.judge_then_exec(sample, cmd_t2t_bam2fq, t2t_unmap_for_mm10_se)
+                tool.judge_then_exec(sample, cmd_t2t_bam2fq, t2t_unmap_for_mm10_se, display_name="Convert T2T-unmapped BAM to FASTQ")
                 mm10_fastqs = (t2t_unmap_for_mm10_se,)
 
             fq_mm10_part = " ".join(mm10_fastqs)
@@ -243,19 +243,19 @@ def HostSequencesRemoving(sample, configure, paths, tool):
                 f"samtools sort -n -@ {thread} -m {mem_perthread} "
                 f"-o {mm10_name_bam} -"
             )
-            tool.judge_then_exec(sample, cmd_align_sort_mm10, mm10_name_bam)
+            tool.judge_then_exec(sample, cmd_align_sort_mm10, mm10_name_bam, display_name="Host depletion against mouse")
 
             mm10_flag = _unmapped_flag()
             cmd_extract_mm10_unmap = (
                 f"samtools view -b -@ {thread} -f {mm10_flag} "
                 f"-o {final_unmap_bam} {mm10_name_bam}"
             )
-            tool.judge_then_exec(sample, cmd_extract_mm10_unmap, final_unmap_bam)
+            tool.judge_then_exec(sample, cmd_extract_mm10_unmap, final_unmap_bam, display_name="Extract mouse-unmapped reads")
 
     # ------------------------------------------------------------------
     # 6) Always: stats for final output
     # ------------------------------------------------------------------
-    tool.judge_then_exec(sample, _flagstat_cmd(final_unmap_bam), f"{final_unmap_bam}.flagstat.txt")
+    tool.judge_then_exec(sample, _flagstat_cmd(final_unmap_bam), f"{final_unmap_bam}.flagstat.txt", display_name="Host-depleted read QC")
 
 def VectorContaminationRemoving(
     sample: str,
@@ -332,8 +332,8 @@ def VectorContaminationRemoving(
     fq_dir  = f"{out_dir}01.fastq/"
     bam_dir = f"{out_dir}02.bam/"
 
-    tool.judge_then_exec(sample, f"mkdir -p {fq_dir}", fq_dir)
-    tool.judge_then_exec(sample, f"mkdir -p {bam_dir}", bam_dir)
+    tool.judge_then_exec(sample, f"mkdir -p {fq_dir}", fq_dir, display_name="Prepare vector FASTQ directory")
+    tool.judge_then_exec(sample, f"mkdir -p {bam_dir}", bam_dir, display_name="Prepare vector BAM directory")
 
     # ------------------------------------------------------------------
     # 4) Filenames
@@ -357,13 +357,13 @@ def VectorContaminationRemoving(
             f"-1 {r1_fq} -2 {r2_fq} "
             f"-s {se_fq} -0 {cat0_fq}"
         )
-        tool.judge_then_exec(sample, cmd_bam2fq, r1_fq)
+        tool.judge_then_exec(sample, cmd_bam2fq, r1_fq, display_name="Convert host-depleted BAM to FASTQ")
     else:
         cmd_bam2fq = (
             f"samtools sort -n -@ {thread} -m {mem_perthread} {in_bam} | "
             f"samtools fastq -@ {thread} - > {se_fq}"
         )
-        tool.judge_then_exec(sample, cmd_bam2fq, se_fq)
+        tool.judge_then_exec(sample, cmd_bam2fq, se_fq, display_name="Convert host-depleted BAM to FASTQ")
 
     # ------------------------------------------------------------------
     # 6) BWA -> UniVec (PE)
@@ -376,7 +376,7 @@ def VectorContaminationRemoving(
             f"{vector_fa} {r1_fq} {r2_fq} | "
             f"samtools view -b -@ {thread} -o {pe_vec_bam} -"
         )
-        tool.judge_then_exec(sample, cmd_bwa_pe, pe_vec_bam)
+        tool.judge_then_exec(sample, cmd_bwa_pe, pe_vec_bam, display_name="Vector contamination screening")
 
     # ------------------------------------------------------------------
     # 7) BWA -> UniVec (SE)
@@ -388,7 +388,7 @@ def VectorContaminationRemoving(
         f"{vector_fa} {se_fq} | "
         f"samtools view -b -@ {thread} -o {se_vec_bam} -"
     )
-    tool.judge_then_exec(sample, cmd_bwa_se, se_vec_bam)
+    tool.judge_then_exec(sample, cmd_bwa_se, se_vec_bam, display_name="Vector contamination screening for singletons")
 
     # ------------------------------------------------------------------
     # 8) Extract vector-unmapped reads (统一 -f 4)
@@ -405,8 +405,8 @@ def VectorContaminationRemoving(
     )
 
     if pair:
-        tool.judge_then_exec(sample, cmd_unmap_pe, pe_unmap_bam)
-    tool.judge_then_exec(sample, cmd_unmap_se, se_unmap_bam)
+        tool.judge_then_exec(sample, cmd_unmap_pe, pe_unmap_bam, display_name="Extract paired vector-unmapped reads")
+    tool.judge_then_exec(sample, cmd_unmap_se, se_unmap_bam, display_name="Extract singleton vector-unmapped reads")
 
     # ------------------------------------------------------------------
     # 9) Merge PE / SE unmapped BAMs
@@ -416,13 +416,13 @@ def VectorContaminationRemoving(
 
     if have_pe and have_se:
         cmd_merge = f"samtools merge -@ {thread} {merged_bam} {pe_unmap_bam} {se_unmap_bam}"
-        tool.judge_then_exec(sample, cmd_merge, merged_bam)
+        tool.judge_then_exec(sample, cmd_merge, merged_bam, display_name="Merge vector-clean reads")
     elif have_pe:
         cmd_copy = f"samtools view -b {pe_unmap_bam} -o {merged_bam}"
-        tool.judge_then_exec(sample, cmd_copy, merged_bam)
+        tool.judge_then_exec(sample, cmd_copy, merged_bam, display_name="Merge vector-clean reads")
     elif have_se:
         cmd_copy = f"samtools view -b {se_unmap_bam} -o {merged_bam}"
-        tool.judge_then_exec(sample, cmd_copy, merged_bam)
+        tool.judge_then_exec(sample, cmd_copy, merged_bam, display_name="Merge vector-clean reads")
     else:
         tool.write_log(sample, f"[WARN] {sample}: no vector-unmapped reads.\n")
 
@@ -434,7 +434,7 @@ def VectorContaminationRemoving(
             f"samtools flagstat -@ {thread} {merged_bam} "
             f"> {merged_bam}.flagstat.txt"
         )
-        tool.judge_then_exec(sample, cmd_flagstat, f"{merged_bam}.flagstat.txt")
+        tool.judge_then_exec(sample, cmd_flagstat, f"{merged_bam}.flagstat.txt", display_name="Vector-clean read QC")
 
 
 
@@ -487,8 +487,8 @@ def MicrobialTaxasQuantification(sample, configure, paths, tool):
     merged_bam = f"{bam_dir}{sample}_{seq_type}.vector_unmapped.merged.bam"
 
     # Ensure output directories exist
-    tool.judge_then_exec(sample, f"mkdir -p {output_pathseq}", output_pathseq)
-    tool.judge_then_exec(sample, f"mkdir -p {output_nucleic}", output_nucleic)
+    tool.judge_then_exec(sample, f"mkdir -p {output_pathseq}", output_pathseq, display_name="Prepare microbial taxa directory")
+    tool.judge_then_exec(sample, f"mkdir -p {output_nucleic}", output_nucleic, display_name="Prepare microbial read extraction directory")
 
     # Validate input BAM exists
     if not os.path.exists(merged_bam) or os.path.getsize(merged_bam) == 0:
@@ -522,7 +522,7 @@ def MicrobialTaxasQuantification(sample, configure, paths, tool):
             f"--filter-metrics {filter_metrics} "
             f"--divide-by-genome-length true"
         )
-        tool.judge_then_exec(sample, cmd_pathseq, scores_txt)
+        tool.judge_then_exec(sample, cmd_pathseq, scores_txt, display_name="Microbial taxa quantification")
 
     # === New behavior (unchanged) ===
     # Directly read PathSeq BAM and extract YP-tagged reads into a fasta.gz file,
@@ -622,7 +622,7 @@ def MicrobialPeptidesIdentification(sample, configure, paths, tool):
     diamond_cfg = paths['database']['microbial'].get('DIAMOND', {})
 
     # Ensure output directory exists
-    tool.judge_then_exec(sample, f"mkdir -p {output_blastx}", output_blastx)
+    tool.judge_then_exec(sample, f"mkdir -p {output_blastx}", output_blastx, display_name="Prepare microbial peptide directory")
 
     # Run BLASTX on nucleic sequences produced earlier
     fa_gz = f"{output_nucleic}{sample}.pathseq_selected.fa.gz"
@@ -665,7 +665,8 @@ def MicrobialPeptidesIdentification(sample, configure, paths, tool):
         search_out = blastx_out
         filter_input_file = f"{sample}.blastx"
 
-    tool.judge_then_exec(sample, cmd_search, search_out)
+    protein_search_label = "DIAMOND microbial protein search" if search_engine == "diamond" else "BLASTX microbial protein search"
+    tool.judge_then_exec(sample, cmd_search, search_out, display_name=protein_search_label)
 
     if search_engine == "diamond" and (
         not os.path.exists(normalized_diamond_out)
@@ -761,7 +762,7 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
     if os.path.exists(peptide_fa):
         backend = str(configure.get("others", {}).get("binding_prediction_backend", "mimicneoai")).strip().lower()
         if backend == "pvactools":
-            tool.judge_then_exec(sample, f"mkdir -p {output_pvacbind}", output_pvacbind)
+            tool.judge_then_exec(sample, f"mkdir -p {output_pvacbind}", output_pvacbind, display_name="Prepare pVACtools microbial binding directory")
             pvacbind(sample, configure, paths, tool)
         elif backend == "mimicneoai":
             others = configure.get("others", {})
