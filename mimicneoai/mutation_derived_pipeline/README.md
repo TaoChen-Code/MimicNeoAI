@@ -8,7 +8,7 @@ Detect and prioritize mutation-derived neoepitopes from matched tumor-normal seq
 3. Parallel somatic calling (Mutect2 + Strelka2 + VarDict)
 4. VEP annotation and filtering
 5. HLA typing
-6. pVACseq-based binding prediction
+6. MimicNeoAI native binding prediction
 
 ## Installation
 
@@ -39,7 +39,8 @@ conda install -c conda-forge -c bioconda mimicneoai
 | `bowtie2` | `2.4.1` | HLA typing pre-alignment |
 | `hlahd.sh` | `1.7.0` | HLA typing |
 | `apptainer` | `1.4.2` | VEP and pVACtools container execution |
-| `pVACtools` (container) | `4.2.1` | Binding prediction (`pvacseq`) |
+| `pVACtools` (container) | `4.2.1` | VCF conversion and WT/MT protein FASTA source generation |
+| MHCflurry / MHCnuggets / NetMHCpan / NetMHCIIpan / IEDB | deployment-specific versions in `paths.yaml` | Native binding prediction |
 | `awk` | system tool | FASTQ header normalization in HLA typing |
 
 ## Database and Paths
@@ -79,7 +80,7 @@ Pipeline outputs are written under:
 ├── 04.variants_calling
 ├── 05.annotation
 ├── 06.hlatyping
-└── 07.binding_prediction
+└── 07.binding_prediction_mimicneoai
 ```
 
 Notable subfolders:
@@ -88,17 +89,22 @@ Notable subfolders:
 - `04.variants_calling/VarDict`
 - `04.variants_calling/Merge3Callers`
 - `05.annotation/chunks`
-- `07.binding_prediction/chunks` and `07.binding_prediction/combined`
+- `07.binding_prediction_mimicneoai/01_pvactools_sources`
+- `07.binding_prediction_mimicneoai/02_epitope_tasks`
+- `07.binding_prediction_mimicneoai/03_binding_predictions`
+- `07.binding_prediction_mimicneoai/04_merged_epitopes`
 
 ## Notes
 
 - This pipeline currently runs matched tumor-normal mode only.
 - The pipeline is resumable; existing non-empty outputs are skipped.
-- `others.binding_prediction_backend` defaults to `pvactools`. The optional
-  `mimicneoai` backend writes `07.binding_prediction_mimicneoai`; see the
-  [native binding backend documentation](../functions/binding_prediction/README.md).
-- With `others.binding_prediction_backend: mimicneoai`, set
-  `others.binding_prediction_preset: full` for one-stage multialgorithm
-  prediction or `fast` for EL-rank Stage 1 routing followed by local Stage 2
-  prediction. In `fast` mode, MT peptides drive Stage 1 and matched WT peptides
-  are retained for Stage 2 when the MT peptide passes.
+- `others.binding_prediction_backend` defaults to `mimicneoai` for
+  mutation-derived antigens. The packaged default uses
+  `others.binding_prediction_preset: fast`, which performs EL-rank Stage 1
+  routing followed by local Stage 2 prediction.
+- In `fast` mode, MT peptides drive Stage 1 and matched WT peptides are
+  retained for Stage 2 when the MT peptide passes. The Stage 2 default uses
+  MHCflurry, MHCflurryEL, MHCnuggetsI, NetMHCpan, NetMHCpanEL, MHCnuggetsII,
+  NetMHCIIpan, and NetMHCIIpanEL. NNalign is omitted from this preset.
+- Set `others.binding_prediction_backend: pvactools` only when the legacy
+  pVACseq binding workflow is required.

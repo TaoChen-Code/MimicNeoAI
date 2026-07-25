@@ -143,7 +143,7 @@ def _start_one_sample(
             tumor_sample = sample.split(",")[0]
             output_vep = f"{output_dir}/{tumor_sample}/{step_name_vep}/"
             output_hla = f"{output_dir}/{tumor_sample}/{step_name_hla}/"
-            backend = str(configure.get("others", {}).get("binding_prediction_backend", "pvactools")).strip().lower()
+            backend = str(configure.get("others", {}).get("binding_prediction_backend", "mimicneoai")).strip().lower()
             if backend == "pvactools":
                 binding_pred_runner = Pvacseq(tool)
                 binding_pred_runner.run_pvacseq_parallel(
@@ -185,14 +185,14 @@ def _start_one_sample(
                     "--algorithms",
                     str(others.get(
                         "binding_prediction_algorithms",
-                        "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign "
+                        "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII "
                         "NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL",
                     )),
                     "--workers",
                     str(int(others.get("binding_prediction_workers", configure.get("args", {}).get("hla_binding_threads", 5)))),
                 ]
                 cmd.extend(configured_predictor_cli_args(paths))
-                preset = str(others.get("binding_prediction_preset", "")).strip()
+                preset = str(others.get("binding_prediction_preset", "fast")).strip()
                 if preset:
                     cmd.extend(["--preset", preset])
                 if "bcftools" in others:

@@ -23,26 +23,26 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.addCleanup(self.tempdir.cleanup)
         self.root = Path(self.tempdir.name)
 
-    def test_packaged_configs_keep_pvactools_as_default(self) -> None:
-        for filename in (
-            "mutation_derived_configure.yaml",
-            "cryptic_configure.yaml",
-            "microbial_configure.yaml",
-        ):
-            with self.subTest(filename=filename):
-                config = yaml.safe_load((CONFIG_DIR / filename).read_text())
-                self.assertEqual(config["others"]["binding_prediction_backend"], "pvactools")
-                self.assertIn("binding_prediction_algorithms", config["others"])
+    def test_packaged_configs_set_expected_binding_defaults(self) -> None:
         mutation = yaml.safe_load((CONFIG_DIR / "mutation_derived_configure.yaml").read_text())
+        self.assertEqual(mutation["others"]["binding_prediction_backend"], "mimicneoai")
+        self.assertEqual(mutation["others"]["binding_prediction_preset"], "fast")
+        self.assertEqual(mutation["others"]["mhc_i_epitope_lengths"], "8,9,10,11")
+        self.assertEqual(mutation["others"]["mhc_ii_epitope_lengths"], "13,14,15,16,17")
+        self.assertNotIn("NNalign", mutation["others"]["binding_prediction_algorithms"])
         self.assertNotIn("binding_prediction_max_task_rows", mutation["others"])
         self.assertEqual(
             mutation["others"]["binding_prediction_step_name"],
             "07.binding_prediction_mimicneoai",
         )
+
         for filename in ("cryptic_configure.yaml", "microbial_configure.yaml"):
-            config = yaml.safe_load((CONFIG_DIR / filename).read_text())
-            self.assertEqual(config["others"]["binding_prediction_max_task_rows"], 5_000_000)
-            self.assertFalse(config["others"]["binding_prediction_force_large_samples"])
+            with self.subTest(filename=filename):
+                config = yaml.safe_load((CONFIG_DIR / filename).read_text())
+                self.assertEqual(config["others"]["binding_prediction_backend"], "pvactools")
+                self.assertIn("binding_prediction_algorithms", config["others"])
+                self.assertEqual(config["others"]["binding_prediction_max_task_rows"], 5_000_000)
+                self.assertFalse(config["others"]["binding_prediction_force_large_samples"])
 
         paths = yaml.safe_load((CONFIG_DIR / "paths.yaml").read_text())
         predictor_paths = paths["path"]["common"]["BINDING_PREDICTORS"]
@@ -71,6 +71,20 @@ class PipelineBackendContractTest(unittest.TestCase):
         paths = {"path": {"common": {"PVACTOOLS": "/tools/pvactools.sif"}}}
         tool = MagicMock()
         legacy_runner = MagicMock()
+        with (
+            patch.object(mutation_derived, "_variants_calling_and_annotation"),
+            patch.object(mutation_derived, "Pvacseq", return_value=legacy_runner),
+        ):
+            mutation_derived._start_one_sample("TUMOR,NORMAL", config, paths, tool)
+        legacy_runner.run_pvacseq_parallel.assert_not_called()
+        command = tool.exec_cmd.call_args.args[0]
+        self.assertIn("run_mimicneoai_binding_prediction.py", command)
+        self.assertIn("07.binding_prediction_mimicneoai", command)
+        self.assertIn("--preset fast", command)
+        self.assertNotIn("NNalign", command)
+
+        config["others"]["binding_prediction_backend"] = "pvactools"
+        tool.reset_mock()
         with (
             patch.object(mutation_derived, "_variants_calling_and_annotation"),
             patch.object(mutation_derived, "Pvacseq", return_value=legacy_runner),

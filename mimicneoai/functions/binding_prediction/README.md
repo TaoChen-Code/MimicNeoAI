@@ -1,10 +1,11 @@
 # Native Binding Prediction Backend
 
 MimicNeoAI provides a local binding-prediction backend shared by mutation-derived,
-cryptic, and microbial antigen pipelines. The packaged pipeline configuration
-keeps `pvactools` as the default backend. Set
-`others.binding_prediction_backend: mimicneoai` explicitly to use the native
-backend.
+cryptic, and microbial antigen pipelines. Mutation-derived antigens use the
+native `mimicneoai` backend with the `fast` preset by default. Cryptic and
+microbial antigen templates still default to `pvactools`; set
+`others.binding_prediction_backend: mimicneoai` explicitly for those pipelines
+to use the native backend.
 
 ## Pipeline boundary
 
