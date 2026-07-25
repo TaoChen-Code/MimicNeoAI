@@ -50,9 +50,12 @@ class NonmutationScaleGateTest(unittest.TestCase):
         summary = self.run_tasks_only(outdir, max_task_rows=1)
 
         task_dir = outdir / "mimicneoai_epitope_tasks"
-        self.assertTrue((task_dir / "epitope_windows.tsv").exists())
+        self.assertFalse((task_dir / "epitope_windows.tsv").exists())
+        self.assertTrue((task_dir / "epitope_windows.manifest.json").exists())
         self.assertTrue((task_dir / "binding_tasks.manifest.json").exists())
         self.assertFalse((task_dir / "binding_tasks.tsv").exists())
+        self.assertTrue(summary["preflight_scale_gate"])
+        self.assertFalse(summary["epitope_windows_materialized"])
         self.assertTrue(summary["task_materialization_skipped_by_scale"])
         self.assertFalse(summary["task_table_materialized"])
         self.assertEqual(summary["binding_task_rows"], 0)

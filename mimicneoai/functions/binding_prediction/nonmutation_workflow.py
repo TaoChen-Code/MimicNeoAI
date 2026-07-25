@@ -235,6 +235,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "mhc_i_lengths": list(mhc_i_lengths),
         "mhc_ii_lengths": list(mhc_ii_lengths),
     }
+    hla = parse_hlahd_result(Path(args.hla_file))
+
     if (
         epitope_windows_path.exists()
         and epitope_windows_path.stat().st_size > 0
@@ -243,6 +245,134 @@ def main(argv: Optional[list[str]] = None) -> int:
         window_summary, mhc_i_peptides, mhc_ii_peptides = read_epitope_windows_summary(epitope_windows_path)
         epitope_windows_reused = True
     else:
+        preflight_summary, preflight_mhc_i_peptides, preflight_mhc_ii_peptides = scan_epitope_windows_from_fasta(
+            Path(args.pep_fasta),
+            mhc_i_lengths,
+            mhc_ii_lengths,
+        )
+        preflight_full_estimated_task_rows = estimate_binding_task_rows(
+            len(preflight_mhc_i_peptides),
+            len(hla.mhc_i),
+            len(mhc_i_algorithms),
+            len(preflight_mhc_ii_peptides),
+            len(hla.mhc_ii),
+            len(mhc_ii_algorithms),
+        )
+        if policy and policy.two_stage:
+            preflight_estimated_task_rows = estimate_binding_task_rows(
+                len(preflight_mhc_i_peptides),
+                len(hla.mhc_i),
+                1,
+                len(preflight_mhc_ii_peptides),
+                len(hla.mhc_ii),
+                1,
+            )
+        else:
+            preflight_estimated_task_rows = preflight_full_estimated_task_rows
+        preflight_scale_gate = (
+            preflight_estimated_task_rows > args.max_task_rows
+            and not args.force_large_samples
+            and not args.windows_only
+        )
+        if preflight_scale_gate:
+            write_json(
+                epitope_windows_manifest_path,
+                {
+                    "input_signature": epitope_windows_signature,
+                    **preflight_summary,
+                    "epitope_windows_materialized": False,
+                    "skip_reason": (
+                        f"estimated_binding_task_rows ({preflight_estimated_task_rows}) exceeds "
+                        f"max_task_rows ({args.max_task_rows}); set --force-large-samples to run."
+                    ),
+                },
+            )
+            task_path = task_dir / "binding_tasks.tsv"
+            task_manifest_path = task_dir / "binding_tasks.manifest.json"
+            combined_dir.mkdir(parents=True, exist_ok=True)
+            merged_out = combined_dir / f"{args.sample}.merged.all_epitopes.tsv"
+            task_manifest = {
+                "sample": args.sample,
+                "binding_prediction_preset": policy.name if policy else "",
+                "two_stage_binding_prediction": bool(policy and policy.two_stage),
+                "estimated_binding_task_rows": preflight_estimated_task_rows,
+                "full_estimated_binding_task_rows_without_stage1": preflight_full_estimated_task_rows,
+                "binding_task_rows": 0,
+                "max_task_rows": args.max_task_rows,
+                "force_large_samples": args.force_large_samples,
+                "task_table_materialized": False,
+                "task_materialization_skipped_by_scale": True,
+                "binding_tasks_path": str(task_path),
+                "epitope_windows_materialized": False,
+                "unique_mhc_i_peptides": len(preflight_mhc_i_peptides),
+                "unique_mhc_ii_peptides": len(preflight_mhc_ii_peptides),
+                "mhc_i_alleles": len(hla.mhc_i),
+                "mhc_ii_alleles": len(hla.mhc_ii),
+                "mhc_i_algorithms": mhc_i_algorithms,
+                "mhc_ii_algorithms": mhc_ii_algorithms,
+                "input_signature": {
+                    "epitope_windows": {
+                        "materialized": False,
+                        "input_signature": epitope_windows_signature,
+                    },
+                    "hla_file": file_identity(Path(args.hla_file)),
+                    "binding_prediction_preset": policy.name if policy else "",
+                    "two_stage": bool(policy and policy.two_stage),
+                },
+            }
+            write_json(task_manifest_path, task_manifest)
+            skip_reason = (
+                f"estimated_binding_task_rows ({preflight_estimated_task_rows}) exceeds max_task_rows "
+                f"({args.max_task_rows}); set --force-large-samples to run prediction."
+            )
+            summary = {
+                "sample": args.sample,
+                "peptide_fasta": str(Path(args.pep_fasta)),
+                "hla_file": str(Path(args.hla_file)),
+                "output_dir": str(outdir),
+                "binding_prediction_preset": policy.name if policy else "",
+                "two_stage_binding_prediction": bool(policy and policy.two_stage),
+                "fasta_records": preflight_summary["fasta_records"],
+                "epitope_window_rows": preflight_summary["epitope_window_rows"],
+                "unique_mhc_i_peptides": len(preflight_mhc_i_peptides),
+                "unique_mhc_ii_peptides": len(preflight_mhc_ii_peptides),
+                "mhc_i_alleles": list(hla.mhc_i),
+                "mhc_ii_alleles": list(hla.mhc_ii),
+                "algorithms": algorithms,
+                "mhc_i_algorithms": mhc_i_algorithms,
+                "mhc_ii_algorithms": mhc_ii_algorithms,
+                "unknown_algorithms": unknown_algorithms,
+                "binding_task_rows": 0,
+                "estimated_binding_task_rows": preflight_estimated_task_rows,
+                "full_estimated_binding_task_rows_without_stage1": preflight_full_estimated_task_rows,
+                "binding_tasks_manifest": str(task_manifest_path),
+                "task_table_materialized": False,
+                "task_materialization_skipped_by_scale": True,
+                "algorithm_batches": [list(batch) for batch in build_algorithm_batches(mhc_i_algorithms + mhc_ii_algorithms)],
+                "runner_invocations": [],
+                "stage1_task_summary": {},
+                "stage1_route_summary": {},
+                "stage1_outputs": {},
+                "max_runner_task_rows": args.max_runner_task_rows,
+                "max_task_rows": args.max_task_rows,
+                "force_large_samples": args.force_large_samples,
+                "epitope_windows_reused": False,
+                "epitope_windows_materialized": False,
+                "preflight_scale_gate": True,
+                "binding_tasks_reused": False,
+                "windows_only": args.windows_only,
+                "prediction_skipped": True,
+                "prediction_skipped_by_scale": True,
+                "skip_reason": skip_reason,
+                "binding_qc_summary": {},
+                "merged_output": str(merged_out),
+                "merged_output_exists": False,
+            }
+            with (outdir / f"{args.sample}.mimicneoai_binding.summary.json").open("w") as handle:
+                json.dump(summary, handle, indent=2, ensure_ascii=False)
+            print(f"[nonmutation_binding] skip before writing epitope windows: {skip_reason}", flush=True)
+            print(json.dumps(summary, indent=2, ensure_ascii=False), flush=True)
+            return 0
         window_summary, mhc_i_peptides, mhc_ii_peptides = write_epitope_windows_from_fasta(
             Path(args.pep_fasta),
             epitope_windows_path,
@@ -255,7 +385,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         epitope_windows_reused = False
 
-    hla = parse_hlahd_result(Path(args.hla_file))
     task_path = task_dir / "binding_tasks.tsv"
     task_manifest_path = task_dir / "binding_tasks.manifest.json"
     runner_invocations: list[dict[str, object]] = []
@@ -431,6 +560,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "task_table_materialized": task_table_materialized,
         "task_materialization_skipped_by_scale": task_materialization_skipped_by_scale,
         "binding_tasks_path": str(task_path),
+        "epitope_windows_materialized": epitope_windows_path.exists(),
         "preexisting_binding_tasks_ignored": task_materialization_skipped_by_scale and task_path.exists(),
         "unique_mhc_i_peptides": len(mhc_i_peptides),
         "unique_mhc_ii_peptides": len(mhc_ii_peptides),
@@ -537,6 +667,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "max_task_rows": args.max_task_rows,
         "force_large_samples": args.force_large_samples,
         "epitope_windows_reused": epitope_windows_reused,
+        "epitope_windows_materialized": epitope_windows_path.exists(),
+        "preflight_scale_gate": False,
         "binding_tasks_reused": binding_tasks_reused,
         "windows_only": args.windows_only,
         "prediction_skipped": args.skip_prediction or args.windows_only or prediction_skipped_by_scale,
@@ -729,6 +861,40 @@ def fasta_record_id(header: str) -> str:
 
 def normalize_peptide_sequence(sequence: str) -> str:
     return sequence.replace("*", "").replace(" ", "").strip().upper()
+
+
+def scan_epitope_windows_from_fasta(
+    fasta_path: Path,
+    mhc_i_lengths: tuple[int, ...],
+    mhc_ii_lengths: tuple[int, ...],
+) -> tuple[dict[str, int], set[str], set[str]]:
+    """Count candidate windows and unique peptides without writing the window table."""
+
+    mhc_i_peptides: set[str] = set()
+    mhc_ii_peptides: set[str] = set()
+    fasta_records = 0
+    epitope_window_rows = 0
+    for _header, sequence in read_fasta(fasta_path):
+        fasta_records += 1
+        if not sequence:
+            continue
+        for length in mhc_i_lengths:
+            if len(sequence) < length:
+                continue
+            for start in range(0, len(sequence) - length + 1):
+                mhc_i_peptides.add(sequence[start : start + length])
+                epitope_window_rows += 1
+        for length in mhc_ii_lengths:
+            if len(sequence) < length:
+                continue
+            for start in range(0, len(sequence) - length + 1):
+                mhc_ii_peptides.add(sequence[start : start + length])
+                epitope_window_rows += 1
+    return (
+        {"fasta_records": fasta_records, "epitope_window_rows": epitope_window_rows},
+        mhc_i_peptides,
+        mhc_ii_peptides,
+    )
 
 
 def write_epitope_windows_from_fasta(
