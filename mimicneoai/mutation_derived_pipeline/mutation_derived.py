@@ -218,7 +218,12 @@ def _start_one_sample(
                 preset = str(others.get("binding_prediction_preset", "fast")).strip()
                 if preset:
                     cmd.extend(["--preset", preset])
-                tool.exec_cmd(" ".join(shlex.quote(item) for item in cmd), sample, pipline="mutation")
+                tool.exec_cmd(
+                    " ".join(shlex.quote(item) for item in cmd),
+                    sample,
+                    pipline="mutation",
+                    display_name="MimicNeoAI mutation binding prediction",
+                )
             else:
                 raise ValueError(f"Unsupported binding_prediction_backend: {backend}")
 

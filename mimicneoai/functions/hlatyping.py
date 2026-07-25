@@ -79,13 +79,13 @@ def hlahd(run_sample_id, sample, configure, paths, tool):
     # Execute pipeline steps conditionally
     final_result = f"{output_hla}/{sample}/result/{sample}_final.result.txt"
     if not os.path.exists(final_result):
-        tool.judge_then_exec(run_sample_id, cmd_0, fastq_dir)
-        tool.judge_then_exec(run_sample_id, cmd_1, f"{fastq_dir}/{sample}.hla.1.fastq")
-        tool.judge_then_exec(run_sample_id, cmd_2, f"{fastq_dir}/{sample}.mapped.sam")
-        tool.judge_then_exec(run_sample_id, cmd_3, f"{fastq_dir}/{sample}.hlatmp.1.fastq")
-        tool.judge_then_exec(run_sample_id, cmd_4, f"{fastq_dir}/{sample}.hla.1.fastq")
-        tool.judge_then_exec(run_sample_id, cmd_5, f"{fastq_dir}/{sample}.hla.2.fastq")
-        tool.judge_then_exec(run_sample_id, cmd_6, final_result)
+        tool.judge_then_exec(run_sample_id, cmd_0, fastq_dir, display_name="Prepare HLA typing FASTQ directory")
+        tool.judge_then_exec(run_sample_id, cmd_1, f"{fastq_dir}/{sample}.hla.1.fastq", display_name="HLA read alignment")
+        tool.judge_then_exec(run_sample_id, cmd_2, f"{fastq_dir}/{sample}.mapped.sam", display_name="Extract mapped HLA reads")
+        tool.judge_then_exec(run_sample_id, cmd_3, f"{fastq_dir}/{sample}.hlatmp.1.fastq", display_name="Convert HLA reads to FASTQ")
+        tool.judge_then_exec(run_sample_id, cmd_4, f"{fastq_dir}/{sample}.hla.1.fastq", display_name="Format HLA read 1 FASTQ")
+        tool.judge_then_exec(run_sample_id, cmd_5, f"{fastq_dir}/{sample}.hla.2.fastq", display_name="Format HLA read 2 FASTQ")
+        tool.judge_then_exec(run_sample_id, cmd_6, final_result, display_name="HLA-HD typing")
     else:
         tool.write_log(f"[{sample}] HLA-HD final result already exists, skip: {final_result}", "warn")
 
@@ -95,10 +95,10 @@ def hlahd(run_sample_id, sample, configure, paths, tool):
     exon_dir = f"{output_hla}/{sample}/exon/"
     
     if os.path.exists(f'{fastq_dir}/{sample}.hlamap.sam'):
-        tool.exec_cmd(cmd_7, run_sample_id)
+        tool.exec_cmd(cmd_7, run_sample_id, display_name="Clean HLA typing FASTQ intermediates")
     if os.path.exists(mapfile_dir) and not is_directory_empty(mapfile_dir):
-        tool.exec_cmd(cmd_8, run_sample_id)
+        tool.exec_cmd(cmd_8, run_sample_id, display_name="Clean HLA typing mapfile intermediates")
     if os.path.exists(intron_dir) and not is_directory_empty(intron_dir):
-        tool.exec_cmd(cmd_9, run_sample_id)
+        tool.exec_cmd(cmd_9, run_sample_id, display_name="Clean HLA typing intron intermediates")
     if os.path.exists(exon_dir) and not is_directory_empty(exon_dir):
-        tool.exec_cmd(cmd_10, run_sample_id)
+        tool.exec_cmd(cmd_10, run_sample_id, display_name="Clean HLA typing exon intermediates")

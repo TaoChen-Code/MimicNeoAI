@@ -64,7 +64,13 @@ def _script_path(rel_name: str) -> str:
     return str(pkg_path / rel_name)
 
 
-def _run_cmd(tool: tools, run_sample_id: str, cmd: List[str], cwd: str | None = None) -> None:
+def _run_cmd(
+    tool: tools,
+    run_sample_id: str,
+    cmd: List[str],
+    cwd: str | None = None,
+    display_name: str | None = None,
+) -> None:
     """
     Execute a shell command via tool.exec_cmd with logging; raise on failure.
     All commands are string-joined safely with shlex.quote.
@@ -77,7 +83,7 @@ def _run_cmd(tool: tools, run_sample_id: str, cmd: List[str], cwd: str | None = 
             os.chdir(cwd)
         # Single entry point for execution: handles logging, sample ID tagging,
         # stdout/stderr capturing, and returning codes.
-        tool.exec_cmd(cmd, run_sample_id, pipline='cryptic')
+        tool.exec_cmd(cmd, run_sample_id, pipline='cryptic', display_name=display_name)
     except Exception:
         tool.write_log(f"[CMD FAILED]\n{traceback.format_exc()}", "error")
         raise
@@ -392,7 +398,7 @@ def _run_one_sample(
                     "--algos", algos,
                     "--e1-lengths", e1_lengths,
                     "--e2-lengths", e2_lengths,
-                ])
+                ], display_name="pVACtools cryptic binding prediction")
             elif backend == "mimicneoai":
                 algos = others.get(
                     "binding_prediction_algorithms",
@@ -425,7 +431,7 @@ def _run_one_sample(
                 if preset:
                     cmd.extend(["--preset", preset])
                 cmd.extend(configured_predictor_cli_args(paths))
-                _run_cmd(tool, sample, cmd)
+                _run_cmd(tool, sample, cmd, display_name="MimicNeoAI cryptic binding prediction")
             else:
                 raise ValueError(f"Unsupported binding_prediction_backend: {backend}")
 

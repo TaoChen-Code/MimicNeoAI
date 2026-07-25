@@ -635,7 +635,7 @@ def MicrobialPeptidesIdentification(sample, configure, paths, tool):
     #    This step uses exec_cmd instead of judge_then_exec because it is considered
     #    an internal preprocessing step and should not appear as the main “Running:” command.
     cmd_unzip = f"zcat {fa_gz} > {fa_fa}"
-    tool.exec_cmd(cmd_unzip, sample)
+    tool.exec_cmd(cmd_unzip, sample, display_name="Prepare microbial peptide FASTA")
 
     # 2) Run protein search using the uncompressed FASTA.
     if search_engine == "diamond":
@@ -805,6 +805,11 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
             if preset:
                 cmd.extend(["--preset", preset])
             cmd.extend(configured_predictor_cli_args(paths))
-            tool.exec_cmd(" ".join(shlex.quote(item) for item in cmd), sample, pipline="microbial")
+            tool.exec_cmd(
+                " ".join(shlex.quote(item) for item in cmd),
+                sample,
+                pipline="microbial",
+                display_name="MimicNeoAI microbial binding prediction",
+            )
         else:
             raise ValueError(f"Unsupported binding_prediction_backend: {backend}")

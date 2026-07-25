@@ -61,6 +61,33 @@ class CommandFailurePropagationTest(unittest.TestCase):
             self.assertEqual(tool.run_cmds_allSamples["TEST"], [])
             self.assertEqual(len(tool.failed_cmds_allSamples["TEST"]), 1)
 
+    def test_exec_cmd_logs_user_facing_detail_log_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            tool = self.make_tool(Path(tempdir))
+            tool.exec_cmd("echo first", "TEST", display_name="Friendly Step")
+            tool.exec_cmd("echo second", "TEST", display_name="Friendly Step")
+
+            start_log = Path(tool.start_log).read_text()
+            self.assertIn("Run TEST Friendly Step!", start_log)
+            self.assertIn("Detail log:", start_log)
+            detail_logs = sorted(Path(tempdir).glob("log/*/detail/TEST/*FailureTest_Friendly_Step.log"))
+            self.assertEqual(len(detail_logs), 2)
+            self.assertIn("first", detail_logs[0].read_text())
+            self.assertIn("second", detail_logs[1].read_text())
+
+    def test_failed_exec_cmd_logs_detail_log_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            tool = self.make_tool(Path(tempdir))
+            with self.assertRaises(subprocess.CalledProcessError):
+                tool.exec_cmd("sh -c 'echo failing; exit 4'", "TEST", display_name="Failing Step")
+
+            start_log = Path(tool.start_log).read_text()
+            self.assertIn("TEST Failing Step failed!", start_log)
+            self.assertIn("Detail log:", start_log)
+            detail_logs = sorted(Path(tempdir).glob("log/*/detail/TEST/*FailureTest_Failing_Step.log"))
+            self.assertEqual(len(detail_logs), 1)
+            self.assertIn("failing", detail_logs[0].read_text())
+
     def test_async_results_are_all_collected_before_aggregate_failure(self) -> None:
         successful = FakeAsyncResult(value="ok")
         failed = FakeAsyncResult(error=ValueError("sample failed"))
