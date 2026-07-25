@@ -204,7 +204,7 @@ def _start_one_sample(
                     "--mhc-i-lengths",
                     str(others.get("mhc_i_epitope_lengths", "8,9,10,11")),
                     "--mhc-ii-lengths",
-                    str(others.get("mhc_ii_epitope_lengths", "15")),
+                    str(others.get("mhc_ii_epitope_lengths", "13,14,15,16,17")),
                     "--algorithms",
                     str(others.get(
                         "binding_prediction_algorithms",
