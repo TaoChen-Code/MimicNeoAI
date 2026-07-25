@@ -45,6 +45,10 @@ class PipelineBackendContractTest(unittest.TestCase):
                 self.assertFalse(config["others"]["binding_prediction_force_large_samples"])
 
         paths = yaml.safe_load((CONFIG_DIR / "paths.yaml").read_text())
+        common_paths = paths["path"]["common"]
+        self.assertEqual(common_paths["APPTAINER_BIN"], "apptainer")
+        self.assertEqual(common_paths["BCFTOOLS_BIN"], "bcftools")
+        self.assertEqual(common_paths["TABIX_BIN"], "tabix")
         predictor_paths = paths["path"]["common"]["BINDING_PREDICTORS"]
         self.assertTrue(
             predictor_paths["MHCFLURRY_PREDICT_BIN"].endswith("mhcflurry-predict")
@@ -81,6 +85,9 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.assertIn("run_mimicneoai_binding_prediction.py", command)
         self.assertIn("07.binding_prediction_mimicneoai", command)
         self.assertIn("--preset fast", command)
+        self.assertIn("--apptainer apptainer", command)
+        self.assertIn("--bcftools bcftools", command)
+        self.assertIn("--tabix tabix", command)
         self.assertNotIn("NNalign", command)
 
         config["others"]["binding_prediction_backend"] = "pvactools"
@@ -110,6 +117,13 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.assertIn("--preset fast", command)
         self.assertIn("--workers 3", command)
 
+        paths["path"]["common"].update(
+            {
+                "APPTAINER_BIN": "/tools/apptainer",
+                "BCFTOOLS_BIN": "/tools/bcftools",
+                "TABIX_BIN": "/tools/tabix",
+            }
+        )
         paths["path"]["common"]["BINDING_PREDICTORS"] = {
             "MHCFLURRY_DOWNLOADS_DIR": "/tools/mhcflurry-models",
             "MHCNUGGETS_CWD": "/tools/mhcnuggets",
@@ -122,6 +136,9 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.assertIn(
             "--mhcflurry-downloads-dir /tools/mhcflurry-models", command
         )
+        self.assertIn("--apptainer /tools/apptainer", command)
+        self.assertIn("--bcftools /tools/bcftools", command)
+        self.assertIn("--tabix /tools/tabix", command)
         self.assertIn("--mhcnuggets-cwd /tools/mhcnuggets", command)
         self.assertIn("--netmhcpan-bin /tools/netMHCpan", command)
 

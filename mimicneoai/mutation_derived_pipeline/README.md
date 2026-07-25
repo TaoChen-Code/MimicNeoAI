@@ -106,5 +106,8 @@ Notable subfolders:
   retained for Stage 2 when the MT peptide passes. The Stage 2 default uses
   MHCflurry, MHCflurryEL, MHCnuggetsI, NetMHCpan, NetMHCpanEL, MHCnuggetsII,
   NetMHCIIpan, and NetMHCIIpanEL. NNalign is omitted from this preset.
+- Runtime tool paths for pVACtools source generation are read from
+  `path.common.APPTAINER_BIN`, `path.common.BCFTOOLS_BIN`, and
+  `path.common.TABIX_BIN` in `configures/paths.yaml`.
 - Set `others.binding_prediction_backend: pvactools` only when the legacy
   pVACseq binding workflow is required.

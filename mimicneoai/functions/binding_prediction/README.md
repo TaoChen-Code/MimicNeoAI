@@ -55,6 +55,12 @@ MHCflurry model directory and the MHCnuggets/IEDB working directories. The
 matching `MIMICNEOAI_*` environment variables remain available for standalone
 runner use.
 
+For mutation-derived antigens, the native backend still calls pVACtools for VCF
+conversion and WT/MT protein source generation. Configure
+`path.common.APPTAINER_BIN`, `path.common.BCFTOOLS_BIN`, and
+`path.common.TABIX_BIN` in `configures/paths.yaml` when deployment should use
+absolute tool paths rather than relying on the shell `PATH`.
+
 Cryptic and microbial pipelines also support:
 
 ```yaml

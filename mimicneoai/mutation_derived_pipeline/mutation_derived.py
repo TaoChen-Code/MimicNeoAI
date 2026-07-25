@@ -52,6 +52,14 @@ STEP_NAME = {
     "mimicneoai_binding": "07.binding_prediction_mimicneoai",
 }
 
+
+def _common_tool_path(paths: Dict[str, Any], key: str, default: str) -> str:
+    """Return a common runtime tool path from paths.yaml with a command-name fallback."""
+
+    common = (paths.get("path", {}) or {}).get("common", {}) or {}
+    return str(common.get(key, default))
+
+
 # -------- Worker helpers --------
 def _variants_calling_and_annotation(
     sample: str,
@@ -153,6 +161,15 @@ def _start_one_sample(
                 others = configure.get("others", {})
                 input_vcf = f"{output_vep}/{tumor_sample}.shared.VEP.rm_mismatch.vcf"
                 hla_file = f"{output_hla}/{tumor_sample}/result/{tumor_sample}_final.result.txt"
+                apptainer_bin = str(
+                    others.get("apptainer", _common_tool_path(paths, "APPTAINER_BIN", "apptainer"))
+                )
+                bcftools_bin = str(
+                    others.get("bcftools", _common_tool_path(paths, "BCFTOOLS_BIN", "bcftools"))
+                )
+                tabix_bin = str(
+                    others.get("tabix", _common_tool_path(paths, "TABIX_BIN", "tabix"))
+                )
                 binding_step_value = others.get("binding_prediction_step_name")
                 if binding_step_value is None:
                     binding_step_value = configure.get("step_name", {}).get(
@@ -178,6 +195,12 @@ def _start_one_sample(
                     str(paths["path"]["common"]["PVACTOOLS"]),
                     "-o",
                     outdir,
+                    "--apptainer",
+                    apptainer_bin,
+                    "--bcftools",
+                    bcftools_bin,
+                    "--tabix",
+                    tabix_bin,
                     "--mhc-i-lengths",
                     str(others.get("mhc_i_epitope_lengths", "8,9,10,11")),
                     "--mhc-ii-lengths",
@@ -195,8 +218,6 @@ def _start_one_sample(
                 preset = str(others.get("binding_prediction_preset", "fast")).strip()
                 if preset:
                     cmd.extend(["--preset", preset])
-                if "bcftools" in others:
-                    cmd.extend(["--bcftools", str(others["bcftools"])])
                 tool.exec_cmd(" ".join(shlex.quote(item) for item in cmd), sample, pipline="mutation")
             else:
                 raise ValueError(f"Unsupported binding_prediction_backend: {backend}")

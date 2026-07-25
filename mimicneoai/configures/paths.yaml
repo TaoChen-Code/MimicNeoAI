@@ -7,6 +7,9 @@ path:
   common:
     GATK_JAR: "../database/soft/GATK/gatk-4.6.0.0.jar"
     PVACTOOLS: "../database/soft/PVACTOOLS/pvactools-4.2.1.sif"
+    APPTAINER_BIN: "apptainer"
+    BCFTOOLS_BIN: "bcftools"
+    TABIX_BIN: "tabix"
     BINDING_PREDICTORS:
       MHCFLURRY_PREDICT_BIN: "/workspace/pkgs/mhcflurry/.venv/bin/mhcflurry-predict"
       MHCFLURRY_DOWNLOADS_DIR: "/workspace/pkgs/mhcflurry/downloads/2.2.0"
