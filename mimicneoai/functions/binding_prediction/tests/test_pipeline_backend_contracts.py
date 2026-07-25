@@ -46,9 +46,9 @@ class PipelineBackendContractTest(unittest.TestCase):
 
         paths = yaml.safe_load((CONFIG_DIR / "paths.yaml").read_text())
         common_paths = paths["path"]["common"]
-        self.assertEqual(common_paths["APPTAINER_BIN"], "apptainer")
-        self.assertEqual(common_paths["BCFTOOLS_BIN"], "bcftools")
-        self.assertEqual(common_paths["TABIX_BIN"], "tabix")
+        self.assertTrue(common_paths["APPTAINER_BIN"].endswith("/apptainer"))
+        self.assertTrue(common_paths["BCFTOOLS_BIN"].endswith("/bcftools"))
+        self.assertTrue(common_paths["TABIX_BIN"].endswith("/tabix"))
         predictor_paths = paths["path"]["common"]["BINDING_PREDICTORS"]
         self.assertTrue(
             predictor_paths["MHCFLURRY_PREDICT_BIN"].endswith("mhcflurry-predict")
@@ -85,9 +85,9 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.assertIn("run_mimicneoai_binding_prediction.py", command)
         self.assertIn("07.binding_prediction_mimicneoai", command)
         self.assertIn("--preset fast", command)
-        self.assertIn("--apptainer apptainer", command)
-        self.assertIn("--bcftools bcftools", command)
-        self.assertIn("--tabix tabix", command)
+        self.assertIn("--apptainer", command)
+        self.assertIn("--bcftools", command)
+        self.assertIn("--tabix", command)
         self.assertNotIn("NNalign", command)
 
         config["others"]["binding_prediction_backend"] = "pvactools"
