@@ -18,12 +18,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hla-file", required=True)
     parser.add_argument("-o", "--outdir", required=True, help="Microbial 08.MicrobialPeptidesBindingPrediction directory.")
     parser.add_argument("-t", "--threads", type=int, default=10, help="Local predictor workers.")
-    parser.add_argument("--mhc-i-lengths", default="8,9,10")
-    parser.add_argument("--mhc-ii-lengths", default="15")
-    parser.add_argument("--preset", default="")
+    parser.add_argument("--mhc-i-lengths", default="8,9,10,11")
+    parser.add_argument("--mhc-ii-lengths", default="13,14,15,16,17")
+    parser.add_argument("--preset", default="fast")
     parser.add_argument(
         "--algorithms",
-        default="MHCflurry,MHCflurryEL,MHCnuggetsI,MHCnuggetsII,NNalign,NetMHCpan,NetMHCpanEL,NetMHCIIpan,NetMHCIIpanEL",
+        default="MHCflurry,MHCflurryEL,MHCnuggetsI,MHCnuggetsII,NetMHCpan,NetMHCpanEL,NetMHCIIpan,NetMHCIIpanEL",
     )
     parser.add_argument("--chunk-size", type=int, default=None)
     parser.add_argument("--max-task-rows", type=int, default=5000000)

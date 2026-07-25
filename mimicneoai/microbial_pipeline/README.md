@@ -77,18 +77,18 @@ Pipeline outputs are written under:
 ├── 05.MicrobialTaxaQuantificationStep2
 ├── 06.MicrobialPeptidesIdentification
 ├── 07.HlaTyping
-└── 08.MicrobialPeptidesBindingPrediction
+└── 08.MicrobialPeptidesBindingPrediction_mimicneoai
 ```
 
 ## Notes
 
 - The pipeline is resumable; existing non-empty outputs are skipped.
 - If a step fails mid-way, delete the incomplete step directory and rerun.
-- `others.binding_prediction_backend` defaults to `pvactools`. The optional
-  `mimicneoai` backend estimates task scale before materializing the task table;
-  see the [native binding backend documentation](../functions/binding_prediction/README.md).
-- With `others.binding_prediction_backend: mimicneoai`, set
-  `others.binding_prediction_preset: full` for one-stage multialgorithm
-  prediction or `fast` for EL-rank Stage 1 routing before formal local binding
-  prediction. Omitting the preset preserves explicit length and algorithm
-  settings in the YAML.
+- `others.binding_prediction_backend` defaults to `mimicneoai` with
+  `others.binding_prediction_preset: fast`. This estimates task scale before
+  materializing the task table and then uses EL-rank Stage 1 routing before
+  formal local binding prediction; see the
+  [native binding backend documentation](../functions/binding_prediction/README.md).
+- Set `others.binding_prediction_preset: full` for one-stage multialgorithm
+  prediction, or set `others.binding_prediction_backend: pvactools` to run the
+  legacy pVACbind workflow.

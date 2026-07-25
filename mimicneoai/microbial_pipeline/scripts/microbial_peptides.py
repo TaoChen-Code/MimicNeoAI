@@ -4,6 +4,7 @@ import shlex
 import sys
 from datetime import datetime
 from importlib.resources import files
+from pathlib import Path
 from mimicneoai.functions.binding_prediction import configured_predictor_cli_args
 from mimicneoai.functions.utils import format_java_heap
 import pandas as pd
@@ -15,6 +16,12 @@ from mimicneoai.microbial_pipeline.scripts.hla_binding_pred import pvacbind
 def _script_path(rel_name: str) -> str:
     pkg_path = files("mimicneoai.microbial_pipeline.scripts")
     return str(pkg_path / rel_name)
+
+
+DEFAULT_FAST_BINDING_ALGORITHMS = (
+    "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII "
+    "NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL"
+)
 
 
 def HostSequencesRemoving(sample, configure, paths, tool):
@@ -752,15 +759,21 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
     # Only run if peptide FASTA exists
     peptide_fa = f"{output_blastx}/{sample}.peptide.fasta"
     if os.path.exists(peptide_fa):
-        backend = str(configure.get("others", {}).get("binding_prediction_backend", "pvactools")).strip().lower()
+        backend = str(configure.get("others", {}).get("binding_prediction_backend", "mimicneoai")).strip().lower()
         if backend == "pvactools":
             tool.judge_then_exec(sample, f"mkdir -p {output_pvacbind}", output_pvacbind)
             pvacbind(sample, configure, paths, tool)
         elif backend == "mimicneoai":
-            output_mimicneoai = output_path + f"{sample}/08.MicrobialPeptidesBindingPrediction_mimicneoai/"
+            others = configure.get("others", {})
+            binding_step = str(others.get(
+                "binding_prediction_step_name",
+                "08.MicrobialPeptidesBindingPrediction_mimicneoai",
+            )).strip()
+            if not binding_step or Path(binding_step).name != binding_step:
+                raise ValueError("binding_prediction_step_name must be a single directory name")
+            output_mimicneoai = output_path + f"{sample}/{binding_step}/"
             output_hla = output_path + f"{sample}/{step_name_hla}/"
             hla_file = f"{output_hla}{sample}/result/{sample}_final.result.txt"
-            others = configure.get("others", {})
             cmd = [
                 sys.executable,
                 _script_path("hla_binding_pred_mimicneoai.py"),
@@ -777,19 +790,18 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
                 "--algorithms",
                 str(others.get(
                     "binding_prediction_algorithms",
-                    "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign "
-                    "NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL",
+                    DEFAULT_FAST_BINDING_ALGORITHMS,
                 )),
                 "--mhc-i-lengths",
-                str(others.get("mhcI_lengths", "8,9,10")),
+                str(others.get("mhcI_lengths", "8,9,10,11")),
                 "--mhc-ii-lengths",
-                str(others.get("mhcII_lengths", "15")),
+                str(others.get("mhcII_lengths", "13,14,15,16,17")),
                 "--max-task-rows",
                 str(int(others.get("binding_prediction_max_task_rows", 5000000))),
             ]
             if bool(others.get("binding_prediction_force_large_samples", False)):
                 cmd.append("--force-large-samples")
-            preset = str(others.get("binding_prediction_preset", "")).strip()
+            preset = str(others.get("binding_prediction_preset", "fast")).strip()
             if preset:
                 cmd.extend(["--preset", preset])
             cmd.extend(configured_predictor_cli_args(paths))

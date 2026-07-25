@@ -36,13 +36,22 @@ class PipelineBackendContractTest(unittest.TestCase):
             "07.binding_prediction_mimicneoai",
         )
 
-        for filename in ("cryptic_configure.yaml", "microbial_configure.yaml"):
-            with self.subTest(filename=filename):
-                config = yaml.safe_load((CONFIG_DIR / filename).read_text())
-                self.assertEqual(config["others"]["binding_prediction_backend"], "pvactools")
-                self.assertIn("binding_prediction_algorithms", config["others"])
-                self.assertEqual(config["others"]["binding_prediction_max_task_rows"], 5_000_000)
-                self.assertFalse(config["others"]["binding_prediction_force_large_samples"])
+        cryptic = yaml.safe_load((CONFIG_DIR / "cryptic_configure.yaml").read_text())
+        self.assertEqual(cryptic["others"]["binding_prediction_backend"], "pvactools")
+        self.assertIn("binding_prediction_algorithms", cryptic["others"])
+        self.assertEqual(cryptic["others"]["binding_prediction_max_task_rows"], 5_000_000)
+        self.assertFalse(cryptic["others"]["binding_prediction_force_large_samples"])
+
+        microbial = yaml.safe_load((CONFIG_DIR / "microbial_configure.yaml").read_text())
+        self.assertEqual(microbial["others"]["binding_prediction_backend"], "mimicneoai")
+        self.assertEqual(microbial["others"]["binding_prediction_preset"], "fast")
+        self.assertNotIn("NNalign", microbial["others"]["binding_prediction_algorithms"])
+        self.assertEqual(
+            microbial["others"]["binding_prediction_step_name"],
+            "08.MicrobialPeptidesBindingPrediction_mimicneoai",
+        )
+        self.assertEqual(microbial["others"]["binding_prediction_max_task_rows"], 5_000_000)
+        self.assertFalse(microbial["others"]["binding_prediction_force_large_samples"])
 
         paths = yaml.safe_load((CONFIG_DIR / "paths.yaml").read_text())
         common_paths = paths["path"]["common"]
@@ -227,21 +236,6 @@ class PipelineBackendContractTest(unittest.TestCase):
             },
             "others": {},
         }
-        tool = MagicMock()
-        with patch.object(microbial_peptides, "pvacbind") as legacy:
-            microbial_peptides.MicrobialPeptidesBindingPrediction(sample, config, {}, tool)
-        legacy.assert_called_once()
-        tool.exec_cmd.assert_not_called()
-
-        config["others"].update(
-            {
-                "binding_prediction_backend": "mimicneoai",
-                "binding_prediction_preset": "fast",
-                "binding_prediction_max_task_rows": 4321,
-                "binding_prediction_force_large_samples": True,
-            }
-        )
-        tool.reset_mock()
         paths = {
             "path": {
                 "common": {
@@ -251,14 +245,48 @@ class PipelineBackendContractTest(unittest.TestCase):
                 }
             }
         }
-        microbial_peptides.MicrobialPeptidesBindingPrediction(sample, config, paths, tool)
+        tool = MagicMock()
+        with patch.object(microbial_peptides, "pvacbind") as legacy:
+            microbial_peptides.MicrobialPeptidesBindingPrediction(sample, config, paths, tool)
+        legacy.assert_not_called()
         command = tool.exec_cmd.call_args.args[0]
         self.assertIn("hla_binding_pred_mimicneoai.py", command)
         self.assertIn("08.MicrobialPeptidesBindingPrediction_mimicneoai", command)
+        self.assertIn("--preset fast", command)
+        self.assertIn("--mhc-i-lengths 8,9,10,11", command)
+        self.assertIn("--mhc-ii-lengths 13,14,15,16,17", command)
+        self.assertNotIn("NNalign", command)
+        self.assertIn("--netmhcpan-bin /tools/netMHCpan", command)
+
+        config["others"]["binding_prediction_backend"] = "pvactools"
+        tool.reset_mock()
+        with patch.object(microbial_peptides, "pvacbind") as legacy:
+            microbial_peptides.MicrobialPeptidesBindingPrediction(sample, config, paths, tool)
+        legacy.assert_called_once()
+        tool.exec_cmd.assert_not_called()
+
+        config["others"].update(
+            {
+                "binding_prediction_backend": "mimicneoai",
+                "binding_prediction_step_name": "08.MicrobialPeptidesBindingPrediction_mimicneoai_test",
+                "binding_prediction_preset": "fast",
+                "binding_prediction_max_task_rows": 4321,
+                "binding_prediction_force_large_samples": True,
+            }
+        )
+        tool.reset_mock()
+        microbial_peptides.MicrobialPeptidesBindingPrediction(sample, config, paths, tool)
+        command = tool.exec_cmd.call_args.args[0]
+        self.assertIn("hla_binding_pred_mimicneoai.py", command)
+        self.assertIn("08.MicrobialPeptidesBindingPrediction_mimicneoai_test", command)
         self.assertIn("--max-task-rows 4321", command)
         self.assertIn("--preset fast", command)
         self.assertIn("--force-large-samples", command)
         self.assertIn("--netmhcpan-bin /tools/netMHCpan", command)
+
+        config["others"]["binding_prediction_step_name"] = "../invalid"
+        with self.assertRaisesRegex(ValueError, "single directory name"):
+            microbial_peptides.MicrobialPeptidesBindingPrediction(sample, config, paths, tool)
 
     def cryptic_config(self) -> dict[str, object]:
         return {
