@@ -54,6 +54,34 @@ DEFAULT_ALGORITHMS = (
 # protein sequence. Other consequences are excluded from downstream tasks.
 SUPPORTED_VARIANT_TYPES = frozenset({"missense", "FS", "inframe_ins", "inframe_del"})
 
+EVENT_QC_FIELDNAMES = [
+    "event_status",
+    "qc_reason",
+    "protein_pair_source",
+    "event_id",
+    "pvacseq_index",
+    "gene_name",
+    "transcript_name",
+    "variant_type",
+    "amino_acid_change",
+    "protein_position",
+    "chromosome_name",
+    "start",
+    "stop",
+    "reference",
+    "variant",
+    "hgvsc",
+    "hgvsp",
+    "mutation_start_0based",
+    "mutation_end_0based",
+    "mt_protein_fragment_length",
+    "wt_protein_fragment_length",
+    "epitope_window_count",
+    "mhc_i_window_count",
+    "mhc_ii_window_count",
+    "extended_peptide_generated",
+]
+
 try:
     from mimicneoai.mutation_derived_pipeline.scripts.mutation_epitope_prediction.hla_parser import (
         parse_hlahd_result,
@@ -163,43 +191,128 @@ def main(argv: Optional[list[str]] = None) -> int:
     epitope_rows: list[dict[str, object]] = []
     extended_rows: list[dict[str, object]] = []
     missing_annotation: list[str] = []
+    event_qc_rows: list[dict[str, object]] = []
     pair_status = Counter()
 
+    for row in unsupported_annotation_rows:
+        event_qc_rows.append(
+            event_qc_row(
+                row,
+                event_status="unsupported_variant_type",
+                qc_reason=f"variant_type={row.get('variant_type', '')} is not supported for peptide generation",
+            )
+        )
+
     for pvacseq_index, event_id in index_to_event.items():
+        annotation = annotation_by_index[pvacseq_index]
+        protein_pair_source = "fasta_pair_found"
         pair = pair_map.get(pvacseq_index)
         if pair is None:
-            pair = build_protein_pair_from_converter_row(
-                annotation_by_index[pvacseq_index],
-                flanking_length=args.protein_flank_length,
-            )
+            try:
+                pair = build_protein_pair_from_converter_row(
+                    annotation,
+                    flanking_length=args.protein_flank_length,
+                )
+            except Exception as exc:
+                pair_status["missing_protein_context"] += 1
+                missing_annotation.append(pvacseq_index)
+                event_qc_rows.append(
+                    event_qc_row(
+                        annotation,
+                        event_status="missing_protein_context",
+                        qc_reason=str(exc),
+                    )
+                )
+                continue
+            protein_pair_source = "rebuilt_from_converter"
             pair_status["rebuilt_from_converter"] += 1
         else:
             pair_status["fasta_pair_found"] += 1
-        annotation = annotation_by_index[pvacseq_index]
         variant_type = str(annotation.get("variant_type", ""))
-        mutation_start, mutation_end = locate_mutation_region(
-            pair.wt_sequence,
-            pair.mt_sequence,
-            variant_type=variant_type,
-        )
+        try:
+            mutation_start, mutation_end = locate_mutation_region(
+                pair.wt_sequence,
+                pair.mt_sequence,
+                variant_type=variant_type,
+            )
+        except Exception as exc:
+            pair_status["mutation_region_error"] += 1
+            event_qc_rows.append(
+                event_qc_row(
+                    annotation,
+                    event_status="mutation_region_error",
+                    qc_reason=str(exc),
+                    protein_pair_source=protein_pair_source,
+                    mt_protein_fragment_length=len(pair.mt_sequence),
+                    wt_protein_fragment_length=len(pair.wt_sequence) if pair.wt_sequence else "",
+                )
+            )
+            continue
         all_lengths = tuple(sorted(set(mhc_i_lengths + mhc_ii_lengths)))
-        windows = generate_epitope_windows(
-            pair,
-            all_lengths,
-            args.extended_length,
-            variant_type=variant_type,
-        )
+        try:
+            windows = generate_epitope_windows(
+                pair,
+                all_lengths,
+                args.extended_length,
+                variant_type=variant_type,
+            )
+        except Exception as exc:
+            pair_status["epitope_window_error"] += 1
+            event_qc_rows.append(
+                event_qc_row(
+                    annotation,
+                    event_status="epitope_window_error",
+                    qc_reason=str(exc),
+                    protein_pair_source=protein_pair_source,
+                    mutation_start=mutation_start,
+                    mutation_end=mutation_end,
+                    mt_protein_fragment_length=len(pair.mt_sequence),
+                    wt_protein_fragment_length=len(pair.wt_sequence) if pair.wt_sequence else "",
+                )
+            )
+            continue
         if not windows:
             pair_status["no_window"] += 1
+            event_qc_rows.append(
+                event_qc_row(
+                    annotation,
+                    event_status="no_window",
+                    qc_reason="no mutation-distinguishable peptide window for requested lengths",
+                    protein_pair_source=protein_pair_source,
+                    mutation_start=mutation_start,
+                    mutation_end=mutation_end,
+                    mt_protein_fragment_length=len(pair.mt_sequence),
+                    wt_protein_fragment_length=len(pair.wt_sequence) if pair.wt_sequence else "",
+                )
+            )
             continue
 
-        event_context = make_event_context_peptide(
-            pair.mt_sequence,
-            mutation_start,
-            mutation_end,
-            args.extended_length,
-            variant_type=variant_type,
-        )
+        try:
+            event_context = make_event_context_peptide(
+                pair.mt_sequence,
+                mutation_start,
+                mutation_end,
+                args.extended_length,
+                variant_type=variant_type,
+            )
+        except Exception as exc:
+            pair_status["event_context_error"] += 1
+            event_qc_rows.append(
+                event_qc_row(
+                    annotation,
+                    event_status="event_context_error",
+                    qc_reason=str(exc),
+                    protein_pair_source=protein_pair_source,
+                    mutation_start=mutation_start,
+                    mutation_end=mutation_end,
+                    mt_protein_fragment_length=len(pair.mt_sequence),
+                    wt_protein_fragment_length=len(pair.wt_sequence) if pair.wt_sequence else "",
+                    epitope_window_count=len(windows),
+                    mhc_i_window_count=sum(1 for window in windows if window.length in mhc_i_lengths),
+                    mhc_ii_window_count=sum(1 for window in windows if window.length in mhc_ii_lengths),
+                )
+            )
+            continue
         extended_rows.append(
             {
                 "event_id": event_id,
@@ -220,6 +333,22 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "wt_protein_fragment_length": len(pair.wt_sequence) if pair.wt_sequence else "",
             }
         )
+        event_qc_rows.append(
+            event_qc_row(
+                annotation,
+                event_status="rebuilt_from_converter" if protein_pair_source == "rebuilt_from_converter" else "ok",
+                qc_reason="",
+                protein_pair_source=protein_pair_source,
+                mutation_start=mutation_start,
+                mutation_end=mutation_end,
+                mt_protein_fragment_length=len(pair.mt_sequence),
+                wt_protein_fragment_length=len(pair.wt_sequence) if pair.wt_sequence else "",
+                epitope_window_count=len(windows),
+                mhc_i_window_count=sum(1 for window in windows if window.length in mhc_i_lengths),
+                mhc_ii_window_count=sum(1 for window in windows if window.length in mhc_ii_lengths),
+                extended_peptide_generated=True,
+            )
+        )
 
         for window in windows:
             if window.length in mhc_i_lengths:
@@ -227,6 +356,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             if window.length in mhc_ii_lengths:
                 epitope_rows.append(epitope_row(event_id, pvacseq_index, annotation, window, "MHC-II", mutation_start, mutation_end))
 
+    write_tsv_with_fieldnames(outdir / "event_qc.tsv", event_qc_rows, EVENT_QC_FIELDNAMES)
+    write_tsv_with_fieldnames(
+        outdir / "excluded_or_failed_events.tsv",
+        [
+            row
+            for row in event_qc_rows
+            if row.get("event_status") not in {"ok", "rebuilt_from_converter"}
+        ],
+        EVENT_QC_FIELDNAMES,
+    )
     write_tsv(outdir / "extended_peptides.tsv", extended_rows)
     write_tsv(outdir / "epitope_windows.tsv", epitope_rows)
 
@@ -289,6 +428,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "protein_pairs": len(protein_pairs),
         "fasta_pair_status": dict(pair_status),
         "missing_fasta_pair_count": len(missing_annotation),
+        "event_qc_status_counts": dict(Counter(str(row.get("event_status", "")) for row in event_qc_rows)),
         "epitope_window_rows": len(epitope_rows),
         "extended_peptide_rows": len(extended_rows),
         "extension_mapping_failures": extension_mapping_failures,
@@ -427,6 +567,52 @@ def epitope_row(event_id: str, pvacseq_index: str, annotation: dict[str, object]
     }
 
 
+def event_qc_row(
+    annotation: dict[str, object],
+    *,
+    event_status: str,
+    qc_reason: str,
+    protein_pair_source: str = "",
+    mutation_start: object = "",
+    mutation_end: object = "",
+    mt_protein_fragment_length: object = "",
+    wt_protein_fragment_length: object = "",
+    epitope_window_count: int = 0,
+    mhc_i_window_count: int = 0,
+    mhc_ii_window_count: int = 0,
+    extended_peptide_generated: bool = False,
+) -> dict[str, object]:
+    """Create one row of event-level peptide-generation QC."""
+
+    return {
+        "event_status": event_status,
+        "qc_reason": qc_reason,
+        "protein_pair_source": protein_pair_source,
+        "event_id": annotation.get("event_id", ""),
+        "pvacseq_index": annotation.get("pvacseq_index", ""),
+        "gene_name": annotation.get("gene_name", ""),
+        "transcript_name": annotation.get("transcript_name", ""),
+        "variant_type": annotation.get("variant_type", ""),
+        "amino_acid_change": annotation.get("amino_acid_change", ""),
+        "protein_position": annotation.get("protein_position", ""),
+        "chromosome_name": annotation.get("chromosome_name", ""),
+        "start": annotation.get("start", ""),
+        "stop": annotation.get("stop", ""),
+        "reference": annotation.get("reference", ""),
+        "variant": annotation.get("variant", ""),
+        "hgvsc": annotation.get("hgvsc", ""),
+        "hgvsp": annotation.get("hgvsp", ""),
+        "mutation_start_0based": mutation_start,
+        "mutation_end_0based": mutation_end,
+        "mt_protein_fragment_length": mt_protein_fragment_length,
+        "wt_protein_fragment_length": wt_protein_fragment_length,
+        "epitope_window_count": epitope_window_count,
+        "mhc_i_window_count": mhc_i_window_count,
+        "mhc_ii_window_count": mhc_ii_window_count,
+        "extended_peptide_generated": "YES" if extended_peptide_generated else "NO",
+    }
+
+
 def extension_contains_window(row: dict[str, object]) -> bool:
     """Validate candidate extension containment using coordinates and sequence."""
 
@@ -557,6 +743,18 @@ def write_tsv(path: Path, rows: list[dict[str, object]]) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+
+
+def write_tsv_with_fieldnames(path: Path, rows: list[dict[str, object]], fieldnames: list[str]) -> None:
+    """Write rows to a TSV file with a stable header even when empty."""
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, delimiter="\t", fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({fieldname: row.get(fieldname, "") for fieldname in fieldnames})
 
 
 if __name__ == "__main__":

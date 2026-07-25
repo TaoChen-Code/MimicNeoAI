@@ -6,6 +6,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from collections import Counter
 from pathlib import Path
 from typing import List, Optional
 from unittest.mock import patch
@@ -352,9 +353,22 @@ class MutationWindowGoldenTest(unittest.TestCase):
             self.assertEqual(summary["unsupported_variant_annotation_rows"], 1)
             self.assertEqual(summary["unsupported_variant_type_counts"], {"start_lost": 1})
             self.assertEqual(summary["fasta_pair_status"], {"fasta_pair_found": 5})
+            self.assertEqual(summary["event_qc_status_counts"], {"unsupported_variant_type": 1, "ok": 5})
             self.assertEqual(summary["extension_mapping_failures"], 0)
             self.assertEqual(summary["fs_wt_epitope_nonempty_rows"], 0)
             self.assertTrue((outdir / "unsupported_variant_annotations.tsv").exists())
+
+            with (outdir / "event_qc.tsv").open(newline="") as handle:
+                event_qc = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(
+                Counter(row["event_status"] for row in event_qc),
+                {"unsupported_variant_type": 1, "ok": 5},
+            )
+
+            with (outdir / "excluded_or_failed_events.tsv").open(newline="") as handle:
+                excluded = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(len(excluded), 1)
+            self.assertEqual(excluded[0]["event_status"], "unsupported_variant_type")
 
             with (outdir / "epitope_windows.tsv").open(newline="") as handle:
                 windows = list(csv.DictReader(handle, delimiter="\t"))
