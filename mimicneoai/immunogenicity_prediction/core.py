@@ -1,6 +1,5 @@
 import hashlib
 import json
-import re
 import subprocess
 import tempfile
 import time
@@ -19,6 +18,11 @@ from mimicneoai.immunogenicity_prediction.model import (
     build_model,
     checkpoint_payload,
     load_model_weights,
+)
+from mimicneoai.immunogenicity_prediction.runtime.hla import normalize_hla
+from mimicneoai.immunogenicity_prediction.runtime.qc import (
+    INPUT_QC_COLUMNS,
+    annotate_input_qc,
 )
 
 
@@ -58,6 +62,7 @@ class InferenceConfig:
     device: str = "auto"
     num_processes: int = 1
     verbose: bool = True
+    include_input_qc: bool = False
 
 
 def pick_device(device_name: str) -> torch.device:
@@ -79,19 +84,6 @@ def pick_device(device_name: str) -> torch.device:
             )
         return torch.device(f"cuda:{idx}")
     return torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-
-def normalize_hla(hla: str) -> str:
-    val = str(hla).strip()
-    val = re.sub(r"^HLA-", "", val, flags=re.IGNORECASE)
-    if "-" in val:
-        val = re.sub(r"(?<=[0-9])-(?=[A-Z])", "/", val)
-    if "/" in val:
-        val = val.split("/")[-1]
-    parts = val.split(":")
-    if len(parts) >= 2:
-        val = f"{parts[0]}:{parts[1]}"
-    return val
 
 
 def parse_hla_fasta(hla_fasta_path: str) -> Dict[str, str]:
@@ -401,10 +393,18 @@ def prepare_inference_features(input_df: pd.DataFrame, cfg: InferenceConfig) -> 
     """Normalize peptide-HLA input and calculate its reusable 25D feature table."""
     if cfg.peptide_col not in input_df.columns or cfg.hla_col not in input_df.columns:
         raise KeyError(f"Input must contain columns '{cfg.peptide_col}' and '{cfg.hla_col}'.")
-    work_df = input_df.copy()
+    work_df = (
+        annotate_input_qc(input_df, peptide_col=cfg.peptide_col, hla_col=cfg.hla_col)
+        if cfg.include_input_qc
+        else input_df.copy()
+    )
     work_df[cfg.peptide_col] = work_df[cfg.peptide_col].astype(str).str.strip().str.upper()
     work_df[cfg.hla_col] = work_df[cfg.hla_col].astype(str).str.strip()
-    work_df["_norm_hla"] = work_df[cfg.hla_col].apply(normalize_hla)
+    work_df["_norm_hla"] = (
+        work_df["input_qc_normalized_hla"]
+        if cfg.include_input_qc
+        else work_df[cfg.hla_col].apply(normalize_hla)
+    )
 
     return build_feature_table(work_df, cfg.peptide_col, cfg.num_processes)
 
@@ -435,6 +435,8 @@ def run_inference(
             print(f"[Immunogenicity] Feature extraction done in {time.time() - t_feat:.2f}s")
     else:
         required_features = {cfg.peptide_col, cfg.hla_col, "_norm_hla", *PHYSICOCHEMICAL_FEATURE_COLUMNS}
+        if cfg.include_input_qc:
+            required_features.update(INPUT_QC_COLUMNS)
         missing_features = required_features.difference(prepared_feature_table.columns)
         if missing_features:
             raise KeyError(
@@ -598,6 +600,21 @@ def run_inference(
         on=merge_keys,
         how="left",
     )
+    if cfg.include_input_qc:
+        scored["input_qc_hla_reference_status"] = np.where(
+            scored[cfg.output_status_col].eq("ok"),
+            "matched",
+            scored[cfg.output_status_col],
+        )
+        missing_reference = ~scored[cfg.output_status_col].eq("ok")
+        if missing_reference.any():
+            additions = scored.loc[missing_reference, "input_qc_hla_reference_status"]
+            existing = scored.loc[missing_reference, "input_qc_flags"].fillna("")
+            scored.loc[missing_reference, "input_qc_flags"] = [
+                f"{flag};{addition}" if flag else str(addition)
+                for flag, addition in zip(existing, additions)
+            ]
+            scored.loc[missing_reference, "input_qc_status"] = "warning"
     scored = scored.drop(columns=["_norm_hla"])
 
     if cfg.verbose:

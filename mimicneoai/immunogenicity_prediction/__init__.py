@@ -10,16 +10,14 @@ __all__ = [
 
 def __getattr__(name):
     if name in __all__:
-        from mimicneoai.immunogenicity_prediction.core import (
+        from mimicneoai.immunogenicity_prediction.api import (
             InferenceConfig,
-            export_model_to_onnx,
             prepare_inference_features,
             run_inference,
-        )
-        from mimicneoai.immunogenicity_prediction.default_models import (
             default_model_paths,
             run_default_inference,
         )
+        from mimicneoai.immunogenicity_prediction.core import export_model_to_onnx
 
         values = {
             "InferenceConfig": InferenceConfig,

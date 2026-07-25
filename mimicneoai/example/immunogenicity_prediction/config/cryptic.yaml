@@ -8,6 +8,7 @@ args:
   batch_size: 512
   num_processes: 1
   verbose: true
+  include_input_qc: true
   device: "cuda"
 
 io:

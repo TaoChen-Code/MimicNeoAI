@@ -3,6 +3,16 @@
 This subtool predicts immunogenicity scores for peptide-HLA pairs.
 It can run as a standalone tool, and it can also be called by other pipelines.
 
+## Module boundary
+
+- `api.py` and `runtime/` are the stable runtime surface for pipelines.
+- `cli.py` is the YAML-configured command-line entry point;
+  `immunogenicity_prediction.py` remains a compatibility module.
+- `core.py` remains the compatibility implementation during the incremental
+  migration; do not add new pipeline dependencies to it directly.
+- `train_immunogenicity.py` and `benchmark/` are training/research tools, not
+  required by formal inference.
+
 ## Run
 
 ```bash
@@ -89,6 +99,11 @@ For pipeline code, use `run_default_inference` with `microbial`,
 and averages the ten cryptic members. `run_inference` remains available for an
 explicit model path and for legacy configurations.
 
+Set `args.include_input_qc: true` to retain input QC annotations in output:
+normalized HLA, peptide length, non-canonical amino-acid flags, duplicate
+peptide-HLA flags, and HLA resource-match status. This augments output only;
+it does not rewrite or silently exclude input records.
+
 To verify a recovered runtime payload against a locked Fig. 2 prediction file
 without copying manuscript data into this repository:
 
@@ -122,3 +137,12 @@ This module can also be reused by other pipelines through:
 
 - `mimicneoai.functions.immunogenicity_runner.predict_immunogenicity_df`
 - `mimicneoai.functions.immunogenicity_runner.predict_immunogenicity_csv`
+
+For formal source-class inference, prefer:
+
+- `mimicneoai.functions.immunogenicity_runner.predict_default_immunogenicity_df`
+- `mimicneoai.functions.immunogenicity_runner.predict_default_immunogenicity_csv`
+
+These select the recovered default weights, use checkpoint-compatible local
+pseudo-sequences by default, emit input QC annotations, and apply the cryptic
+ensemble automatically.

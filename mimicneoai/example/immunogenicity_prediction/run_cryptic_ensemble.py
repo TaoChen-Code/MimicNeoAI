@@ -34,6 +34,7 @@ def main() -> int:
         device=str(args_cfg.get("device", "auto")),
         num_processes=int(args_cfg.get("num_processes", 1)),
         verbose=bool(args_cfg.get("verbose", True)),
+        include_input_qc=bool(args_cfg.get("include_input_qc", False)),
     )
     result = run_default_inference(input_df, "cryptic", cfg)
     output_path = Path(path_cfg["output_csv"])
