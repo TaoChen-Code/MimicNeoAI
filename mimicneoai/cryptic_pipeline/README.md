@@ -108,3 +108,7 @@ Notable subfolders:
 - Set `others.run_immunogenicity_prediction: true` to score peptide-HLA rows
   after binding. If binding is skipped by the scale gate, immunogenicity scoring
   is skipped and recorded in the summary rather than being treated as negative.
+- Immunogenicity inference requires a Python environment with PyTorch and
+  scikit-learn. Use `others.immunogenicity_python_bin` or the
+  `MIMICNEOAI_IMMUNOGENICITY_PYTHON_BIN` environment variable to select a CPU
+  or GPU runtime explicitly; otherwise the current pipeline Python is used.

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 import pandas as pd
-
-from mimicneoai.immunogenicity_prediction.core import InferenceConfig, run_inference
-from mimicneoai.immunogenicity_prediction.runtime.defaults import run_default_inference
 
 
 def resolve_immunogenicity_num_processes(configure: Mapping[str, Any]) -> int:
@@ -32,6 +31,26 @@ def resolve_immunogenicity_num_processes(configure: Mapping[str, Any]) -> int:
     return 1
 
 
+def resolve_immunogenicity_python_bin(configure: Mapping[str, Any]) -> str:
+    """Resolve the Python interpreter used for runtime immunogenicity scoring.
+
+    Immunogenicity inference depends on PyTorch. Production images may keep CPU
+    and GPU PyTorch builds in dedicated virtual environments, so pipeline entry
+    points should not assume that the main ``mimicneoai`` interpreter has torch.
+    """
+
+    others = configure.get("others", {})
+    if not isinstance(others, Mapping):
+        raise TypeError("configure.others must be a mapping")
+    configured = str(others.get("immunogenicity_python_bin", "") or "").strip()
+    if configured:
+        return configured
+    env_value = os.environ.get("MIMICNEOAI_IMMUNOGENICITY_PYTHON_BIN", "").strip()
+    if env_value:
+        return env_value
+    return sys.executable
+
+
 
 def predict_immunogenicity_df(
     df: pd.DataFrame,
@@ -45,6 +64,8 @@ def predict_immunogenicity_df(
     device: str = "auto",
     num_processes: int = 1,
 ) -> pd.DataFrame:
+    from mimicneoai.immunogenicity_prediction.core import InferenceConfig, run_inference
+
     cfg = InferenceConfig(
         model_path=model_path,
         hla_fasta_path=hla_fasta_path,
@@ -109,6 +130,9 @@ def predict_default_immunogenicity_df(
     The cryptic class is evaluated as the packaged ensemble mean. The default
     HLA source matches the recovered runtime checkpoint metadata.
     """
+    from mimicneoai.immunogenicity_prediction.core import InferenceConfig
+    from mimicneoai.immunogenicity_prediction.runtime.defaults import run_default_inference
+
     cfg = InferenceConfig(
         model_path="",
         hla_fasta_path=hla_fasta_path,

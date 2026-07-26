@@ -6,6 +6,7 @@ from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
 from mimicneoai.functions.binding_prediction import configured_predictor_cli_args
+from mimicneoai.functions.immunogenicity_runner import resolve_immunogenicity_python_bin
 from mimicneoai.functions.utils import format_java_heap
 import pandas as pd
 from mimicneoai.microbial_pipeline.scripts.get_data_for_blastx import get_data
@@ -51,7 +52,7 @@ def MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_di
         raise ValueError("immunogenicity_step_name must be a single directory name")
     immunogenicity_outdir = output_path + f"{sample}/{immunogenicity_step}/"
     cmd = [
-        sys.executable,
+        resolve_immunogenicity_python_bin(configure),
         "-m",
         "mimicneoai.functions.immunogenicity_workflow",
         "-s",

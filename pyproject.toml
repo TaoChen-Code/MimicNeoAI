@@ -48,6 +48,10 @@ mimicneoai = "mimicneoai.__main__:main"
 mimicneoai-train-immunogenicity = "mimicneoai.immunogenicity_prediction.train_immunogenicity:main"
 
 [project.optional-dependencies]
+immunogenicity = [
+  "scikit-learn>=1.3",
+  "torch>=2.0"
+]
 train = [
   "scikit-learn>=1.3",
   "torch>=2.0"

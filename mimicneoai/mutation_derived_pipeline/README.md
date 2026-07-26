@@ -116,3 +116,7 @@ Notable subfolders:
   peptide-HLA rows after binding. Model inference is de-duplicated by
   peptide-HLA key, then merged back to MT/WT records. Formal ranking should use
   MT rows; WT scores are retained as a sidecar/control.
+- Immunogenicity inference requires a Python environment with PyTorch and
+  scikit-learn. Use `others.immunogenicity_python_bin` or the
+  `MIMICNEOAI_IMMUNOGENICITY_PYTHON_BIN` environment variable to select a CPU
+  or GPU runtime explicitly; otherwise the current pipeline Python is used.

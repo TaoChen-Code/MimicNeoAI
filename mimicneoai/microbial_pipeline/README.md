@@ -96,3 +96,7 @@ Pipeline outputs are written under:
 - Set `others.run_immunogenicity_prediction: true` to score peptide-HLA rows
   after binding. Oversized samples that are skipped by the binding scale gate
   are also skipped for immunogenicity scoring and are not labeled negative.
+- Immunogenicity inference requires a Python environment with PyTorch and
+  scikit-learn. Use `others.immunogenicity_python_bin` or the
+  `MIMICNEOAI_IMMUNOGENICITY_PYTHON_BIN` environment variable to select a CPU
+  or GPU runtime explicitly; otherwise the current pipeline Python is used.

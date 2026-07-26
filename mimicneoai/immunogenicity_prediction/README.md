@@ -108,6 +108,12 @@ When called from a source pipeline, resolve `num_processes` with
 `resolve_immunogenicity_num_processes(configure)`. It inherits the pipeline
 YAML's `args.thread` or `args.threads`.
 
+Pipeline entry points run immunogenicity scoring through a separate Python
+interpreter when `others.immunogenicity_python_bin` is set, or when
+`MIMICNEOAI_IMMUNOGENICITY_PYTHON_BIN` is exported. Use this for dedicated CPU
+and GPU PyTorch environments. If neither is set, the current pipeline Python is
+used.
+
 To verify a recovered runtime payload against a locked Fig. 2 prediction file
 without copying manuscript data into this repository:
 

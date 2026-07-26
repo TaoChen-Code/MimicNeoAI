@@ -58,6 +58,7 @@ others:
   binding_prediction_workers: 8
   run_immunogenicity_prediction: false
   immunogenicity_step_name: "08.immunogenicity_prediction_mimicneoai"
+  immunogenicity_python_bin: ""  # Optional: Python with torch/sklearn; falls back to current python or MIMICNEOAI_IMMUNOGENICITY_PYTHON_BIN.
   immunogenicity_device: "auto"
   immunogenicity_batch_size: 512
   immunogenicity_workers: 8

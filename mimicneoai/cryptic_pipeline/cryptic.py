@@ -34,6 +34,7 @@ from multiprocessing import Manager
 import multiprocessing.pool
 from importlib.resources import files
 from mimicneoai.functions.binding_prediction import configured_predictor_cli_args
+from mimicneoai.functions.immunogenicity_runner import resolve_immunogenicity_python_bin
 from mimicneoai.functions.pipline_tools import raise_for_failed_samples, tools
 
 
@@ -450,7 +451,7 @@ def _run_one_sample(
                 raise ValueError("immunogenicity_step_name must be a single directory name")
             immunogenicity_outdir = os.path.join(OPT, immunogenicity_step)
             cmd = [
-                sys.executable,
+                resolve_immunogenicity_python_bin(configure),
                 "-m",
                 "mimicneoai.functions.immunogenicity_workflow",
                 "-s",

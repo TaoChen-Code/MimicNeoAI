@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 from mimicneoai.functions.binding_prediction import configured_predictor_cli_args
 from mimicneoai.functions.fastp import fastp
 from mimicneoai.functions.hlatyping import hlahd
+from mimicneoai.functions.immunogenicity_runner import resolve_immunogenicity_python_bin
 from mimicneoai.functions.pipline_tools import raise_for_failed_samples, tools
 from mimicneoai.mutation_derived_pipeline.scripts.annotation import annotation_vcf
 from mimicneoai.mutation_derived_pipeline.scripts.hla_binding_pred import Pvacseq
@@ -122,7 +123,7 @@ def _run_mutation_immunogenicity(
         raise ValueError("immunogenicity_step_name must be a single directory name")
     immunogenicity_outdir = f"{output_dir}/{tumor_sample}/{immunogenicity_step}"
     cmd = [
-        sys.executable,
+        resolve_immunogenicity_python_bin(configure),
         "-m",
         "mimicneoai.functions.immunogenicity_workflow",
         "-s",
@@ -207,7 +208,11 @@ def _start_one_sample(
             backend = str(configure.get("others", {}).get("binding_prediction_backend", "mimicneoai")).strip().lower()
             binding_outdir = ""
             if backend == "pvactools":
-                binding_outdir = f"{output_dir}/{tumor_sample}/{configure['step_name']['pvacseq']}"
+                pvacseq_step = configure.get("step_name", {}).get(
+                    "pvacseq",
+                    STEP_NAME["pvacseq"],
+                )
+                binding_outdir = f"{output_dir}/{tumor_sample}/{pvacseq_step}"
                 binding_pred_runner = Pvacseq(tool)
                 binding_pred_runner.run_pvacseq_parallel(
                     sample, tumor_sample, output_vep, output_hla, configure, paths
