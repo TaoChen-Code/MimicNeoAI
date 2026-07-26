@@ -88,11 +88,14 @@ def HostSequencesRemoving(sample, configure, paths, tool):
     Remove host sequences by aligning reads to hg38 then T2T, and collecting unmapped reads.
     Optionally run an extra mm10 depletion stage after T2T.
 
-    Pipeline (paired-end, strict):
-      FASTQ -> bwa mem hg38 -> name-sorted BAM -> extract (-f 12) -> FASTQ (R1/R2 + single)
-            -> bwa mem T2T  -> name-sorted BAM -> extract (-f 12) -> final unmapped BAM
+    Pipeline (paired-end):
+      FASTQ -> bwa mem hg38 -> name-sorted BAM -> extract read-unmapped (-f 4)
+            -> FASTQ (paired R1/R2 forwarded; singleton/anomalous saved for audit)
+            -> bwa mem T2T  -> name-sorted BAM -> extract read-unmapped (-f 4)
+            -> final unmapped BAM
       If configured:
-            -> bwa mem mm10 -> name-sorted BAM -> extract (-f 12) -> final unmapped BAM
+            -> bwa mem mm10 -> name-sorted BAM -> extract read-unmapped (-f 4)
+            -> final unmapped BAM
       Always: samtools flagstat on final unmapped BAM.
     """
     sample = str(sample)
@@ -236,8 +239,8 @@ def HostSequencesRemoving(sample, configure, paths, tool):
         # 4.6 BAM -> FASTQ(s) for T2T
         if pair:
             # -1/-2: proper pairs
-            # -0: anomalous/other reads (retained)
-            # -s: singleton reads (NEW: retained, previously /dev/null)
+            # -0: anomalous/other reads (saved for audit; not forwarded to T2T)
+            # -s: singleton reads (saved for audit; not forwarded to T2T)
             cmd_bam2fq = (
                 f"samtools fastq -@ {thread} {hg38_unmap_bam} "
                 f"-1 {hg38_unmap_r1} "
