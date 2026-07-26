@@ -150,7 +150,7 @@ def MicrobialPairedProteinCoreQC(tumor_sample, normal_sample, configure, paths, 
     return {"outdir": outdir, "core_fasta": core_fasta, "scale_gate_skipped": False, "manifest": manifest_path}
 
 
-def MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_dir=None):
+def MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_dir=None, run_sample_id=None):
     """Run microbial immunogenicity scoring from an existing binding directory."""
     output_path = configure['path']['output_dir'] + "/"
     others = configure.get("others", {})
@@ -190,7 +190,7 @@ def MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_di
         cmd.extend(["--model-root", str(others.get("immunogenicity_model_root"))])
     tool.exec_cmd(
         " ".join(shlex.quote(item) for item in cmd),
-        sample,
+        run_sample_id or sample,
         pipline="microbial",
         display_name="MimicNeoAI microbial immunogenicity prediction",
     )
@@ -921,7 +921,15 @@ def MicrobialPeptidesIdentification(sample, configure, paths, tool):
 
 
 
-def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool, peptide_fa=None, input_mode="parent-fasta"):
+def MicrobialPeptidesBindingPrediction(
+    sample,
+    configure,
+    paths,
+    tool,
+    peptide_fa=None,
+    input_mode="parent-fasta",
+    run_sample_id=None,
+):
     """Run peptide-MHC binding prediction on BLASTX-derived peptides.
 
     Args:
@@ -997,7 +1005,7 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool, peptide_f
             cmd.extend(configured_predictor_cli_args(paths))
             tool.exec_cmd(
                 " ".join(shlex.quote(item) for item in cmd),
-                sample,
+                run_sample_id or sample,
                 pipline="microbial",
                 display_name="MimicNeoAI microbial binding prediction",
             )
@@ -1005,6 +1013,12 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool, peptide_f
             raise ValueError(f"Unsupported binding_prediction_backend: {backend}")
 
         if bool(configure.get("others", {}).get("run_immunogenicity_prediction", False)):
-            MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_dir)
+            MicrobialImmunogenicityPrediction(
+                sample,
+                configure,
+                tool,
+                binding_output_dir,
+                run_sample_id=run_sample_id,
+            )
     elif explicit_peptide_fa:
         raise FileNotFoundError(f"Explicit microbial binding FASTA not found: {peptide_fa}")

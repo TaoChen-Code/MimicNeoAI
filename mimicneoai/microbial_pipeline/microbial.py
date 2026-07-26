@@ -280,13 +280,14 @@ def _start_one_pair(
                 tool,
                 peptide_fa=paired_core["core_fasta"],
                 input_mode="peptide-core",
+                run_sample_id=unit.label,
             )
         except Exception:
             tool.write_log(f"Paired binding prediction error:\n{traceback.format_exc()}", "error")
             raise
     elif bool(o.get("run_immunogenicity_prediction", False)):
         try:
-            MicrobialImmunogenicityPrediction(tumor_sample, configure, tool)
+            MicrobialImmunogenicityPrediction(tumor_sample, configure, tool, run_sample_id=unit.label)
         except Exception:
             tool.write_log(f"Immunogenicity prediction error:\n{traceback.format_exc()}", "error")
             raise
