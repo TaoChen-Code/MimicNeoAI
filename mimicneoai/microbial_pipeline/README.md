@@ -79,6 +79,13 @@ Core QC requires `database.microbial.BLACKLISTS.CONTAMINANT_TAXIDS`; use
 `others.allow_missing_blacklist: true` only for exploratory runs, which are
 marked as `blacklist_evaluation=not_evaluated` in the manifest.
 
+Large paired samples are protected by an early scale gate before full peptide
+Core materialization. `others.paired_core_max_estimated_peptide_windows`
+defaults to `20000000`; samples above this estimated tumor+normal parent window
+count write `stagewise_qc.tsv` and `run_manifest.json` with
+`scale_gate_skipped=true` and do not enter binding. Set the value to `0` only
+when intentionally materializing an oversized Core.
+
 ## Run
 
 ```bash

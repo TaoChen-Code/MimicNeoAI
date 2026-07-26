@@ -268,6 +268,11 @@ def _start_one_pair(
         try:
             if paired_core is None:
                 raise RuntimeError("Paired microbial Core QC did not return a Core FASTA for binding.")
+            if paired_core.get("scale_gate_skipped"):
+                raise RuntimeError(
+                    "Paired microbial Core QC was skipped by the scale gate; "
+                    "increase paired_core_max_estimated_peptide_windows or set it to 0 before binding."
+                )
             MicrobialPeptidesBindingPrediction(
                 tumor_sample,
                 configure,

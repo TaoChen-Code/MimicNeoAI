@@ -1,5 +1,6 @@
 # coding=utf-8
 import os
+import json
 import shlex
 import sys
 from datetime import datetime
@@ -107,6 +108,8 @@ def MicrobialPairedProteinCoreQC(tumor_sample, normal_sample, configure, paths, 
         str(float(others.get("blastx_max_evalue", 1e-5))),
         "--min-qcovs",
         str(float(others.get("blastx_min_query_coverage", 90))),
+        "--max-estimated-peptide-windows",
+        str(int(others.get("paired_core_max_estimated_peptide_windows", 20_000_000))),
     ]
     blacklist = _resolve_contaminant_blacklist(paths)
     allow_missing_blacklist = bool(others.get("allow_missing_blacklist", False))
@@ -132,8 +135,19 @@ def MicrobialPairedProteinCoreQC(tumor_sample, normal_sample, configure, paths, 
 
     core_fasta = f"{outdir}microbial_peptide_core.fasta"
     if not os.path.exists(core_fasta):
+        manifest = {}
+        if os.path.exists(manifest_path):
+            with open(manifest_path, "r") as handle:
+                manifest = json.load(handle)
+        if manifest.get("scale_gate_skipped") or manifest.get("run_status") == "scale_gate_skipped":
+            return {
+                "outdir": outdir,
+                "core_fasta": "",
+                "scale_gate_skipped": True,
+                "manifest": manifest_path,
+            }
         raise FileNotFoundError(f"Paired microbial Core FASTA was not created: {core_fasta}")
-    return {"outdir": outdir, "core_fasta": core_fasta}
+    return {"outdir": outdir, "core_fasta": core_fasta, "scale_gate_skipped": False, "manifest": manifest_path}
 
 
 def MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_dir=None):

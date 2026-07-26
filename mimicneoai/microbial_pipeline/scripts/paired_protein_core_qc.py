@@ -275,6 +275,26 @@ def iter_peptides(sequence: str, lengths: Iterable[int]) -> Iterable[tuple[str, 
             yield sequence[start : start + length], start + 1
 
 
+def count_peptide_windows(sequence: str, lengths: Iterable[int]) -> int:
+    return sum(max(0, len(sequence) - length + 1) for length in lengths)
+
+
+def estimate_parent_peptide_windows(
+    parents: pd.DataFrame,
+    mhc_i_lengths: list[int],
+    mhc_ii_lengths: list[int],
+) -> int:
+    if parents.empty:
+        return 0
+    lengths = sorted(set(mhc_i_lengths + mhc_ii_lengths))
+    return int(
+        sum(
+            count_peptide_windows(str(sequence), lengths)
+            for sequence in parents["canonical_parent_sequence"].fillna("")
+        )
+    )
+
+
 def build_peptide_maps(
     parents: pd.DataFrame,
     mhc_i_lengths: list[int],
@@ -478,6 +498,7 @@ def build_pair_core(
     min_qcovs: float = 90.0,
     allow_missing_blacklist: bool = False,
     blacklist_sha256: str = "",
+    max_estimated_peptide_windows: int = 20_000_000,
 ) -> dict:
     mhc_i_lengths = mhc_i_lengths or [8, 9, 10, 11]
     mhc_ii_lengths = mhc_ii_lengths or [13, 14, 15, 16, 17]
@@ -524,6 +545,75 @@ def build_pair_core(
         [tumor_excluded, normal_excluded, tumor_parent_exact_excluded],
         ignore_index=True,
     )
+
+    estimated_tumor_parent_peptide_windows = estimate_parent_peptide_windows(
+        tumor_core,
+        mhc_i_lengths,
+        mhc_ii_lengths,
+    )
+    estimated_normal_parent_peptide_windows = estimate_parent_peptide_windows(
+        normal_pass,
+        mhc_i_lengths,
+        mhc_ii_lengths,
+    )
+    estimated_total_parent_peptide_windows = (
+        estimated_tumor_parent_peptide_windows + estimated_normal_parent_peptide_windows
+    )
+    preflight_stagewise_rows = [
+        ("tumor_parent_input_rows", len(tumor_pass) + len(tumor_excluded)),
+        ("normal_parent_input_rows", len(normal_pass) + len(normal_excluded)),
+        ("tumor_parent_qc_pass", len(tumor_pass)),
+        ("normal_parent_qc_pass", len(normal_pass)),
+        ("tumor_parent_qc_excluded", len(tumor_excluded)),
+        ("normal_parent_qc_excluded", len(normal_excluded)),
+        ("tumor_parent_exact_normal_excluded", len(tumor_parent_exact_excluded)),
+        ("tumor_parent_core", len(tumor_core)),
+        ("estimated_tumor_parent_peptide_windows", estimated_tumor_parent_peptide_windows),
+        ("estimated_normal_parent_peptide_windows", estimated_normal_parent_peptide_windows),
+        ("estimated_total_parent_peptide_windows", estimated_total_parent_peptide_windows),
+        ("paired_core_max_estimated_peptide_windows", int(max_estimated_peptide_windows)),
+    ]
+    if max_estimated_peptide_windows and estimated_total_parent_peptide_windows > max_estimated_peptide_windows:
+        skip_reason = (
+            "estimated_total_parent_peptide_windows "
+            f"({estimated_total_parent_peptide_windows}) exceeds "
+            f"paired_core_max_estimated_peptide_windows ({max_estimated_peptide_windows})"
+        )
+        stagewise_rows = preflight_stagewise_rows + [("scale_gate_skipped", 1)]
+        write_stagewise_qc(outdir / "stagewise_qc.tsv", stagewise_rows)
+        manifest = {
+            "policy_version": POLICY_VERSION,
+            "run_status": "scale_gate_skipped",
+            "scale_gate_skipped": True,
+            "skip_reason": skip_reason,
+            "pair_id": pair_id,
+            "tumor_sample": tumor_sample,
+            "normal_sample": normal_sample,
+            "tumor_protein_hits": str(tumor_protein_hits),
+            "normal_protein_hits": str(normal_protein_hits),
+            "tumor_protein_hits_sha256": sha256_file(tumor_protein_hits),
+            "normal_protein_hits_sha256": sha256_file(normal_protein_hits),
+            "blacklist": str(blacklist) if blacklist else "",
+            "blacklist_sha256": actual_blacklist_sha256,
+            "blacklist_sha256_expected": blacklist_sha256,
+            "allow_missing_blacklist": allow_missing_blacklist,
+            "blacklist_evaluation": "enabled" if blacklist else "not_evaluated",
+            "blacklist_taxids": len(verdict_by_taxid),
+            "contaminant_taxids": len(contaminant_taxids),
+            "mhc_i_lengths": mhc_i_lengths,
+            "mhc_ii_lengths": mhc_ii_lengths,
+            "min_pident": min_pident,
+            "max_evalue": max_evalue,
+            "min_qcovs": min_qcovs,
+            "paired_core_max_estimated_peptide_windows": int(max_estimated_peptide_windows),
+            "outputs": {
+                "stagewise_qc": str(outdir / "stagewise_qc.tsv"),
+            },
+            "stagewise_counts": {step: int(count) for step, count in stagewise_rows},
+        }
+        with (outdir / "run_manifest.json").open("w") as handle:
+            json.dump(manifest, handle, indent=2, ensure_ascii=False)
+        return manifest
 
     tumor_peptide_map, tumor_parent_positions = build_peptide_maps(
         tumor_core,
@@ -579,15 +669,8 @@ def build_pair_core(
     write_fasta(core_df, MHC_CLASS_I, outdir / "microbial_peptide_core_hla_i.fasta")
     write_fasta(core_df, MHC_CLASS_II, outdir / "microbial_peptide_core_hla_ii.fasta")
 
-    stagewise_rows = [
-        ("tumor_parent_input_rows", len(tumor_pass) + len(tumor_excluded)),
-        ("normal_parent_input_rows", len(normal_pass) + len(normal_excluded)),
-        ("tumor_parent_qc_pass", len(tumor_pass)),
-        ("normal_parent_qc_pass", len(normal_pass)),
-        ("tumor_parent_qc_excluded", len(tumor_excluded)),
-        ("normal_parent_qc_excluded", len(normal_excluded)),
-        ("tumor_parent_exact_normal_excluded", len(tumor_parent_exact_excluded)),
-        ("tumor_parent_core", len(tumor_core)),
+    stagewise_rows = preflight_stagewise_rows + [
+        ("scale_gate_skipped", 0),
         ("tumor_unique_peptides_before_normal_subtraction", len(tumor_peptide_map)),
         ("normal_unique_peptides_for_subtraction", len(normal_peptide_map)),
         ("tumor_unique_peptides_excluded_exact_normal", len(matched_normal_excluded_entries)),
@@ -600,6 +683,9 @@ def build_pair_core(
 
     manifest = {
         "policy_version": POLICY_VERSION,
+        "run_status": "completed",
+        "scale_gate_skipped": False,
+        "skip_reason": "",
         "pair_id": pair_id,
         "tumor_sample": tumor_sample,
         "normal_sample": normal_sample,
@@ -619,6 +705,7 @@ def build_pair_core(
         "min_pident": min_pident,
         "max_evalue": max_evalue,
         "min_qcovs": min_qcovs,
+        "paired_core_max_estimated_peptide_windows": int(max_estimated_peptide_windows),
         "outputs": {
             "microbial_parent_core": str(outdir / "microbial_parent_core.tsv"),
             "microbial_parent_excluded": str(outdir / "microbial_parent_excluded.tsv"),
@@ -658,6 +745,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-pident", type=float, default=100.0)
     parser.add_argument("--max-evalue", type=float, default=1e-5)
     parser.add_argument("--min-qcovs", type=float, default=90.0)
+    parser.add_argument(
+        "--max-estimated-peptide-windows",
+        type=int,
+        default=20_000_000,
+        help="Skip Core materialization when estimated tumor+normal parent peptide windows exceed this value. Use 0 to disable.",
+    )
     return parser
 
 
@@ -678,6 +771,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         min_qcovs=args.min_qcovs,
         allow_missing_blacklist=args.allow_missing_blacklist,
         blacklist_sha256=args.blacklist_sha256,
+        max_estimated_peptide_windows=args.max_estimated_peptide_windows,
     )
     print(json.dumps(manifest["stagewise_counts"], indent=2, ensure_ascii=False))
     return 0
