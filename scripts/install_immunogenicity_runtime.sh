@@ -31,10 +31,10 @@ mkdir -p "${prefix}"
 "${venv_dir}/bin/python" -m pip install \
   "scikit-learn>=1.3" \
   "pandas>=2.3.3" \
-  "numpy>=2.0.2" \
+  "numpy<2" \
   "pyyaml>=6.0.3" \
   "tqdm>=4.67.1"
-"${venv_dir}/bin/python" -m pip install -e "${repo_dir}"
+"${venv_dir}/bin/python" -m pip install --no-deps -e "${repo_dir}"
 
 "${venv_dir}/bin/python" - <<'PY'
 import importlib.util
