@@ -17,6 +17,7 @@ from mimicneoai.microbial_pipeline.scripts.microbial_peptides import (
     MicrobialTaxasQuantification,
     MicrobialPeptidesIdentification,
     MicrobialPeptidesBindingPrediction,
+    MicrobialImmunogenicityPrediction,
 )
 # -------- Non-daemon Pool (only needed if workers spawn child processes) --------
 from mimicneoai.functions.nodemon_pool import NoDaemonPool
@@ -100,6 +101,12 @@ def _start_one_sample(
             MicrobialPeptidesBindingPrediction(sample, configure, paths, tool)
         except Exception:
             tool.write_log(f"Binding prediction error:\n{traceback.format_exc()}", "error")
+            raise
+    elif bool(o.get("run_immunogenicity_prediction", False)):
+        try:
+            MicrobialImmunogenicityPrediction(sample, configure, tool)
+        except Exception:
+            tool.write_log(f"Immunogenicity prediction error:\n{traceback.format_exc()}", "error")
             raise
 
 

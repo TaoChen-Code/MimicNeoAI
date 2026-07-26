@@ -24,6 +24,64 @@ DEFAULT_FAST_BINDING_ALGORITHMS = (
 )
 
 
+def _microbial_binding_dir(sample, configure):
+    output_path = configure['path']['output_dir'] + "/"
+    others = configure.get("others", {})
+    binding_step = str(others.get(
+        "binding_prediction_step_name",
+        "08.MicrobialPeptidesBindingPrediction_mimicneoai",
+    )).strip()
+    if not binding_step or Path(binding_step).name != binding_step:
+        raise ValueError("binding_prediction_step_name must be a single directory name")
+    return output_path + f"{sample}/{binding_step}/"
+
+
+def MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_dir=None):
+    """Run microbial immunogenicity scoring from an existing binding directory."""
+    output_path = configure['path']['output_dir'] + "/"
+    others = configure.get("others", {})
+    binding_output_dir = binding_output_dir or _microbial_binding_dir(sample, configure)
+    immunogenicity_step = str(
+        others.get(
+            "immunogenicity_step_name",
+            "09.ImmunogenicityPrediction_mimicneoai",
+        )
+    ).strip()
+    if not immunogenicity_step or Path(immunogenicity_step).name != immunogenicity_step:
+        raise ValueError("immunogenicity_step_name must be a single directory name")
+    immunogenicity_outdir = output_path + f"{sample}/{immunogenicity_step}/"
+    cmd = [
+        sys.executable,
+        "-m",
+        "mimicneoai.functions.immunogenicity_workflow",
+        "-s",
+        sample,
+        "--antigen-class",
+        "microbial",
+        "--binding-dir",
+        binding_output_dir,
+        "-o",
+        immunogenicity_outdir,
+        "--device",
+        str(others.get("immunogenicity_device", "auto")),
+        "--batch-size",
+        str(int(others.get("immunogenicity_batch_size", 512))),
+        "--workers",
+        str(int(others.get(
+            "immunogenicity_workers",
+            configure.get("args", {}).get("threads", configure.get("args", {}).get("thread", 1)),
+        ))),
+    ]
+    if others.get("immunogenicity_model_root"):
+        cmd.extend(["--model-root", str(others.get("immunogenicity_model_root"))])
+    tool.exec_cmd(
+        " ".join(shlex.quote(item) for item in cmd),
+        sample,
+        pipline="microbial",
+        display_name="MimicNeoAI microbial immunogenicity prediction",
+    )
+
+
 def HostSequencesRemoving(sample, configure, paths, tool):
     """
     Remove host sequences by aligning reads to hg38 then T2T, and collecting unmapped reads.
@@ -761,9 +819,11 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
     peptide_fa = f"{output_blastx}/{sample}.peptide.fasta"
     if os.path.exists(peptide_fa):
         backend = str(configure.get("others", {}).get("binding_prediction_backend", "mimicneoai")).strip().lower()
+        binding_output_dir = ""
         if backend == "pvactools":
             tool.judge_then_exec(sample, f"mkdir -p {output_pvacbind}", output_pvacbind, display_name="Prepare pVACtools microbial binding directory")
             pvacbind(sample, configure, paths, tool)
+            binding_output_dir = output_pvacbind
         elif backend == "mimicneoai":
             others = configure.get("others", {})
             binding_step = str(others.get(
@@ -773,6 +833,7 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
             if not binding_step or Path(binding_step).name != binding_step:
                 raise ValueError("binding_prediction_step_name must be a single directory name")
             output_mimicneoai = output_path + f"{sample}/{binding_step}/"
+            binding_output_dir = output_mimicneoai
             output_hla = output_path + f"{sample}/{step_name_hla}/"
             hla_file = f"{output_hla}{sample}/result/{sample}_final.result.txt"
             cmd = [
@@ -814,3 +875,6 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
             )
         else:
             raise ValueError(f"Unsupported binding_prediction_backend: {backend}")
+
+        if bool(configure.get("others", {}).get("run_immunogenicity_prediction", False)):
+            MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_dir)

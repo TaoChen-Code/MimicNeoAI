@@ -50,6 +50,7 @@ STEP_NAME = {
     "hla": "06.hlatyping",
     "pvacseq": "07.binding_prediction",
     "mimicneoai_binding": "07.binding_prediction_mimicneoai",
+    "immunogenicity": "08.immunogenicity_prediction_mimicneoai",
 }
 
 
@@ -101,6 +102,57 @@ def _variants_calling_and_annotation(
             )
 
 
+def _run_mutation_immunogenicity(
+    sample: str,
+    configure: Dict[str, Any],
+    tool: tools,
+    binding_outdir: str,
+) -> None:
+    """Run source-specific immunogenicity scoring from a completed binding directory."""
+    others = configure.get("others", {})
+    output_dir = configure["path"]["output_dir"]
+    tumor_sample = sample.split(",")[0]
+    immunogenicity_step = str(
+        others.get(
+            "immunogenicity_step_name",
+            configure.get("step_name", {}).get("immunogenicity", STEP_NAME["immunogenicity"]),
+        )
+    ).strip()
+    if not immunogenicity_step or Path(immunogenicity_step).name != immunogenicity_step:
+        raise ValueError("immunogenicity_step_name must be a single directory name")
+    immunogenicity_outdir = f"{output_dir}/{tumor_sample}/{immunogenicity_step}"
+    cmd = [
+        sys.executable,
+        "-m",
+        "mimicneoai.functions.immunogenicity_workflow",
+        "-s",
+        tumor_sample,
+        "--antigen-class",
+        "mutation_derived",
+        "--binding-dir",
+        binding_outdir,
+        "-o",
+        immunogenicity_outdir,
+        "--device",
+        str(others.get("immunogenicity_device", "auto")),
+        "--batch-size",
+        str(int(others.get("immunogenicity_batch_size", 512))),
+        "--workers",
+        str(int(others.get(
+            "immunogenicity_workers",
+            configure.get("args", {}).get("threads", configure.get("args", {}).get("thread", 1)),
+        ))),
+    ]
+    if others.get("immunogenicity_model_root"):
+        cmd.extend(["--model-root", str(others.get("immunogenicity_model_root"))])
+    tool.exec_cmd(
+        " ".join(shlex.quote(item) for item in cmd),
+        sample,
+        pipline="mutation",
+        display_name="MimicNeoAI mutation immunogenicity prediction",
+    )
+
+
 def _start_one_sample(
     sample: str,
     configure: Dict[str, Any],
@@ -143,6 +195,7 @@ def _start_one_sample(
             hlahd(sample, tumor_sample, configure, paths, tool)
 
         # 4) Peptide identification & binding prediction
+        binding_outdir = ""
         if do_binding_pred:
             output_dir = configure["path"]["output_dir"]
             step_name_vep = configure["step_name"]["annotation"]
@@ -152,7 +205,9 @@ def _start_one_sample(
             output_vep = f"{output_dir}/{tumor_sample}/{step_name_vep}/"
             output_hla = f"{output_dir}/{tumor_sample}/{step_name_hla}/"
             backend = str(configure.get("others", {}).get("binding_prediction_backend", "mimicneoai")).strip().lower()
+            binding_outdir = ""
             if backend == "pvactools":
+                binding_outdir = f"{output_dir}/{tumor_sample}/{configure['step_name']['pvacseq']}"
                 binding_pred_runner = Pvacseq(tool)
                 binding_pred_runner.run_pvacseq_parallel(
                     sample, tumor_sample, output_vep, output_hla, configure, paths
@@ -182,6 +237,7 @@ def _start_one_sample(
                         "binding_prediction_step_name must be a single directory name"
                     )
                 outdir = f"{output_dir}/{tumor_sample}/{binding_step}"
+                binding_outdir = outdir
                 cmd = [
                     sys.executable,
                     str(MIMICNEOAI_BINDING_SCRIPT),
@@ -226,6 +282,22 @@ def _start_one_sample(
                 )
             else:
                 raise ValueError(f"Unsupported binding_prediction_backend: {backend}")
+
+            if bool(configure.get("others", {}).get("run_immunogenicity_prediction", False)):
+                _run_mutation_immunogenicity(sample, configure, tool, binding_outdir)
+        elif bool(configure.get("others", {}).get("run_immunogenicity_prediction", False)):
+            output_dir = configure["path"]["output_dir"]
+            tumor_sample = sample.split(",")[0]
+            binding_step = str(
+                configure.get("others", {}).get(
+                    "binding_prediction_step_name",
+                    configure.get("step_name", {}).get("mimicneoai_binding", STEP_NAME["mimicneoai_binding"]),
+                )
+            ).strip()
+            if not binding_step or Path(binding_step).name != binding_step:
+                raise ValueError("binding_prediction_step_name must be a single directory name")
+            binding_outdir = f"{output_dir}/{tumor_sample}/{binding_step}"
+            _run_mutation_immunogenicity(sample, configure, tool, binding_outdir)
 
     except Exception:
         tool.write_log(f"Worker crashed:\n{traceback.format_exc()}", "error")

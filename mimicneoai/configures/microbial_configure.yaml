@@ -57,6 +57,11 @@ others:
   binding_prediction_max_task_rows: 5000000
   # Set true only when an oversized sample should be predicted intentionally.
   binding_prediction_force_large_samples: false
+  run_immunogenicity_prediction: false
+  immunogenicity_step_name: "09.ImmunogenicityPrediction_mimicneoai"
+  immunogenicity_device: "auto"
+  immunogenicity_batch_size: 512
+  immunogenicity_workers: 8
 # Sample List (Note: Numeric sample IDs require quotes)
 samples:
 - Sample_1

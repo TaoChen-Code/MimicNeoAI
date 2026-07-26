@@ -77,7 +77,8 @@ Pipeline outputs are written under:
 ├── 05.MicrobialTaxaQuantificationStep2
 ├── 06.MicrobialPeptidesIdentification
 ├── 07.HlaTyping
-└── 08.MicrobialPeptidesBindingPrediction_mimicneoai
+├── 08.MicrobialPeptidesBindingPrediction_mimicneoai
+└── 09.ImmunogenicityPrediction_mimicneoai
 ```
 
 ## Notes
@@ -92,3 +93,6 @@ Pipeline outputs are written under:
 - Set `others.binding_prediction_preset: full` for one-stage multialgorithm
   prediction, or set `others.binding_prediction_backend: pvactools` to run the
   legacy pVACbind workflow.
+- Set `others.run_immunogenicity_prediction: true` to score peptide-HLA rows
+  after binding. Oversized samples that are skipped by the binding scale gate
+  are also skipped for immunogenicity scoring and are not labeled negative.

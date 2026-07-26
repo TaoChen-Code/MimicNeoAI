@@ -51,6 +51,7 @@ STEP_NAME = {
     "orf_filter": "08-orf_filter",
     "pvacbind": "09-hla_binding_pred",
     "mimicneoai_binding": "09-hla_binding_pred_mimicneoai",
+    "immunogenicity": "10-immunogenicity_prediction_mimicneoai",
 }
 
 
@@ -376,6 +377,7 @@ def _run_one_sample(
             binding_pep_fasta = ORF_FILTERED_AESEPs_PEP
 
         # ---------- 09 HLA binding prediction ----------
+        binding_output_dir = ""
         if do_pvacbind:
             backend = str(others.get("binding_prediction_backend", "pvactools")).strip().lower()
             e1_lengths = others.get("mhcI_lengths", "8,9,10")
@@ -399,6 +401,7 @@ def _run_one_sample(
                     "--e1-lengths", e1_lengths,
                     "--e2-lengths", e2_lengths,
                 ], display_name="pVACtools cryptic binding prediction")
+                binding_output_dir = DIR07
             elif backend == "mimicneoai":
                 algos = others.get(
                     "binding_prediction_algorithms",
@@ -413,6 +416,7 @@ def _run_one_sample(
                 if not binding_step or Path(binding_step).name != binding_step:
                     raise ValueError("binding_prediction_step_name must be a single directory name")
                 outdir_mimicneoai = os.path.join(OPT, binding_step)
+                binding_output_dir = outdir_mimicneoai
                 cmd = [
                     sys.executable, _script_path("07-hla_binding_pred_mimicneoai.py"),
                     "-s", tumor_sample,
@@ -434,6 +438,39 @@ def _run_one_sample(
                 _run_cmd(tool, sample, cmd, display_name="MimicNeoAI cryptic binding prediction")
             else:
                 raise ValueError(f"Unsupported binding_prediction_backend: {backend}")
+
+        if do_pvacbind and bool(others.get("run_immunogenicity_prediction", False)):
+            immunogenicity_step = str(
+                others.get(
+                    "immunogenicity_step_name",
+                    configure.get("step_name", {}).get("immunogenicity", STEP_NAME["immunogenicity"]),
+                )
+            ).strip()
+            if not immunogenicity_step or Path(immunogenicity_step).name != immunogenicity_step:
+                raise ValueError("immunogenicity_step_name must be a single directory name")
+            immunogenicity_outdir = os.path.join(OPT, immunogenicity_step)
+            cmd = [
+                sys.executable,
+                "-m",
+                "mimicneoai.functions.immunogenicity_workflow",
+                "-s",
+                tumor_sample,
+                "--antigen-class",
+                "cryptic",
+                "--binding-dir",
+                binding_output_dir,
+                "-o",
+                immunogenicity_outdir,
+                "--device",
+                str(others.get("immunogenicity_device", "auto")),
+                "--batch-size",
+                str(int(others.get("immunogenicity_batch_size", 512))),
+                "--workers",
+                str(int(others.get("immunogenicity_workers", configure.get("args", {}).get("threads", n_pvacbind)))),
+            ]
+            if others.get("immunogenicity_model_root"):
+                cmd.extend(["--model-root", str(others.get("immunogenicity_model_root"))])
+            _run_cmd(tool, sample, cmd, display_name="MimicNeoAI cryptic immunogenicity prediction")
 
         tool.write_log(f"[DONE] Completed cryptic pipeline: {OPT}", "info")
 

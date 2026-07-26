@@ -80,7 +80,8 @@ Pipeline outputs are written under:
 ├── 04.variants_calling
 ├── 05.annotation
 ├── 06.hlatyping
-└── 07.binding_prediction_mimicneoai
+├── 07.binding_prediction_mimicneoai
+└── 08.immunogenicity_prediction_mimicneoai
 ```
 
 Notable subfolders:
@@ -111,3 +112,7 @@ Notable subfolders:
   `path.common.TABIX_BIN` in `configures/paths.yaml`.
 - Set `others.binding_prediction_backend: pvactools` only when the legacy
   pVACseq binding workflow is required.
+- Set `others.run_immunogenicity_prediction: true` to score MT and matched WT
+  peptide-HLA rows after binding. Model inference is de-duplicated by
+  peptide-HLA key, then merged back to MT/WT records. Formal ranking should use
+  MT rows; WT scores are retained as a sidecar/control.

@@ -55,6 +55,11 @@ others:
   binding_prediction_step_name: "07.binding_prediction_mimicneoai"
   binding_prediction_algorithms: "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL"
   binding_prediction_workers: 8
+  run_immunogenicity_prediction: false
+  immunogenicity_step_name: "08.immunogenicity_prediction_mimicneoai"
+  immunogenicity_device: "auto"
+  immunogenicity_batch_size: 512
+  immunogenicity_workers: 8
 
 # Sample List (Example entries)
 samples:

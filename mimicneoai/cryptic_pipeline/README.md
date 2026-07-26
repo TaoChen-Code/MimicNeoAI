@@ -80,6 +80,7 @@ Pipeline outputs are written under:
 ├── 07-orf_genome_annotation
 ├── 08-orf_filter
 ├── 09-hla_binding_pred
+├── 10-immunogenicity_prediction_mimicneoai
 └── 023-shared
 ```
 
@@ -104,3 +105,6 @@ Notable subfolders:
   prediction or `fast` for EL-rank Stage 1 routing before formal local binding
   prediction. Omitting the preset preserves explicit length and algorithm
   settings in the YAML.
+- Set `others.run_immunogenicity_prediction: true` to score peptide-HLA rows
+  after binding. If binding is skipped by the scale gate, immunogenicity scoring
+  is skipped and recorded in the summary rather than being treated as negative.
