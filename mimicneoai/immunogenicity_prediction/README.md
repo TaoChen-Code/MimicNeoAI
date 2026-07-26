@@ -114,6 +114,17 @@ interpreter when `others.immunogenicity_python_bin` is set, or when
 and GPU PyTorch environments. If neither is set, the current pipeline Python is
 used.
 
+The helper script below creates a dedicated runtime environment without
+modifying the main pipeline Python:
+
+```bash
+# GPU runtime, CUDA 11.8 PyTorch wheel.
+scripts/install_immunogenicity_runtime.sh gpu-cu118 /workspace/pkgs/MimicNeoAI_immunogenicity_gpu
+
+# CPU fallback runtime.
+scripts/install_immunogenicity_runtime.sh cpu /workspace/pkgs/MimicNeoAI_immunogenicity_cpu
+```
+
 To verify a recovered runtime payload against a locked Fig. 2 prediction file
 without copying manuscript data into this repository:
 
