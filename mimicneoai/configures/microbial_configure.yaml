@@ -36,6 +36,8 @@ others:
   run_pathseq: True             # Run GATK PathSeq taxonomic profiling
   run_microbial_peptide_identification: True   # Run BLASTX/DIAMOND-based microbial peptide identification
   microbial_peptide_search_engine: "blastx"  # blastx | diamond
+  tumor_with_matched_normal: false  # false: single-sample discovery; true: samples use Tumor,Normal pairs
+  protein_hit_qc_policy_version: "microbial_protein_hit_qc_v1.0"
 
   # BLASTX filtering thresholds for microbial peptides
   blastx_min_percent_identity: 100   # Percent identity threshold

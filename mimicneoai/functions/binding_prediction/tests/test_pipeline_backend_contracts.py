@@ -52,6 +52,11 @@ class PipelineBackendContractTest(unittest.TestCase):
         )
         self.assertEqual(microbial["others"]["binding_prediction_max_task_rows"], 5_000_000)
         self.assertFalse(microbial["others"]["binding_prediction_force_large_samples"])
+        self.assertFalse(microbial["others"]["tumor_with_matched_normal"])
+        self.assertEqual(
+            microbial["others"]["protein_hit_qc_policy_version"],
+            "microbial_protein_hit_qc_v1.0",
+        )
 
         paths = yaml.safe_load((CONFIG_DIR / "paths.yaml").read_text())
         common_paths = paths["path"]["common"]

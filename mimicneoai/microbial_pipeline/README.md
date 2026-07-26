@@ -81,6 +81,18 @@ Pipeline outputs are written under:
 └── 09.ImmunogenicityPrediction_mimicneoai
 ```
 
+`06.MicrobialPeptidesIdentification` writes both legacy and normalized
+protein-hit products:
+
+- `<sample>.blastx.filtered` and `<sample>.peptide.fasta` are retained for
+  backward compatibility.
+- `<sample>.protein_hits.filtered.tsv` is the normalized BLASTX/DIAMOND
+  protein-hit table for newer downstream microbial Core construction.
+- `<sample>.protein_hits.excluded.tsv` records fail-closed exclusions such as
+  missing/failed coverage, non-100% identity, catalog mismatch, and
+  noncanonical parent sequences.
+- `<sample>.protein_hits.qc_summary.tsv` records stagewise protein-hit counts.
+
 ## Notes
 
 - The pipeline is resumable; existing non-empty outputs are skipped.

@@ -10,7 +10,10 @@ from mimicneoai.functions.immunogenicity_runner import resolve_immunogenicity_py
 from mimicneoai.functions.utils import format_java_heap
 import pandas as pd
 from mimicneoai.microbial_pipeline.scripts.get_data_for_blastx import get_data
-from mimicneoai.microbial_pipeline.scripts.get_data_for_binding_pred import get_data_for_binding_pred
+from mimicneoai.microbial_pipeline.scripts.get_data_for_binding_pred import (
+    PROTEIN_HIT_QC_POLICY_VERSION,
+    get_data_for_binding_pred,
+)
 from mimicneoai.microbial_pipeline.scripts.hla_binding_pred import pvacbind
 
 
@@ -780,8 +783,8 @@ def MicrobialPeptidesIdentification(sample, configure, paths, tool):
     # use BLASTX-reported qcovs as the coverage filter
     blastx_min_qcovs = float(configure['others']['blastx_min_query_coverage'])
 
-    # Convert BLASTX results into a pVACbind-ready FASTA file
-    tool.write_log("[INFO] Processing BLASTX results for pVACbind input", "info")
+    # Convert protein-search hits into filtered protein-hit tables and a legacy FASTA.
+    tool.write_log("[INFO] Running microbial protein-hit QC", "info")
     start = datetime.now()
 
     get_data_for_binding_pred(
@@ -793,6 +796,12 @@ def MicrobialPeptidesIdentification(sample, configure, paths, tool):
         catalog_df=catalog_df,
         max_evalue=blastx_max_evalue,
         min_qcovs=blastx_min_qcovs,   # ← 新参数名
+        policy_version=str(
+            configure.get("others", {}).get(
+                "protein_hit_qc_policy_version",
+                PROTEIN_HIT_QC_POLICY_VERSION,
+            )
+        ),
         sample=sample,
         tool=tool,
     )
