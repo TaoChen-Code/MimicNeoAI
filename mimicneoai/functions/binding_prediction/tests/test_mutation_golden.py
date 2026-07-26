@@ -560,6 +560,48 @@ class HlaAndAdapterContractTest(unittest.TestCase):
             mocked_run.call_args.args[0][-2:], ["pvactools", "--version"]
         )
 
+    def test_start_from_epitope_tasks_skips_source_generation(self) -> None:
+        commands = [
+            ("00_prepare_pvacseq_sources", ["prepare"]),
+            ("01_build_epitope_tasks", ["windows"]),
+            ("02_stage1_build_tasks", ["stage1_tasks"]),
+            ("02_stage1_predict", ["stage1_predict"]),
+        ]
+        resumed = WORKFLOW_MODULE.commands_from_resume_point(commands, "epitope_tasks")
+        self.assertEqual(
+            [label for label, _ in resumed],
+            ["02_stage1_build_tasks", "02_stage1_predict"],
+        )
+
+        commands = [
+            ("00_prepare_pvacseq_sources", ["prepare"]),
+            ("01_build_epitope_tasks", ["windows"]),
+            ("02_split_binding_tasks", ["tasks"]),
+            ("03_predict_mt", ["predict"]),
+        ]
+        resumed = WORKFLOW_MODULE.commands_from_resume_point(commands, "epitope_tasks")
+        self.assertEqual(
+            [label for label, _ in resumed],
+            ["02_split_binding_tasks", "03_predict_mt"],
+        )
+
+    def test_start_from_epitope_tasks_requires_frozen_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp = Path(tempdir)
+            paths = {
+                "converter_tsv": temp / "converter.tsv",
+                "protein_fasta": temp / "protein.fasta",
+                "variant_annotation": temp / "variant_annotation.tsv",
+                "epitope_windows": temp / "epitope_windows.tsv",
+                "prediction_peptides": temp / "prediction_peptides.tsv",
+            }
+            with self.assertRaises(FileNotFoundError):
+                WORKFLOW_MODULE.validate_resume_inputs("epitope_tasks", paths)
+
+            for path in paths.values():
+                path.write_text("ok\n")
+            WORKFLOW_MODULE.validate_resume_inputs("epitope_tasks", paths)
+
     def test_skipped_task_is_retained_in_normalized_output(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             output = Path(tempdir) / "predictions.tsv"

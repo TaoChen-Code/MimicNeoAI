@@ -274,6 +274,9 @@ def _start_one_sample(
                 preset = str(others.get("binding_prediction_preset", "fast")).strip()
                 if preset:
                     cmd.extend(["--preset", preset])
+                start_from = str(others.get("binding_prediction_start_from", "")).strip()
+                if start_from:
+                    cmd.extend(["--start-from", start_from])
                 tool.exec_cmd(
                     " ".join(shlex.quote(item) for item in cmd),
                     sample,

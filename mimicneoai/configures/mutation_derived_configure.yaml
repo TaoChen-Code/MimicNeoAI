@@ -52,6 +52,7 @@ others:
   # Binding prediction backend. Mutation-derived antigens default to the native MimicNeoAI fast workflow.
   binding_prediction_backend: "mimicneoai"  # mimicneoai | pvactools
   binding_prediction_preset: "fast"         # fast | full
+  binding_prediction_start_from: "source_prep"  # source_prep | epitope_tasks
   binding_prediction_step_name: "07.binding_prediction_mimicneoai"
   binding_prediction_algorithms: "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL"
   binding_prediction_workers: 8

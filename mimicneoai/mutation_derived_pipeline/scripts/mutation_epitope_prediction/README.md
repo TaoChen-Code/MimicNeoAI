@@ -53,6 +53,20 @@ run_mimicneoai_binding_prediction.py \
   -o <sample>/07.binding_prediction_mimicneoai
 ```
 
+When `01_pvactools_sources/` and `02_epitope_tasks/` have already been
+reviewed and frozen, resume directly from binding with:
+
+```text
+run_mimicneoai_binding_prediction.py \
+  -s <sample> \
+  --input-vcf <vep.vcf.gz> \
+  --hla-file <HLA-HD result.txt> \
+  --pvactools-sif <pvactools.sif> \
+  -o <sample>/07.binding_prediction_mimicneoai \
+  --preset fast \
+  --start-from epitope_tasks
+```
+
 The wrapper records pVACtools and predictor metadata, peptide lengths, worker
 counts, MT/WT task counts, merged row counts, and the frameshift WT-field rule
 in `<sample>.binding_prediction_mimicneoai.summary.json`.

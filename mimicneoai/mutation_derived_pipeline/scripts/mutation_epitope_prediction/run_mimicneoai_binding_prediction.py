@@ -60,6 +60,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional compact prediction preset. Supported: full, fast. Empty preserves explicit CLI settings.",
     )
+    parser.add_argument(
+        "--start-from",
+        choices=("source_prep", "epitope_tasks"),
+        default="source_prep",
+        help=(
+            "Resume point. Use epitope_tasks when 01_pvactools_sources and "
+            "02_epitope_tasks are already frozen and only binding/merge should run."
+        ),
+    )
     parser.add_argument("--mhc-i-lengths", default="8,9,10,11")
     parser.add_argument("--mhc-ii-lengths", default="15")
     parser.add_argument("--protein-flank-length", type=int, default=25)
@@ -139,12 +148,14 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     paths = workflow_paths(outdir, args.sample, args.protein_flank_length)
     commands = build_commands(args, paths)
+    commands = commands_from_resume_point(commands, args.start_from)
     if args.dry_run:
         for label, command in commands:
             print(f"[DRY-RUN] {label}: {format_command(command)}", flush=True)
         return 0
 
     validate_predictor_configuration(args)
+    validate_resume_inputs(args.start_from, paths)
 
     outdir.mkdir(parents=True, exist_ok=True)
     for key in ("epitope_tasks", "binding_predictions", "merged_epitopes", "archive"):
@@ -427,6 +438,45 @@ def build_commands(args: argparse.Namespace, paths: dict[str, Path]) -> list[tup
     return commands
 
 
+def commands_from_resume_point(
+    commands: list[tuple[str, list[str]]],
+    start_from: str,
+) -> list[tuple[str, list[str]]]:
+    """Return workflow commands beginning at the requested resume point."""
+
+    if start_from == "source_prep":
+        return commands
+    if start_from == "epitope_tasks":
+        start_labels = {"02_stage1_build_tasks", "02_split_binding_tasks"}
+        for index, (label, _) in enumerate(commands):
+            if label in start_labels:
+                return commands[index:]
+        raise ValueError("Cannot start from epitope_tasks: no downstream binding step was found")
+    raise ValueError(f"Unsupported start_from value: {start_from}")
+
+
+def validate_resume_inputs(start_from: str, paths: dict[str, Path]) -> None:
+    """Validate that requested resume inputs already exist."""
+
+    if start_from == "source_prep":
+        return
+    if start_from != "epitope_tasks":
+        raise ValueError(f"Unsupported start_from value: {start_from}")
+    required = [
+        paths["converter_tsv"],
+        paths["protein_fasta"],
+        paths["variant_annotation"],
+        paths["epitope_windows"],
+        paths["prediction_peptides"],
+    ]
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "Cannot start from epitope_tasks because required frozen inputs are missing:\n- "
+            + "\n- ".join(missing)
+        )
+
+
 def runner_predictor_args(args: argparse.Namespace) -> list[str]:
     values = [
         ("--mhcflurry-predict-bin", args.mhcflurry_predict_bin),
@@ -554,6 +604,7 @@ def build_workflow_summary(args: argparse.Namespace, paths: dict[str, Path], sta
         "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "workflow": "MimicNeoAI-native mutation-derived binding prediction",
         "output_dir": str(paths["root"]),
+        "start_from": args.start_from,
         "binding_prediction_preset": policy.name if policy else "",
         "two_stage_binding_prediction": bool(policy and policy.two_stage),
         "pvactools_boundary": "pVACtools is used only for VCF annotation conversion and WT/MT protein FASTA source generation.",
