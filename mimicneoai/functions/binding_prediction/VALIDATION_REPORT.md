@@ -21,7 +21,7 @@ outside this fast validation scope.
 | Resume behavior | Pass | Unchanged intermediates are reused; changed FASTA or algorithms invalidate only dependent stages; predictor chunks require exact task identity. |
 | Oversized task gate | Pass | Estimate is written before task materialization; ordinary task TSV and prediction are skipped unless force mode is enabled. |
 | HLA support | Pass | Runtime predictor catalogs replace specific-allele hardcoding; unsupported tasks are retained as skipped rows. |
-| MT/WT contract | Pass | Missense/in-frame WT pairing is retained; frameshift WT and dependent metrics are blank. |
+| MT/WT contract | Pass | Missense/in-frame WT pairing is retained; insertion windows without same-position WT are marked `WT_not_evaluable`; frameshift WT and dependent metrics are blank, with event-level WT context written to a sidecar. |
 | IC50 and EL separation | Pass | EL/presentation results enter percentile fields only and cannot alter Best/Median IC50 or fold change. |
 | Error visibility | Pass | Skipped and failed tasks remain explicit in normalized outputs and summary status counts. |
 | Output schema | Pass | Mutation uses the established 111-column profile; non-mutation uses the common 45-column profile. |

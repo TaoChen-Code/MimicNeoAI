@@ -82,6 +82,26 @@ EVENT_QC_FIELDNAMES = [
     "extended_peptide_generated",
 ]
 
+WT_CONTEXT_CONTROL_FIELDNAMES = [
+    "event_id",
+    "pvacseq_index",
+    "gene_name",
+    "transcript_name",
+    "variant_type",
+    "amino_acid_change",
+    "protein_position",
+    "mutation_start_0based",
+    "mutation_end_0based",
+    "sequence_role",
+    "wt_context_control_sequence",
+    "wt_context_control_length",
+    "wt_context_control_start_0based",
+    "wt_context_control_end_0based",
+    "wt_protein_fragment_length",
+    "mt_protein_fragment_length",
+    "control_reason",
+]
+
 try:
     from mimicneoai.mutation_derived_pipeline.scripts.mutation_epitope_prediction.hla_parser import (
         parse_hlahd_result,
@@ -190,6 +210,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     epitope_rows: list[dict[str, object]] = []
     extended_rows: list[dict[str, object]] = []
+    wt_context_control_rows: list[dict[str, object]] = []
     missing_annotation: list[str] = []
     event_qc_rows: list[dict[str, object]] = []
     pair_status = Counter()
@@ -333,6 +354,18 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "wt_protein_fragment_length": len(pair.wt_sequence) if pair.wt_sequence else "",
             }
         )
+        if variant_type.upper() == "FS":
+            wt_context_control_rows.append(
+                wt_context_control_row(
+                    event_id=event_id,
+                    pvacseq_index=pvacseq_index,
+                    annotation=annotation,
+                    pair=pair,
+                    mutation_start=mutation_start,
+                    mutation_end=mutation_end,
+                    extended_length=args.extended_length,
+                )
+            )
         event_qc_rows.append(
             event_qc_row(
                 annotation,
@@ -367,6 +400,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         EVENT_QC_FIELDNAMES,
     )
     write_tsv(outdir / "extended_peptides.tsv", extended_rows)
+    write_tsv_with_fieldnames(
+        outdir / "wt_context_controls.tsv",
+        wt_context_control_rows,
+        WT_CONTEXT_CONTROL_FIELDNAMES,
+    )
     write_tsv(outdir / "epitope_windows.tsv", epitope_rows)
 
     extension_mapping_failures = sum(
@@ -378,11 +416,30 @@ def main(argv: Optional[list[str]] = None) -> int:
         and bool(str(row.get("wt_epitope_seq", "")))
         for row in epitope_rows
     )
-    if extension_mapping_failures or fs_wt_epitope_nonempty_rows:
+    wt_control_status_counts = Counter(str(row.get("wt_control_status", "")) for row in epitope_rows)
+    nonfs_wt_not_evaluable_rows = sum(
+        str(row.get("variant_type", "")).upper() != "FS"
+        and str(row.get("wt_control_status", "")) == "WT_not_evaluable"
+        for row in epitope_rows
+    )
+    fs_event_ids_with_windows = {
+        str(row.get("event_id", ""))
+        for row in epitope_rows
+        if str(row.get("variant_type", "")).upper() == "FS"
+    }
+    fs_context_control_event_ids = {
+        str(row.get("event_id", ""))
+        for row in wt_context_control_rows
+    }
+    missing_fs_wt_context_control_events = sorted(
+        fs_event_ids_with_windows - fs_context_control_event_ids
+    )
+    if extension_mapping_failures or fs_wt_epitope_nonempty_rows or missing_fs_wt_context_control_events:
         raise RuntimeError(
             "Epitope construction invariant failed: "
             f"extension_mapping_failures={extension_mapping_failures}, "
-            f"fs_wt_epitope_nonempty_rows={fs_wt_epitope_nonempty_rows}"
+            f"fs_wt_epitope_nonempty_rows={fs_wt_epitope_nonempty_rows}, "
+            f"missing_fs_wt_context_control_events={len(missing_fs_wt_context_control_events)}"
         )
 
     hlas = parse_hlahd_result(Path(args.hla_file))
@@ -431,8 +488,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         "event_qc_status_counts": dict(Counter(str(row.get("event_status", "")) for row in event_qc_rows)),
         "epitope_window_rows": len(epitope_rows),
         "extended_peptide_rows": len(extended_rows),
+        "wt_context_control_rows": len(wt_context_control_rows),
         "extension_mapping_failures": extension_mapping_failures,
         "fs_wt_epitope_nonempty_rows": fs_wt_epitope_nonempty_rows,
+        "wt_control_status_counts": dict(wt_control_status_counts),
+        "nonfs_wt_not_evaluable_rows": nonfs_wt_not_evaluable_rows,
+        "missing_fs_wt_context_control_events": len(missing_fs_wt_context_control_events),
         "prediction_peptide_rows": len(prediction_peptide_rows),
         "unique_mhc_i_prediction_peptides": len(mhc_i_peptides),
         "unique_mhc_ii_prediction_peptides": len(mhc_ii_peptides),
@@ -543,6 +604,10 @@ def epitope_row(event_id: str, pvacseq_index: str, annotation: dict[str, object]
             f"window={window.start}-{window.end} mutation={mutation_start}-{mutation_end}"
         )
 
+    wt_control_status, wt_control_reason = classify_wt_control(
+        str(annotation.get("variant_type", "")),
+        window.wt_peptide,
+    )
     return {
         "event_id": event_id,
         "pvacseq_index": pvacseq_index,
@@ -560,10 +625,65 @@ def epitope_row(event_id: str, pvacseq_index: str, annotation: dict[str, object]
         "mutation_start_0based": mutation_start,
         "mutation_end_0based": mutation_end,
         "covers_mutation": "YES" if covers_mutation else "NO",
+        "wt_control_status": wt_control_status,
+        "wt_control_reason": wt_control_reason,
         "extended_mt_epitope_seq": window.extended_peptide or "",
         "extended_length": len(window.extended_peptide or ""),
         "extended_start_0based": window.extended_start if window.extended_start is not None else "",
         "extended_end_0based": window.extended_end if window.extended_end is not None else "",
+    }
+
+
+def classify_wt_control(variant_type: str, wt_peptide: object) -> tuple[str, str]:
+    """Classify whether a peptide row has a usable same-window WT control."""
+
+    normalized_variant_type = variant_type.upper()
+    if normalized_variant_type == "FS":
+        return ("WT_context_control", "frameshift_has_no_conventional_matched_WT_epitope")
+    if wt_peptide:
+        return ("matched_WT", "")
+    return ("WT_not_evaluable", "no_same_position_same_length_WT_epitope")
+
+
+def wt_context_control_row(
+    *,
+    event_id: str,
+    pvacseq_index: str,
+    annotation: dict[str, object],
+    pair,
+    mutation_start: int,
+    mutation_end: int,
+    extended_length: int,
+) -> dict[str, object]:
+    """Build an event-level WT context control row for frameshift events."""
+
+    if not pair.wt_sequence:
+        raise ValueError(f"Frameshift event lacks WT protein context: {event_id}")
+    wt_context = make_event_context_peptide(
+        pair.wt_sequence,
+        mutation_start,
+        mutation_start,
+        extended_length,
+        variant_type="",
+    )
+    return {
+        "event_id": event_id,
+        "pvacseq_index": pvacseq_index,
+        "gene_name": annotation.get("gene_name", ""),
+        "transcript_name": annotation.get("transcript_name", ""),
+        "variant_type": annotation.get("variant_type", ""),
+        "amino_acid_change": annotation.get("amino_acid_change", ""),
+        "protein_position": annotation.get("protein_position", ""),
+        "mutation_start_0based": mutation_start,
+        "mutation_end_0based": mutation_end,
+        "sequence_role": "WT_context_control",
+        "wt_context_control_sequence": wt_context.sequence,
+        "wt_context_control_length": len(wt_context.sequence),
+        "wt_context_control_start_0based": wt_context.start,
+        "wt_context_control_end_0based": wt_context.end,
+        "wt_protein_fragment_length": len(pair.wt_sequence),
+        "mt_protein_fragment_length": len(pair.mt_sequence),
+        "control_reason": "frameshift_breakpoint_context",
     }
 
 

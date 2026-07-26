@@ -168,6 +168,8 @@ PVACSEQ_COLUMNS = [
 EXTENDED_CORE_COLUMNS = PVACSEQ_COLUMNS[:42] + [
     "Extended MT Epitope Seq",
     "Extended Length",
+    "WT Control Status",
+    "WT Control Reason",
     "Event ID",
     "pVACseq Index",
     "Index",
@@ -388,7 +390,7 @@ def build_output_row(
     mhc_class = epitope["mhc_class"]
     peptide_length = int(epitope["peptide_length"])
     mt_peptide = epitope["mt_epitope_seq"]
-    has_reliable_wt = epitope.get("variant_type", "") != "FS"
+    has_reliable_wt = has_matched_wt_control(epitope)
     wt_peptide = epitope.get("wt_epitope_seq", "") if has_reliable_wt else ""
     key_min = (epitope["pvacseq_index"], mhc_class, peptide_length)
     window_start = int(epitope["window_start_0based"])
@@ -430,6 +432,8 @@ def build_output_row(
         "Transcript Expression": annotation.get("transcript_expression", ""),
         "Extended MT Epitope Seq": epitope.get("extended_mt_epitope_seq", ""),
         "Extended Length": epitope.get("extended_length", ""),
+        "WT Control Status": epitope.get("wt_control_status", ""),
+        "WT Control Reason": epitope.get("wt_control_reason", ""),
         "Event ID": epitope.get("event_id", ""),
         "pVACseq Index": epitope.get("pvacseq_index", ""),
         "Index": epitope.get("pvacseq_index", ""),
@@ -482,6 +486,15 @@ def build_output_row(
     if fold_by_algorithm:
         metrics["rows_with_fold_change"] += 1
     return row, metrics
+
+
+def has_matched_wt_control(epitope: dict[str, str]) -> bool:
+    """Return True when this MT peptide has a conventional matched WT epitope."""
+
+    status = (epitope.get("wt_control_status") or "").strip()
+    if status:
+        return status == "matched_WT"
+    return epitope.get("variant_type", "") != "FS" and bool(epitope.get("wt_epitope_seq", ""))
 
 
 def fill_algorithm_columns(row: dict[str, str], algorithm: str, source: str, prediction: Optional[dict[str, str]]) -> None:

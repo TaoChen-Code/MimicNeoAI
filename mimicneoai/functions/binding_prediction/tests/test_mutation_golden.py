@@ -241,6 +241,50 @@ class MutationWindowGoldenTest(unittest.TestCase):
         self.assertEqual(by_peptide["ACDEFGHIK"], "MT")
         self.assertEqual(by_peptide["ACDEYGHIK"], "WT")
 
+    def test_inframe_insertion_without_same_position_wt_is_marked_not_evaluable(self) -> None:
+        pair = ProteinPair(
+            event_id="insertion_internal",
+            wt_sequence="AAAAACCCCC",
+            mt_sequence="AAAAARRRRRRCCCCC",
+        )
+        mutation_start, mutation_end = locate_mutation_region(
+            pair.wt_sequence,
+            pair.mt_sequence,
+            variant_type="inframe_ins",
+        )
+        windows = generate_epitope_windows(
+            pair,
+            epitope_lengths=(8,),
+            extended_length=15,
+            variant_type="inframe_ins",
+        )
+        rows = [
+            TASK_MODULE.epitope_row(
+                "insertion_internal",
+                "INS.1",
+                {
+                    "variant_type": "inframe_ins",
+                    "amino_acid_change": "-/RRRRRR",
+                    "protein_position": "6-7",
+                },
+                window,
+                "MHC-I",
+                mutation_start,
+                mutation_end,
+            )
+            for window in windows
+        ]
+        self.assertTrue(any(row["wt_control_status"] == "matched_WT" for row in rows))
+        not_evaluable = [row for row in rows if row["wt_control_status"] == "WT_not_evaluable"]
+        self.assertTrue(not_evaluable)
+        self.assertTrue(all(row["wt_epitope_seq"] == "" for row in not_evaluable))
+        self.assertTrue(
+            all(
+                row["wt_control_reason"] == "no_same_position_same_length_WT_epitope"
+                for row in not_evaluable
+            )
+        )
+
     def test_pvactools_source_manifest_rejects_changed_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             manifest = Path(tempdir) / "source.manifest.json"
@@ -356,6 +400,8 @@ class MutationWindowGoldenTest(unittest.TestCase):
             self.assertEqual(summary["event_qc_status_counts"], {"unsupported_variant_type": 1, "ok": 5})
             self.assertEqual(summary["extension_mapping_failures"], 0)
             self.assertEqual(summary["fs_wt_epitope_nonempty_rows"], 0)
+            self.assertEqual(summary["wt_context_control_rows"], 1)
+            self.assertEqual(summary["missing_fs_wt_context_control_events"], 0)
             self.assertTrue((outdir / "unsupported_variant_annotations.tsv").exists())
 
             with (outdir / "event_qc.tsv").open(newline="") as handle:
@@ -379,6 +425,20 @@ class MutationWindowGoldenTest(unittest.TestCase):
             n_terminal = [row for row in windows if row["protein_position"] == "1"]
             self.assertTrue(n_terminal)
             self.assertTrue(all(row["window_start_0based"] == "0" for row in n_terminal))
+            self.assertIn("wt_control_status", windows[0])
+            wt_control_statuses = Counter(row["wt_control_status"] for row in windows)
+            self.assertGreater(wt_control_statuses["matched_WT"], 0)
+            self.assertEqual(
+                wt_control_statuses["WT_context_control"],
+                sum(1 for row in windows if row["variant_type"] == "FS"),
+            )
+
+            with (outdir / "wt_context_controls.tsv").open(newline="") as handle:
+                wt_context_controls = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual(len(wt_context_controls), 1)
+            self.assertEqual(wt_context_controls[0]["variant_type"], "FS")
+            self.assertEqual(wt_context_controls[0]["sequence_role"], "WT_context_control")
+            self.assertTrue(wt_context_controls[0]["wt_context_control_sequence"])
 
             with (outdir / "prediction_peptides.tsv").open(newline="") as handle:
                 prediction_peptides = list(csv.DictReader(handle, delimiter="\t"))
@@ -710,6 +770,7 @@ class MergeGoldenTest(unittest.TestCase):
                 [
                     {"pvacseq_index": "SNV.1", "variant_type": "missense", "gene_name": "GENE1"},
                     {"pvacseq_index": "FS.1", "variant_type": "FS", "gene_name": "GENE2"},
+                    {"pvacseq_index": "INS.1", "variant_type": "inframe_ins", "gene_name": "GENE3"},
                 ],
             )
             common_window = {
@@ -724,6 +785,7 @@ class MergeGoldenTest(unittest.TestCase):
                 "transcript_name": "ENST_TEST",
                 "amino_acid_change": "Y/F",
                 "protein_position": "5",
+                "wt_control_status": "matched_WT",
             }
             write_tsv(
                 windows_path,
@@ -741,13 +803,23 @@ class MergeGoldenTest(unittest.TestCase):
                         "event_id": "fs_event",
                         "pvacseq_index": "FS.1",
                         "variant_type": "FS",
+                        "wt_control_status": "WT_context_control",
                         "mt_epitope_seq": "LMNPQRSTV",
                         "wt_epitope_seq": "LMNPQASTV",
+                    },
+                    {
+                        **common_window,
+                        "event_id": "ins_event",
+                        "pvacseq_index": "INS.1",
+                        "variant_type": "inframe_ins",
+                        "wt_control_status": "WT_not_evaluable",
+                        "mt_epitope_seq": "RRRRRRCCC",
+                        "wt_epitope_seq": "SHOULDNOTUSE",
                     },
                 ],
             )
             task_rows = []
-            for peptide in ("ACDEFGHIK", "ACDEYGHIK", "LMNPQRSTV"):
+            for peptide in ("ACDEFGHIK", "ACDEYGHIK", "LMNPQRSTV", "RRRRRRCCC"):
                 for algorithm in ("MHCflurry", "NetMHCpan"):
                     task_rows.append(
                         {
@@ -766,6 +838,8 @@ class MergeGoldenTest(unittest.TestCase):
                 ("ACDEYGHIK", "NetMHCpan"): (300, 3),
                 ("LMNPQRSTV", "MHCflurry"): (80, 0.8),
                 ("LMNPQRSTV", "NetMHCpan"): (120, 1.2),
+                ("RRRRRRCCC", "MHCflurry"): (70, 0.7),
+                ("RRRRRRCCC", "NetMHCpan"): (90, 0.9),
             }
             prediction_rows = []
             for (peptide, algorithm), (ic50, percentile) in values.items():
@@ -825,6 +899,14 @@ class MergeGoldenTest(unittest.TestCase):
             self.assertEqual(frameshift["Median WT IC50 Score"], "")
             self.assertEqual(frameshift["Best MT IC50 Score"], "80")
             self.assertEqual(frameshift["Median MT IC50 Score"], "100")
+
+            insertion = rows["INS.1"]
+            self.assertEqual(insertion["WT Epitope Seq"], "")
+            self.assertEqual(insertion["WT Control Status"], "WT_not_evaluable")
+            self.assertEqual(insertion["Corresponding WT IC50 Score"], "")
+            self.assertEqual(insertion["Corresponding Fold Change"], "")
+            self.assertEqual(insertion["Median WT IC50 Score"], "")
+            self.assertEqual(insertion["Best MT IC50 Score"], "70")
 
 
 if __name__ == "__main__":

@@ -57,6 +57,18 @@ The wrapper records pVACtools and predictor metadata, peptide lengths, worker
 counts, MT/WT task counts, merged row counts, and the frameshift WT-field rule
 in `<sample>.binding_prediction_mimicneoai.summary.json`.
 
+`02_epitope_tasks/epitope_windows.tsv` includes explicit WT-control status:
+
+- `matched_WT`: same-position, same-length WT epitope is available and can be
+  used for WT prediction and fold-change.
+- `WT_not_evaluable`: an MT window is valid but has no same-position,
+  same-length WT epitope, for example an insertion-derived window that falls
+  outside the WT fragment coordinate range.
+- `WT_context_control`: frameshift windows have no conventional matched-WT
+  epitope; their event-level WT context is written to
+  `02_epitope_tasks/wt_context_controls.tsv` for provenance and control
+  reporting, but is not scheduled as a WT binding task.
+
 Default predictors intentionally exclude legacy-only default runs for
 SMM/SMMPMBEC/PickPocket/NetMHC. pVACseq-compatible output columns for those
 methods remain available in the merged table schema and are left blank unless
