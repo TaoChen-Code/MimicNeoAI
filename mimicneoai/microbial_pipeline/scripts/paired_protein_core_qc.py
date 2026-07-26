@@ -3,7 +3,9 @@
 
 This step consumes per-sample protein-hit tables from
 06.MicrobialPeptidesIdentification and writes a tumor-only peptide Core for
-binding prediction. It does not run HLA typing or binding prediction.
+binding prediction. Matched-normal subtraction uses all technically valid normal
+protein hits; contaminant blacklist filtering is applied afterward to tumor
+residual peptides. It does not run HLA typing or binding prediction.
 """
 
 from __future__ import annotations
@@ -88,11 +90,27 @@ def validate_pair_id(pair_id: str, tumor_sample: str, normal_sample: str) -> Non
             raise ValueError("pair_id does not match tumor_sample and normal_sample")
 
 
-def load_contaminant_taxids(path: Optional[Path]) -> tuple[set[str], dict[str, str]]:
+def load_contaminant_taxids(
+    path: Optional[Path],
+    *,
+    allow_missing: bool = False,
+    expected_sha256: str = "",
+) -> tuple[set[str], dict[str, str], str]:
     if path is None:
-        return set(), {}
+        if allow_missing:
+            return set(), {}, ""
+        raise FileNotFoundError(
+            "Contaminant blacklist is required for paired microbial Core QC. "
+            "Use --allow-missing-blacklist only for exploratory runs."
+        )
     if not path.exists():
         raise FileNotFoundError(f"Contaminant blacklist not found: {path}")
+    actual_sha256 = sha256_file(path)
+    if expected_sha256 and actual_sha256 != expected_sha256:
+        raise ValueError(
+            f"Contaminant blacklist SHA256 mismatch for {path}: "
+            f"expected {expected_sha256}, observed {actual_sha256}"
+        )
     df = pd.read_csv(path, sep="\t", dtype=str)
     required = {"tax_id", "verdict"}
     missing = sorted(required.difference(df.columns))
@@ -108,7 +126,7 @@ def load_contaminant_taxids(path: Optional[Path]) -> tuple[set[str], dict[str, s
         for taxid, verdict in verdict_by_taxid.items()
         if verdict.lower() == "contaminant"
     }
-    return contaminants, verdict_by_taxid
+    return contaminants, verdict_by_taxid, actual_sha256
 
 
 def classify_blacklist_status(taxids: Iterable[str], contaminant_taxids: set[str]) -> str:
@@ -133,6 +151,7 @@ def read_protein_hits(
     max_evalue: float,
     min_qcovs: float,
     contaminant_taxids: set[str],
+    exclude_blacklist: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Read new or legacy protein-hit table and split pass/excluded rows."""
     if not path.exists():
@@ -211,7 +230,10 @@ def read_protein_hits(
         blacklist_status = classify_blacklist_status(taxids, contaminant_taxids)
         flags = []
         if blacklist_status == "exclusive_contaminant":
-            reasons.append("exclusive_contaminant")
+            if exclude_blacklist:
+                reasons.append("exclusive_contaminant")
+            else:
+                flags.append("blacklist_exclusive_contaminant_retained_for_subtraction")
         elif blacklist_status in {"mixed", "unresolved"}:
             flags.append(f"blacklist_{blacklist_status}_retained")
 
@@ -277,6 +299,7 @@ def build_peptide_maps(
                         "parent_record_ids": set(),
                         "protein_accessions": set(),
                         "ctaxa_ids": set(),
+                        "blacklist_statuses": set(),
                     },
                 )
                 entry["parent_record_ids"].add(parent_id)
@@ -284,6 +307,7 @@ def build_peptide_maps(
                     entry["protein_accessions"].add(str(row.protein_accession))
                 for taxid in split_taxids(row.ctaxa_ids):
                     entry["ctaxa_ids"].add(taxid)
+                entry["blacklist_statuses"].add(str(row.blacklist_status))
                 parent_positions[(mhc_class, peptide, parent_id)].append(start)
 
     return peptide_map, parent_positions
@@ -307,6 +331,7 @@ def peptide_entries_to_df(
         "peptide_length",
         "peptide_qc_status",
         "peptide_qc_reasons",
+        "peptide_qc_flags",
         "parent_record_count",
         "protein_count",
         "taxon_count",
@@ -323,13 +348,29 @@ def peptide_entries_to_df(
                 "peptide": entry["peptide"],
                 "peptide_length": entry["peptide_length"],
                 "peptide_qc_status": status,
-                "peptide_qc_reasons": reason,
+                "peptide_qc_reasons": entry.get("peptide_qc_reasons", reason),
+                "peptide_qc_flags": entry.get("peptide_qc_flags", ""),
                 "parent_record_count": len(entry["parent_record_ids"]),
                 "protein_count": len(entry["protein_accessions"]),
                 "taxon_count": len(entry["ctaxa_ids"]),
             }
         )
     return pd.DataFrame(rows, columns=columns)
+
+
+def peptide_blacklist_status(entry: dict) -> str:
+    statuses = {str(s) for s in entry.get("blacklist_statuses", set()) if str(s)}
+    if statuses and statuses == {"exclusive_contaminant"}:
+        return "exclusive_contaminant"
+    flags = []
+    if "exclusive_contaminant" in statuses:
+        flags.append("blacklist_partial_contaminant_retained")
+    if "mixed" in statuses:
+        flags.append("blacklist_mixed_retained")
+    if "unresolved" in statuses:
+        flags.append("blacklist_unresolved_retained")
+    entry["peptide_qc_flags"] = ";".join(flags)
+    return "retained"
 
 
 def build_parent_map_df(
@@ -435,6 +476,8 @@ def build_pair_core(
     min_pident: float = 100.0,
     max_evalue: float = 1e-5,
     min_qcovs: float = 90.0,
+    allow_missing_blacklist: bool = False,
+    blacklist_sha256: str = "",
 ) -> dict:
     mhc_i_lengths = mhc_i_lengths or [8, 9, 10, 11]
     mhc_ii_lengths = mhc_ii_lengths or [13, 14, 15, 16, 17]
@@ -442,7 +485,11 @@ def build_pair_core(
     validate_pair_id(pair_id, tumor_sample, normal_sample)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    contaminant_taxids, verdict_by_taxid = load_contaminant_taxids(blacklist)
+    contaminant_taxids, verdict_by_taxid, actual_blacklist_sha256 = load_contaminant_taxids(
+        blacklist,
+        allow_missing=allow_missing_blacklist,
+        expected_sha256=blacklist_sha256,
+    )
 
     tumor_pass, tumor_excluded = read_protein_hits(
         tumor_protein_hits,
@@ -452,6 +499,7 @@ def build_pair_core(
         max_evalue,
         min_qcovs,
         contaminant_taxids,
+        exclude_blacklist=False,
     )
     normal_pass, normal_excluded = read_protein_hits(
         normal_protein_hits,
@@ -461,6 +509,7 @@ def build_pair_core(
         max_evalue,
         min_qcovs,
         contaminant_taxids,
+        exclude_blacklist=False,
     )
 
     normal_parent_hashes = set(normal_pass["parent_sequence_sha256"].dropna().astype(str))
@@ -489,13 +538,19 @@ def build_pair_core(
     normal_peptide_keys = set(normal_peptide_map)
 
     core_entries = []
-    excluded_entries = []
+    matched_normal_excluded_entries = []
+    blacklist_excluded_entries = []
     for key in sorted(tumor_peptide_map, key=lambda x: (x[0], len(x[1]), x[1])):
         entry = tumor_peptide_map[key]
         if key in normal_peptide_keys:
-            excluded_entries.append(entry)
+            entry["peptide_qc_reasons"] = "excluded_exact_peptide_in_matched_normal"
+            matched_normal_excluded_entries.append(entry)
+        elif peptide_blacklist_status(entry) == "exclusive_contaminant":
+            entry["peptide_qc_reasons"] = "excluded_exclusive_contaminant"
+            blacklist_excluded_entries.append(entry)
         else:
             core_entries.append(entry)
+    excluded_entries = matched_normal_excluded_entries + blacklist_excluded_entries
 
     core_df = peptide_entries_to_df(
         core_entries,
@@ -510,10 +565,9 @@ def build_pair_core(
         tumor_sample,
         normal_sample,
         "excluded",
-        "excluded_exact_peptide_in_matched_normal",
     )
     parent_map_df = build_parent_map_df(core_entries, excluded_entries, tumor_parent_positions)
-    matched_normal_df = build_matched_normal_df(excluded_entries, normal_peptide_map)
+    matched_normal_df = build_matched_normal_df(matched_normal_excluded_entries, normal_peptide_map)
 
     write_tsv(tumor_core, outdir / "microbial_parent_core.tsv")
     write_tsv(parent_excluded, outdir / "microbial_parent_excluded.tsv")
@@ -536,7 +590,8 @@ def build_pair_core(
         ("tumor_parent_core", len(tumor_core)),
         ("tumor_unique_peptides_before_normal_subtraction", len(tumor_peptide_map)),
         ("normal_unique_peptides_for_subtraction", len(normal_peptide_map)),
-        ("tumor_unique_peptides_excluded_exact_normal", len(excluded_entries)),
+        ("tumor_unique_peptides_excluded_exact_normal", len(matched_normal_excluded_entries)),
+        ("tumor_unique_peptides_excluded_blacklist", len(blacklist_excluded_entries)),
         ("tumor_unique_peptides_core", len(core_entries)),
         ("tumor_unique_peptides_core_hla_i", int((core_df["mhc_class"] == MHC_CLASS_I).sum()) if not core_df.empty else 0),
         ("tumor_unique_peptides_core_hla_ii", int((core_df["mhc_class"] == MHC_CLASS_II).sum()) if not core_df.empty else 0),
@@ -553,7 +608,10 @@ def build_pair_core(
         "tumor_protein_hits_sha256": sha256_file(tumor_protein_hits),
         "normal_protein_hits_sha256": sha256_file(normal_protein_hits),
         "blacklist": str(blacklist) if blacklist else "",
-        "blacklist_sha256": sha256_file(blacklist) if blacklist else "",
+        "blacklist_sha256": actual_blacklist_sha256,
+        "blacklist_sha256_expected": blacklist_sha256,
+        "allow_missing_blacklist": allow_missing_blacklist,
+        "blacklist_evaluation": "enabled" if blacklist else "not_evaluated",
         "blacklist_taxids": len(verdict_by_taxid),
         "contaminant_taxids": len(contaminant_taxids),
         "mhc_i_lengths": mhc_i_lengths,
@@ -588,6 +646,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tumor-protein-hits", required=True)
     parser.add_argument("--normal-protein-hits", required=True)
     parser.add_argument("--blacklist", default="")
+    parser.add_argument("--blacklist-sha256", default="")
+    parser.add_argument(
+        "--allow-missing-blacklist",
+        action="store_true",
+        help="Exploratory mode only: continue when no contaminant blacklist is configured.",
+    )
     parser.add_argument("-o", "--outdir", required=True)
     parser.add_argument("--mhc-i-lengths", default="8,9,10,11")
     parser.add_argument("--mhc-ii-lengths", default="13,14,15,16,17")
@@ -612,6 +676,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         min_pident=args.min_pident,
         max_evalue=args.max_evalue,
         min_qcovs=args.min_qcovs,
+        allow_missing_blacklist=args.allow_missing_blacklist,
+        blacklist_sha256=args.blacklist_sha256,
     )
     print(json.dumps(manifest["stagewise_counts"], indent=2, ensure_ascii=False))
     return 0

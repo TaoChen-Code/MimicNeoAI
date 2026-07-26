@@ -59,6 +59,8 @@ pipeline:
 ```yaml
 others:
   tumor_with_matched_normal: true
+  run_paired_core_qc: true
+  run_binding_prediction: false
 
 samples:
   - Tumor_1,Normal_1
@@ -69,6 +71,13 @@ protein-hit identification, HLA typing is run only for the tumor, and binding is
 run only on the tumor peptide Core after exact matched-normal peptide
 subtraction. Single-sample mode remains the default when
 `tumor_with_matched_normal` is false.
+
+`run_paired_core_qc` freezes the matched-normal-depleted peptide Core without
+requiring binding. If `run_binding_prediction` is true in paired mode, Core QC is
+run automatically and the binding step consumes the frozen Core. Formal paired
+Core QC requires `database.microbial.BLACKLISTS.CONTAMINANT_TAXIDS`; use
+`others.allow_missing_blacklist: true` only for exploratory runs, which are
+marked as `blacklist_evaluation=not_evaluated` in the manifest.
 
 ## Run
 
@@ -114,9 +123,11 @@ protein-hit products:
 In matched-normal mode, `06b.MicrobialProteinCoreQC_v1.0` writes the paired Core:
 
 - `microbial_parent_core.tsv` and `microbial_parent_excluded.tsv` retain parent
-  protein-hit traceability.
+  protein-hit traceability after technical QC and exact-parent matched-normal
+  subtraction.
 - `microbial_peptide_core.tsv` is the tumor-only, matched-normal-depleted
-  peptide space.
+  peptide space after exact matched-normal peptide subtraction and contaminant
+  blacklist filtering.
 - `microbial_peptide_core_hla_i.fasta`,
   `microbial_peptide_core_hla_ii.fasta`, and `microbial_peptide_core.fasta`
   are already tiled candidate peptides. Binding consumes

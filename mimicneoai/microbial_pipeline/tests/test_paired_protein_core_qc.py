@@ -107,20 +107,20 @@ class PairedProteinCoreQCTest(unittest.TestCase):
             self.assertTrue((outdir / "microbial_peptide_core.fasta").exists())
             self.assertTrue((outdir / "microbial_peptide_core_hla_i.fasta").exists())
             self.assertTrue((outdir / "microbial_peptide_core_hla_ii.fasta").exists())
-            self.assertEqual(manifest["stagewise_counts"]["tumor_parent_qc_pass"], 4)
-            self.assertEqual(manifest["stagewise_counts"]["tumor_parent_qc_excluded"], 2)
+            self.assertEqual(manifest["stagewise_counts"]["tumor_parent_qc_pass"], 5)
+            self.assertEqual(manifest["stagewise_counts"]["tumor_parent_qc_excluded"], 1)
             self.assertEqual(manifest["stagewise_counts"]["tumor_parent_exact_normal_excluded"], 1)
+            self.assertGreater(manifest["stagewise_counts"]["tumor_unique_peptides_excluded_blacklist"], 0)
+            self.assertEqual(manifest["blacklist_evaluation"], "enabled")
 
             parent_core = pd.read_csv(outdir / "microbial_parent_core.tsv", sep="\t")
             self.assertIn("mixed", set(parent_core["blacklist_status"]))
             mixed_flags = ";".join(parent_core["parent_qc_flags"].fillna("").astype(str))
             self.assertIn("blacklist_mixed_retained", mixed_flags)
-            self.assertNotIn("WP_T_CONTAM.1", set(parent_core["protein_accession"]))
             self.assertNotIn("WP_T_EXACT.1", set(parent_core["protein_accession"]))
 
             parent_excluded = pd.read_csv(outdir / "microbial_parent_excluded.tsv", sep="\t")
             reasons = ";".join(parent_excluded["parent_qc_reasons"].fillna("").astype(str))
-            self.assertIn("exclusive_contaminant", reasons)
             self.assertIn("internal_stop", reasons)
             self.assertIn("excluded_exact_parent_in_matched_normal", reasons)
 
@@ -130,6 +130,7 @@ class PairedProteinCoreQCTest(unittest.TestCase):
             self.assertNotIn("ACDEFGHIK", set(peptide_core["peptide"]))
             self.assertIn("ACDEFGHIK", set(peptide_excluded["peptide"]))
             self.assertIn("ACDEFGHIK", set(matched_normal["peptide"]))
+            self.assertIn("excluded_exclusive_contaminant", set(peptide_excluded["peptide_qc_reasons"]))
             self.assertTrue((peptide_core["mhc_class"] == "MHC-II").any())
 
             parent_map = pd.read_csv(outdir / "microbial_peptide_parent_map.tsv", sep="\t")
@@ -159,6 +160,67 @@ class PairedProteinCoreQCTest(unittest.TestCase):
                     outdir=root / "out",
                     tumor_sample="T",
                     normal_sample="N",
+                    allow_missing_blacklist=True,
+                )
+
+    def test_normal_blacklisted_hits_still_subtract_shared_peptides(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            tumor_hits = root / "tumor.tsv"
+            normal_hits = root / "normal.tsv"
+            blacklist = root / "blacklist.tsv"
+            outdir = root / "out"
+            self.write_blacklist(blacklist)
+            self.write_hits(
+                tumor_hits,
+                [hit_row(1, "T_ALLOWED.1", "111", "ACDEFGHIKLM")],
+            )
+            self.write_hits(
+                normal_hits,
+                [hit_row(1, "N_CONTAM.1", "999", "VVACDEFGHIKWW")],
+            )
+
+            manifest = build_pair_core(
+                tumor_protein_hits=tumor_hits,
+                normal_protein_hits=normal_hits,
+                outdir=outdir,
+                tumor_sample="T",
+                normal_sample="N",
+                blacklist=blacklist,
+                mhc_i_lengths=[9],
+                mhc_ii_lengths=[13],
+            )
+
+            peptide_core = pd.read_csv(outdir / "microbial_peptide_core.tsv", sep="\t")
+            peptide_excluded = pd.read_csv(outdir / "microbial_peptide_excluded.tsv", sep="\t")
+            matched_normal = pd.read_csv(outdir / "matched_normal_peptide.tsv", sep="\t")
+            self.assertNotIn("ACDEFGHIK", set(peptide_core["peptide"]))
+            self.assertGreater(len(peptide_core), 0)
+            self.assertEqual(set(peptide_excluded["peptide_qc_reasons"]), {"excluded_exact_peptide_in_matched_normal"})
+            self.assertIn("ACDEFGHIK", set(matched_normal["peptide"]))
+            self.assertEqual(manifest["stagewise_counts"]["normal_parent_qc_pass"], 1)
+            self.assertEqual(manifest["stagewise_counts"]["tumor_unique_peptides_excluded_exact_normal"], 1)
+
+    def test_blacklist_sha256_mismatch_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            tumor_hits = root / "tumor.tsv"
+            normal_hits = root / "normal.tsv"
+            blacklist = root / "blacklist.tsv"
+            self.write_blacklist(blacklist)
+            rows = [hit_row(1, "WP_1.1", "111", "ACDEFGHIKLMN")]
+            self.write_hits(tumor_hits, rows)
+            self.write_hits(normal_hits, rows)
+
+            with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
+                build_pair_core(
+                    tumor_protein_hits=tumor_hits,
+                    normal_protein_hits=normal_hits,
+                    outdir=root / "out",
+                    tumor_sample="T",
+                    normal_sample="N",
+                    blacklist=blacklist,
+                    blacklist_sha256="not_the_real_hash",
                 )
 
     def test_pair_id_validation_is_strict(self) -> None:

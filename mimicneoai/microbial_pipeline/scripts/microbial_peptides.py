@@ -109,8 +109,19 @@ def MicrobialPairedProteinCoreQC(tumor_sample, normal_sample, configure, paths, 
         str(float(others.get("blastx_min_query_coverage", 90))),
     ]
     blacklist = _resolve_contaminant_blacklist(paths)
+    allow_missing_blacklist = bool(others.get("allow_missing_blacklist", False))
     if blacklist:
         cmd.extend(["--blacklist", blacklist])
+    elif not allow_missing_blacklist:
+        raise ValueError(
+            "Paired microbial Core QC requires database.microbial.BLACKLISTS.CONTAMINANT_TAXIDS. "
+            "Set others.allow_missing_blacklist: true only for exploratory runs."
+        )
+    if allow_missing_blacklist:
+        cmd.append("--allow-missing-blacklist")
+    expected_blacklist_sha256 = str(others.get("microbial_contaminant_blacklist_sha256", "")).strip()
+    if expected_blacklist_sha256:
+        cmd.extend(["--blacklist-sha256", expected_blacklist_sha256])
     manifest_path = f"{outdir}run_manifest.json"
     tool.judge_then_exec(
         f"{tumor_sample},{normal_sample}",

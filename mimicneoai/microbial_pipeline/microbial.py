@@ -242,11 +242,13 @@ def _start_one_pair(
             tool.write_log(f"HLA typing error:\n{traceback.format_exc()}", "error")
             raise
 
+    run_core_qc = (
+        bool(o.get("run_paired_core_qc", False))
+        or bool(o["run_binding_prediction"])
+        or bool(o.get("run_immunogenicity_prediction", False))
+    )
     paired_core = None
-    if o["run_binding_prediction"]:
-        backend = str(o.get("binding_prediction_backend", "mimicneoai")).strip().lower()
-        if backend != "mimicneoai":
-            raise ValueError("Paired microbial mode requires binding_prediction_backend: mimicneoai")
+    if run_core_qc:
         try:
             paired_core = MicrobialPairedProteinCoreQC(
                 tumor_sample,
@@ -255,6 +257,17 @@ def _start_one_pair(
                 paths,
                 tool,
             )
+        except Exception:
+            tool.write_log(f"Paired microbial Core QC error:\n{traceback.format_exc()}", "error")
+            raise
+
+    if o["run_binding_prediction"]:
+        backend = str(o.get("binding_prediction_backend", "mimicneoai")).strip().lower()
+        if backend != "mimicneoai":
+            raise ValueError("Paired microbial mode requires binding_prediction_backend: mimicneoai")
+        try:
+            if paired_core is None:
+                raise RuntimeError("Paired microbial Core QC did not return a Core FASTA for binding.")
             MicrobialPeptidesBindingPrediction(
                 tumor_sample,
                 configure,
