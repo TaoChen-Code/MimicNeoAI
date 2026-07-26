@@ -104,6 +104,10 @@ normalized HLA, peptide length, non-canonical amino-acid flags, duplicate
 peptide-HLA flags, and HLA resource-match status. This augments output only;
 it does not rewrite or silently exclude input records.
 
+When called from a source pipeline, resolve `num_processes` with
+`resolve_immunogenicity_num_processes(configure)`. It inherits the pipeline
+YAML's `args.thread` or `args.threads`.
+
 To verify a recovered runtime payload against a locked Fig. 2 prediction file
 without copying manuscript data into this repository:
 

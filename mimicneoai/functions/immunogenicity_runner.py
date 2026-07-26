@@ -1,12 +1,35 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 import pandas as pd
 
 from mimicneoai.immunogenicity_prediction.core import InferenceConfig, run_inference
 from mimicneoai.immunogenicity_prediction.runtime.defaults import run_default_inference
+
+
+def resolve_immunogenicity_num_processes(configure: Mapping[str, Any]) -> int:
+    """Resolve R feature workers from a pipeline YAML configuration.
+
+    Each pipeline inherits its existing user-facing CPU setting, accepting
+    both ``args.threads`` and the legacy ``args.thread`` spelling.
+    """
+    args = configure.get("args", {})
+    if not isinstance(args, Mapping):
+        raise TypeError("configure.args must be a mapping")
+    for key in ("threads", "thread"):
+        value = args.get(key)
+        if value is None or str(value).strip() == "":
+            continue
+        try:
+            workers = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"args.{key} must be a positive integer") from exc
+        if workers < 1:
+            raise ValueError(f"args.{key} must be a positive integer")
+        return workers
+    return 1
 
 
 
