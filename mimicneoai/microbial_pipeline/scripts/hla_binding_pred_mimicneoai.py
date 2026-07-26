@@ -15,6 +15,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-s", "--sample", required=True)
     parser.add_argument("--pep-fasta", required=True)
+    parser.add_argument(
+        "--input-mode",
+        choices=("parent-fasta", "peptide-core"),
+        default="parent-fasta",
+        help="Use peptide-core when --pep-fasta already contains final candidate peptides.",
+    )
     parser.add_argument("--hla-file", required=True)
     parser.add_argument("-o", "--outdir", required=True, help="Microbial 08.MicrobialPeptidesBindingPrediction directory.")
     parser.add_argument("-t", "--threads", type=int, default=10, help="Local predictor workers.")
@@ -46,6 +52,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         args.sample,
         "--pep-fasta",
         args.pep_fasta,
+        "--input-mode",
+        args.input_mode,
         "--hla-file",
         args.hla_file,
         "-o",

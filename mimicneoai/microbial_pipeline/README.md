@@ -53,6 +53,23 @@ Important: field names in this template are the source of truth. In particular, 
 - `others.run_hla_typing`
 - `others.run_binding_prediction`
 
+Matched-normal microbial mode uses the same sample syntax as the mutation
+pipeline:
+
+```yaml
+others:
+  tumor_with_matched_normal: true
+
+samples:
+  - Tumor_1,Normal_1
+```
+
+Each `Tumor,Normal` pair is parsed once as a task unit. Both samples run through
+protein-hit identification, HLA typing is run only for the tumor, and binding is
+run only on the tumor peptide Core after exact matched-normal peptide
+subtraction. Single-sample mode remains the default when
+`tumor_with_matched_normal` is false.
+
 ## Run
 
 ```bash
@@ -76,6 +93,7 @@ Pipeline outputs are written under:
 ├── 04.MicrobialTaxaQuantificationStep1
 ├── 05.MicrobialTaxaQuantificationStep2
 ├── 06.MicrobialPeptidesIdentification
+├── 06b.MicrobialProteinCoreQC_v1.0
 ├── 07.HlaTyping
 ├── 08.MicrobialPeptidesBindingPrediction_mimicneoai
 └── 09.ImmunogenicityPrediction_mimicneoai
@@ -92,6 +110,21 @@ protein-hit products:
   missing/failed coverage, non-100% identity, catalog mismatch, and
   noncanonical parent sequences.
 - `<sample>.protein_hits.qc_summary.tsv` records stagewise protein-hit counts.
+
+In matched-normal mode, `06b.MicrobialProteinCoreQC_v1.0` writes the paired Core:
+
+- `microbial_parent_core.tsv` and `microbial_parent_excluded.tsv` retain parent
+  protein-hit traceability.
+- `microbial_peptide_core.tsv` is the tumor-only, matched-normal-depleted
+  peptide space.
+- `microbial_peptide_core_hla_i.fasta`,
+  `microbial_peptide_core_hla_ii.fasta`, and `microbial_peptide_core.fasta`
+  are already tiled candidate peptides. Binding consumes
+  `microbial_peptide_core.fasta` in peptide-Core mode and does not tile it
+  again.
+- `matched_normal_peptide.tsv`, `microbial_peptide_parent_map.tsv`,
+  `stagewise_qc.tsv`, and `run_manifest.json` provide subtraction and
+  provenance QC.
 
 ## Notes
 

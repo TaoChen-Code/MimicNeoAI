@@ -65,6 +65,8 @@ database:
       GENOME_LENGTHS:  "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_GenomeLength.csv"
       TAXID_HIERARCHY: "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_taxid_hierarchy.txt"
       CATALOG_GENOME:  "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_catalog_genome.txt"
+    BLACKLISTS:
+      CONTAMINANT_TAXIDS: "../database/ref/RNA/MimicNeoAI-Refs/blacklists/microbial_contaminant_taxids.tsv"
 
     BLAST:
       DB_DIR: "../database/ref/RNA/MimicNeoAI-Refs/BioStaCs_protein_v2"

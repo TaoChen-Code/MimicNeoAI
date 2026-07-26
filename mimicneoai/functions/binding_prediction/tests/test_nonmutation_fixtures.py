@@ -193,6 +193,47 @@ class NonmutationAntigenFixtureTest(unittest.TestCase):
         self.assertEqual(len(tasks), summary["estimated_binding_task_rows"])
         self.assertLess(len(tasks), len(windows))
 
+    def test_peptide_core_input_is_not_tiled_again(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            fasta = root / "core.fasta"
+            fasta.write_text(">core_i\nACDEFGHIK\n>core_ii\nACDEFGHIKLMNP\n")
+            outdir = root / "out"
+            self.assertEqual(
+                main(
+                    [
+                        "-s",
+                        "CORE",
+                        "--pep-fasta",
+                        str(fasta),
+                        "--input-mode",
+                        "peptide-core",
+                        "--hla-file",
+                        str(FIXTURE_DIR / "hla_final.result.txt"),
+                        "-o",
+                        str(outdir),
+                        "--mhc-i-lengths",
+                        "8,9",
+                        "--mhc-ii-lengths",
+                        "13",
+                        "--algorithms",
+                        "MHCflurry,MHCnuggetsII",
+                        "--skip-prediction",
+                    ]
+                ),
+                0,
+            )
+            summary = json.loads((outdir / "CORE.mimicneoai_binding.summary.json").read_text())
+            self.assertEqual(summary["input_mode"], "peptide-core")
+            self.assertEqual(summary["fasta_records"], 2)
+            self.assertEqual(summary["epitope_window_rows"], 2)
+
+            with (outdir / "mimicneoai_epitope_tasks" / "epitope_windows.tsv").open(newline="") as handle:
+                windows = list(csv.DictReader(handle, delimiter="\t"))
+            self.assertEqual([row["Mutation"] for row in windows], ["core_i", "core_ii"])
+            self.assertEqual([row["Sub-peptide Position"] for row in windows], ["1", "1"])
+            self.assertEqual([row["mhc_class"] for row in windows], ["MHC-I", "MHC-II"])
+
     def test_empty_fasta_writes_schema_valid_empty_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)

@@ -40,6 +40,91 @@ def _microbial_binding_dir(sample, configure):
     return output_path + f"{sample}/{binding_step}/"
 
 
+def _paired_core_step_name(configure):
+    step_name = str(configure.get("others", {}).get(
+        "paired_core_step_name",
+        "06b.MicrobialProteinCoreQC_v1.0",
+    )).strip()
+    if not step_name or Path(step_name).name != step_name:
+        raise ValueError("paired_core_step_name must be a single directory name")
+    return step_name
+
+
+def _microbial_protein_hits_path(sample, configure):
+    output_path = configure['path']['output_dir'].rstrip("/") + "/"
+    step_name_blastx = configure['step_name']['blastx']
+    output_blastx = output_path + f"{sample}/{step_name_blastx}/"
+    preferred = f"{output_blastx}{sample}.protein_hits.filtered.tsv"
+    legacy = f"{output_blastx}{sample}.blastx.filtered"
+    if os.path.exists(preferred):
+        return preferred
+    if os.path.exists(legacy):
+        return legacy
+    raise FileNotFoundError(
+        f"No microbial protein-hit table found for {sample}: expected {preferred} or {legacy}"
+    )
+
+
+def _resolve_contaminant_blacklist(paths):
+    try:
+        value = paths["database"]["microbial"]["BLACKLISTS"]["CONTAMINANT_TAXIDS"]
+    except KeyError:
+        return ""
+    return str(value).strip()
+
+
+def MicrobialPairedProteinCoreQC(tumor_sample, normal_sample, configure, paths, tool):
+    """Build tumor-only peptide Core after matched-normal peptide subtraction."""
+
+    output_path = configure['path']['output_dir'].rstrip("/") + "/"
+    others = configure.get("others", {})
+    outdir = output_path + f"{tumor_sample}/{_paired_core_step_name(configure)}/"
+    tumor_hits = _microbial_protein_hits_path(tumor_sample, configure)
+    normal_hits = _microbial_protein_hits_path(normal_sample, configure)
+
+    cmd = [
+        sys.executable,
+        _script_path("paired_protein_core_qc.py"),
+        "--pair-id",
+        f"{tumor_sample},{normal_sample}",
+        "--tumor-sample",
+        str(tumor_sample),
+        "--normal-sample",
+        str(normal_sample),
+        "--tumor-protein-hits",
+        tumor_hits,
+        "--normal-protein-hits",
+        normal_hits,
+        "-o",
+        outdir,
+        "--mhc-i-lengths",
+        str(others.get("mhcI_lengths", "8,9,10,11")),
+        "--mhc-ii-lengths",
+        str(others.get("mhcII_lengths", "13,14,15,16,17")),
+        "--min-pident",
+        str(float(others.get("blastx_min_percent_identity", 100))),
+        "--max-evalue",
+        str(float(others.get("blastx_max_evalue", 1e-5))),
+        "--min-qcovs",
+        str(float(others.get("blastx_min_query_coverage", 90))),
+    ]
+    blacklist = _resolve_contaminant_blacklist(paths)
+    if blacklist:
+        cmd.extend(["--blacklist", blacklist])
+    manifest_path = f"{outdir}run_manifest.json"
+    tool.judge_then_exec(
+        f"{tumor_sample},{normal_sample}",
+        " ".join(shlex.quote(item) for item in cmd),
+        manifest_path,
+        display_name="Paired microbial Core QC",
+    )
+
+    core_fasta = f"{outdir}microbial_peptide_core.fasta"
+    if not os.path.exists(core_fasta):
+        raise FileNotFoundError(f"Paired microbial Core FASTA was not created: {core_fasta}")
+    return {"outdir": outdir, "core_fasta": core_fasta}
+
+
 def MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_dir=None):
     """Run microbial immunogenicity scoring from an existing binding directory."""
     output_path = configure['path']['output_dir'] + "/"
@@ -811,7 +896,7 @@ def MicrobialPeptidesIdentification(sample, configure, paths, tool):
 
 
 
-def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
+def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool, peptide_fa=None, input_mode="parent-fasta"):
     """Run peptide-MHC binding prediction on BLASTX-derived peptides.
 
     Args:
@@ -828,12 +913,15 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
     output_blastx   = output_path + f'{sample}/{step_name_blastx}/'
     output_pvacbind = output_path + f'{sample}/{step_name_pvacbind}/'
 
-    # Only run if peptide FASTA exists
-    peptide_fa = f"{output_blastx}/{sample}.peptide.fasta"
+    # Only run if peptide FASTA exists. Paired mode passes a Core FASTA explicitly.
+    explicit_peptide_fa = peptide_fa is not None
+    peptide_fa = peptide_fa or f"{output_blastx}/{sample}.peptide.fasta"
     if os.path.exists(peptide_fa):
         backend = str(configure.get("others", {}).get("binding_prediction_backend", "mimicneoai")).strip().lower()
         binding_output_dir = ""
         if backend == "pvactools":
+            if input_mode != "parent-fasta":
+                raise ValueError("pVACtools backend only supports parent-fasta microbial binding input.")
             tool.judge_then_exec(sample, f"mkdir -p {output_pvacbind}", output_pvacbind, display_name="Prepare pVACtools microbial binding directory")
             pvacbind(sample, configure, paths, tool)
             binding_output_dir = output_pvacbind
@@ -856,6 +944,8 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
                 sample,
                 "--pep-fasta",
                 peptide_fa,
+                "--input-mode",
+                input_mode,
                 "--hla-file",
                 hla_file,
                 "-o",
@@ -891,3 +981,5 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool):
 
         if bool(configure.get("others", {}).get("run_immunogenicity_prediction", False)):
             MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_dir)
+    elif explicit_peptide_fa:
+        raise FileNotFoundError(f"Explicit microbial binding FASTA not found: {peptide_fa}")

@@ -15,6 +15,10 @@ to use the native backend.
 - Cryptic and microbial antigens read their peptide FASTA directly, build
   de-duplicated peptide-HLA-algorithm tasks, and write a pVACbind-compatible
   merged table.
+- Matched-normal microbial analyses first build a tumor-only peptide Core.
+  Their FASTA input is already tiled; it is passed with
+  `--input-mode peptide-core` so the common workflow writes one epitope-window
+  row per FASTA record instead of sliding windows across it again.
 - The common runner does not perform antigen-specific biological filtering.
 
 ## Configuration

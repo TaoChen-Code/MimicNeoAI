@@ -133,7 +133,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-s", "--sample", required=True)
-    parser.add_argument("--pep-fasta", required=True, help="Input peptide FASTA.")
+    parser.add_argument("--pep-fasta", required=True, help="Input peptide or parent-sequence FASTA.")
+    parser.add_argument(
+        "--input-mode",
+        choices=("parent-fasta", "peptide-core"),
+        default="parent-fasta",
+        help=(
+            "parent-fasta tiles each FASTA record into candidate windows; "
+            "peptide-core treats each FASTA record as an already tiled candidate peptide."
+        ),
+    )
     parser.add_argument("--hla-file", required=True, help="HLA-HD *_final.result.txt file.")
     parser.add_argument("-o", "--outdir", required=True, help="Output directory.")
     parser.add_argument(
@@ -231,6 +240,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     epitope_windows_manifest_path = task_dir / "epitope_windows.manifest.json"
     epitope_windows_signature = {
         "schema_version": EPITOPE_WINDOWS_SCHEMA_VERSION,
+        "input_mode": args.input_mode,
         "peptide_fasta": file_identity(Path(args.pep_fasta)),
         "mhc_i_lengths": list(mhc_i_lengths),
         "mhc_ii_lengths": list(mhc_ii_lengths),
@@ -249,6 +259,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             Path(args.pep_fasta),
             mhc_i_lengths,
             mhc_ii_lengths,
+            input_mode=args.input_mode,
         )
         preflight_full_estimated_task_rows = estimate_binding_task_rows(
             len(preflight_mhc_i_peptides),
@@ -328,6 +339,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             summary = {
                 "sample": args.sample,
                 "peptide_fasta": str(Path(args.pep_fasta)),
+                "input_mode": args.input_mode,
                 "hla_file": str(Path(args.hla_file)),
                 "output_dir": str(outdir),
                 "binding_prediction_preset": policy.name if policy else "",
@@ -378,6 +390,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             epitope_windows_path,
             mhc_i_lengths,
             mhc_ii_lengths,
+            input_mode=args.input_mode,
         )
         write_json(
             epitope_windows_manifest_path,
@@ -638,6 +651,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     summary = {
         "sample": args.sample,
         "peptide_fasta": str(Path(args.pep_fasta)),
+        "input_mode": args.input_mode,
         "hla_file": str(Path(args.hla_file)),
         "output_dir": str(outdir),
         "binding_prediction_preset": policy.name if policy else "",
@@ -867,8 +881,14 @@ def scan_epitope_windows_from_fasta(
     fasta_path: Path,
     mhc_i_lengths: tuple[int, ...],
     mhc_ii_lengths: tuple[int, ...],
+    input_mode: str = "parent-fasta",
 ) -> tuple[dict[str, int], set[str], set[str]]:
     """Count candidate windows and unique peptides without writing the window table."""
+
+    if input_mode == "peptide-core":
+        return scan_epitope_windows_from_peptide_core(fasta_path, mhc_i_lengths, mhc_ii_lengths)
+    if input_mode != "parent-fasta":
+        raise ValueError(f"Unsupported input_mode: {input_mode}")
 
     mhc_i_peptides: set[str] = set()
     mhc_ii_peptides: set[str] = set()
@@ -902,7 +922,18 @@ def write_epitope_windows_from_fasta(
     output_path: Path,
     mhc_i_lengths: tuple[int, ...],
     mhc_ii_lengths: tuple[int, ...],
+    input_mode: str = "parent-fasta",
 ) -> tuple[dict[str, int], set[str], set[str]]:
+    if input_mode == "peptide-core":
+        return write_epitope_windows_from_peptide_core(
+            fasta_path,
+            output_path,
+            mhc_i_lengths,
+            mhc_ii_lengths,
+        )
+    if input_mode != "parent-fasta":
+        raise ValueError(f"Unsupported input_mode: {input_mode}")
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     mhc_i_peptides: set[str] = set()
     mhc_ii_peptides: set[str] = set()
@@ -934,6 +965,115 @@ def write_epitope_windows_from_fasta(
                     writer.writerow(row)
                     mhc_ii_peptides.add(row["Epitope Seq"])
                     epitope_window_rows += 1
+    return (
+        {"fasta_records": fasta_records, "epitope_window_rows": epitope_window_rows},
+        mhc_i_peptides,
+        mhc_ii_peptides,
+    )
+
+
+def infer_peptide_core_mhc_class(
+    record_id: str,
+    sequence: str,
+    mhc_i_lengths: tuple[int, ...],
+    mhc_ii_lengths: tuple[int, ...],
+) -> str:
+    """Infer MHC class for a pre-tiled peptide record from its length."""
+
+    length = len(sequence)
+    is_mhc_i = length in mhc_i_lengths
+    is_mhc_ii = length in mhc_ii_lengths
+    if is_mhc_i and is_mhc_ii:
+        raise ValueError(
+            f"Peptide-core FASTA record {record_id!r} has ambiguous length {length}; "
+            "MHC-I and MHC-II length sets must not overlap."
+        )
+    if is_mhc_i:
+        return "MHC-I"
+    if is_mhc_ii:
+        return "MHC-II"
+    raise ValueError(
+        f"Peptide-core FASTA record {record_id!r} has length {length}, which is not in "
+        f"MHC-I lengths {list(mhc_i_lengths)} or MHC-II lengths {list(mhc_ii_lengths)}."
+    )
+
+
+def iter_peptide_core_rows(
+    fasta_path: Path,
+    mhc_i_lengths: tuple[int, ...],
+    mhc_ii_lengths: tuple[int, ...],
+) -> Iterable[dict[str, str]]:
+    """Yield one epitope-window row per already tiled peptide FASTA record."""
+
+    for record_id, sequence in read_fasta(fasta_path):
+        if not sequence:
+            continue
+        mhc_class = infer_peptide_core_mhc_class(record_id, sequence, mhc_i_lengths, mhc_ii_lengths)
+        yield {
+            "Mutation": record_id,
+            "HLA Allele": "",
+            "Sub-peptide Position": "1",
+            "Epitope Seq": sequence,
+            "Peptide Length": str(len(sequence)),
+            "mhc_class": mhc_class,
+        }
+
+
+def scan_epitope_windows_from_peptide_core(
+    fasta_path: Path,
+    mhc_i_lengths: tuple[int, ...],
+    mhc_ii_lengths: tuple[int, ...],
+) -> tuple[dict[str, int], set[str], set[str]]:
+    mhc_i_peptides: set[str] = set()
+    mhc_ii_peptides: set[str] = set()
+    fasta_records = 0
+    epitope_window_rows = 0
+    for row in iter_peptide_core_rows(fasta_path, mhc_i_lengths, mhc_ii_lengths):
+        fasta_records += 1
+        peptide = row["Epitope Seq"]
+        if row["mhc_class"] == "MHC-I":
+            mhc_i_peptides.add(peptide)
+        else:
+            mhc_ii_peptides.add(peptide)
+        epitope_window_rows += 1
+    return (
+        {"fasta_records": fasta_records, "epitope_window_rows": epitope_window_rows},
+        mhc_i_peptides,
+        mhc_ii_peptides,
+    )
+
+
+def write_epitope_windows_from_peptide_core(
+    fasta_path: Path,
+    output_path: Path,
+    mhc_i_lengths: tuple[int, ...],
+    mhc_ii_lengths: tuple[int, ...],
+) -> tuple[dict[str, int], set[str], set[str]]:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    mhc_i_peptides: set[str] = set()
+    mhc_ii_peptides: set[str] = set()
+    fasta_records = 0
+    epitope_window_rows = 0
+    fieldnames = [
+        "Mutation",
+        "HLA Allele",
+        "Sub-peptide Position",
+        "Epitope Seq",
+        "Peptide Length",
+        "mhc_class",
+    ]
+    with output_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, delimiter="\t", fieldnames=fieldnames)
+        writer.writeheader()
+        for row in iter_peptide_core_rows(fasta_path, mhc_i_lengths, mhc_ii_lengths):
+            writer.writerow(row)
+            fasta_records += 1
+            peptide = row["Epitope Seq"]
+            if row["mhc_class"] == "MHC-I":
+                mhc_i_peptides.add(peptide)
+            else:
+                mhc_ii_peptides.add(peptide)
+            epitope_window_rows += 1
     return (
         {"fasta_records": fasta_records, "epitope_window_rows": epitope_window_rows},
         mhc_i_peptides,
