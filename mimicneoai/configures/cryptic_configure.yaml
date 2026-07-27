@@ -23,6 +23,7 @@ args:
 others:
   QC: true
   alignment: true
+  alignment_control: false  # Paired mode only: run STAR for matched normal to produce SJ.out.tab for junction QC.
   known: true
   novel: true
   salmon_quant: true
@@ -50,6 +51,9 @@ others:
   # allow_missing_human_reference is true.
   human_reference_proteome_fasta: ""
   allow_missing_human_reference: false
+  cryptic_core_qc_policy_version: "cryptic_core_qc_v1.0"  # cryptic_core_qc_v1.0 | cryptic_core_qc_v1.1
+  coordinate_min_mapq: 20
+  reference_build: "GRCh38"
 
   # Binding prediction backend. The reviewer-response Core uses the local
   # peptide-core backend; set pvactools explicitly only for legacy reruns.
@@ -72,12 +76,16 @@ others:
 # Frozen external-normal exact-match resources for 08c. Formal runs fail closed
 # when these paths are empty, missing, or SHA-mismatched against the manifest.
 external_normal_resources:
+  policy_version: "cryptic_external_normal_qc_v1.0"  # cryptic_external_normal_qc_v1.0 | cryptic_external_normal_qc_v1.1
   manifest: ""
   smorf_match_index: ""
   smorf_parent_map: ""
   hla_ligand_match_index: ""
   hla_ligand_evidence: ""
   coordinate_matching_enabled: false
+  coordinate_manifest: ""
+  smorf_coordinates: ""
+  smorf_orfcds: ""
 
 samples:
   - Sample_001_T,Sample_001_N

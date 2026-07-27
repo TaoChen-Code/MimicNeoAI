@@ -12,6 +12,19 @@ from mimicneoai.cryptic_pipeline.scripts.cryptic_core_qc import build_core, load
 
 
 class CrypticCoreQCTest(unittest.TestCase):
+    codons = {
+        "A": "GCT", "C": "TGT", "D": "GAT", "E": "GAA", "F": "TTT",
+        "G": "GGT", "H": "CAT", "I": "ATT", "K": "AAA", "L": "TTA",
+        "M": "ATG", "N": "AAT", "P": "CCT", "Q": "CAA", "R": "CGT",
+        "S": "TCT", "T": "ACT", "V": "GTT", "W": "TGG", "Y": "TAT",
+    }
+
+    def _nt_for_peptide(self, peptide: str) -> str:
+        return "".join(self.codons[aa] for aa in peptide)
+
+    def _reverse_complement(self, seq: str) -> str:
+        return seq.translate(str.maketrans("ACGT", "TGCA"))[::-1]
+
     def _write_inputs(self, root: Path) -> dict[str, Path]:
         annot = pd.DataFrame(
             [
@@ -100,13 +113,103 @@ class CrypticCoreQCTest(unittest.TestCase):
             "human": human_path,
         }
 
+    def _write_coordinate_inputs(self, root: Path, parent_sequences: dict[str, str]) -> dict[str, Path]:
+        import pysam
+
+        bed12 = root / "orf.noUnmap.noSup.bed12"
+        bam = root / "orf2genome.noUnmap.noSup.bam"
+        cds = root / "sample.SEPs.cds.fa"
+        ref = root / "GRCh38.test.fa"
+        contig = ["N"] * 20000
+
+        def place(start0: int, seq: str) -> None:
+            contig[start0 : start0 + len(seq)] = list(seq)
+
+        with bed12.open("w") as handle:
+            for idx, (parent_id, peptide) in enumerate(parent_sequences.items()):
+                start = 100 + idx * 1000
+                cds_seq = self._nt_for_peptide(peptide)
+                size = len(cds_seq)
+                strand = "-"
+                block_sizes = [size]
+                block_starts = [0]
+                if parent_id == "ENST_NC.1.p1":
+                    strand = "+"
+                    block_sizes = [18, size - 18]
+                    block_starts = [0, 100]
+                    place(start, cds_seq[:18])
+                    place(start + 100, cds_seq[18:])
+                    chrom_end = start + 100 + block_sizes[-1]
+                elif parent_id.startswith("TRINITY"):
+                    place(start, self._reverse_complement(cds_seq))
+                    chrom_end = start + size
+                else:
+                    strand = "+"
+                    place(start, cds_seq)
+                    chrom_end = start + size
+                handle.write(
+                    f"chr1\t{start}\t{chrom_end}\t{parent_id}\t30\t{strand}\t"
+                    f"{start}\t{chrom_end}\t0\t{len(block_sizes)}\t"
+                    f"{','.join(str(v) for v in block_sizes)},\t"
+                    f"{','.join(str(v) for v in block_starts)},\n"
+                )
+
+        ref.write_text(">chr1\n" + "".join(contig) + "\n")
+        pysam.faidx(str(ref))
+
+        with cds.open("w") as handle:
+            for parent_id, peptide in parent_sequences.items():
+                handle.write(f">{parent_id}\n{self._nt_for_peptide(peptide)}\n")
+
+        header = {"HD": {"VN": "1.6"}, "SQ": [{"SN": "chr1", "LN": 1000000}]}
+        with pysam.AlignmentFile(bam, "wb", header=header) as out:
+            for idx, (parent_id, peptide) in enumerate(parent_sequences.items()):
+                start = 100 + idx * 1000
+                size = len(peptide) * 3
+                rec = pysam.AlignedSegment()
+                rec.query_name = parent_id
+                rec.query_sequence = "A" * size
+                rec.flag = 16 if parent_id.startswith("TRINITY") else 0
+                rec.reference_id = 0
+                rec.reference_start = start
+                rec.mapping_quality = 30
+                if parent_id == "ENST_NC.1.p1":
+                    rec.cigar = [(0, 18), (3, 82), (0, size - 18)]
+                else:
+                    rec.cigar = [(0, size)]
+                out.write(rec)
+                if parent_id.endswith("DUP.1.p1"):
+                    sec = pysam.AlignedSegment()
+                    sec.query_name = parent_id
+                    sec.query_sequence = "A" * size
+                    sec.flag = 256
+                    sec.reference_id = 0
+                    sec.reference_start = start + 200
+                    sec.mapping_quality = 30
+                    sec.cigar = [(0, size)]
+                    out.write(sec)
+                    sup = pysam.AlignedSegment()
+                    sup.query_name = parent_id
+                    sup.query_sequence = "A" * size
+                    sup.flag = 2048
+                    sup.reference_id = 0
+                    sup.reference_start = start + 400
+                    sup.mapping_quality = 30
+                    sup.cigar = [(0, size)]
+                    out.write(sup)
+        return {"bed12": bed12, "bam": bam, "cds": cds, "ref": ref}
+
     def _args(self, paths: dict[str, Path], outdir: Path) -> argparse.Namespace:
         return argparse.Namespace(
             sample="TEST",
+            policy_version="cryptic_core_qc_v1.0",
             ae_seps_fasta=str(paths["fasta"]),
             aeseps_annotation=str(paths["annot"]),
             orf_filtered_fasta=str(paths["fasta"]),
             orf_final=str(paths["orf_final"]),
+            orf_bed12="",
+            orf_bam="",
+            orf_cds_fasta="",
             outdir=str(outdir),
             human_proteome_fasta=str(paths["human"]),
             allow_missing_human_reference=False,
@@ -114,12 +217,14 @@ class CrypticCoreQCTest(unittest.TestCase):
             reference_genome_fasta="",
             reference_gtf="",
             reference_lnc_gtf="",
+            reference_build="GRCh38",
             strandedness="reverse",
             min_tpm_tumor=5.0,
             max_tpm_ctrl=0.5,
             min_log2fc=4.0,
             mhc_i_lengths="8",
             mhc_ii_lengths="13",
+            coordinate_min_mapq=20,
         )
 
     def test_core_filters_and_resume_signature(self) -> None:
@@ -216,6 +321,96 @@ class CrypticCoreQCTest(unittest.TestCase):
             self.assertEqual(summary["records_encountered"], 1)
             self.assertEqual(summary["records_with_noncanonical_residues"], 1)
             self.assertEqual(summary["standard_windows_evaluated"], 3)
+
+    def test_v11_writes_coordinate_sidecars_and_marks_secondary_ambiguity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self._write_inputs(root)
+            coordinate_inputs = self._write_coordinate_inputs(
+                root,
+                {
+                    "ENST_NC.1.p1": "ACDEFGHIKLMNP",
+                    "TRINITY_X|NOVEL|.|..p1": "KLMNPQRSTVWY",
+                    "ENST_DUP.1.p1": "ACDEFGHIKLMNP",
+                },
+            )
+            outdir = root / "core_v11"
+            args = self._args(paths, outdir)
+            args.policy_version = "cryptic_core_qc_v1.1"
+            args.orf_bed12 = str(coordinate_inputs["bed12"])
+            args.orf_bam = str(coordinate_inputs["bam"])
+            args.orf_cds_fasta = str(coordinate_inputs["cds"])
+            args.reference_genome_fasta = str(coordinate_inputs["ref"])
+
+            manifest = build_core(args)
+
+            self.assertEqual(manifest["policy_version"], "cryptic_core_qc_v1.1")
+            self.assertIn("cryptic_parent_coordinates.tsv", manifest["output_signature"])
+            self.assertIn("cryptic_parent_orfcds.tsv", manifest["output_signature"])
+            self.assertIn("cryptic_peptide_genomic_footprint.tsv", manifest["output_signature"])
+            parent_coords = pd.read_csv(outdir / "cryptic_parent_coordinates.tsv", sep="\t")
+            status_by_parent = parent_coords.set_index("parent_record_id")["coordinate_mapping_status"].to_dict()
+            self.assertEqual(status_by_parent["ENST_NC.1.p1"], "coordinate_evaluable")
+            self.assertEqual(status_by_parent["TRINITY_X|NOVEL|.|..p1"], "coordinate_evaluable")
+            self.assertEqual(status_by_parent["ENST_DUP.1.p1"], "ambiguous_candidate_mapping")
+            self.assertEqual(
+                parent_coords.set_index("parent_record_id").loc[
+                    "ENST_NC.1.p1", "reference_genomic_translation_status"
+                ],
+                "pass",
+            )
+            self.assertEqual(
+                parent_coords.set_index("parent_record_id").loc[
+                    "TRINITY_X|NOVEL|.|..p1", "reference_genomic_translation_status"
+                ],
+                "pass",
+            )
+            self.assertEqual(
+                int(parent_coords.set_index("parent_record_id").loc[
+                    "ENST_DUP.1.p1", "supplementary_alignment_count"
+                ]),
+                1,
+            )
+            footprints = pd.read_csv(outdir / "cryptic_peptide_genomic_footprint.tsv", sep="\t")
+            self.assertIn("coordinate_evaluable", set(footprints["candidate_coordinate_status"]))
+            self.assertIn("ambiguous_candidate_mapping", set(footprints["candidate_coordinate_status"]))
+            self.assertEqual(manifest["stage_counts"]["candidate_parents_coordinate_evaluable"], 2)
+            self.assertEqual(manifest["stage_counts"]["candidate_parents_coordinate_not_evaluable"], 1)
+            self.assertEqual(manifest["stage_counts"]["candidate_parents_reference_translation_pass"], 3)
+
+    def test_v11_reference_translation_mismatch_is_not_coordinate_evaluable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self._write_inputs(root)
+            coordinate_inputs = self._write_coordinate_inputs(
+                root,
+                {
+                    "ENST_NC.1.p1": "ACDEFGHIKLMNP",
+                    "TRINITY_X|NOVEL|.|..p1": "KLMNPQRSTVWY",
+                    "ENST_DUP.1.p1": "ACDEFGHIKLMNP",
+                },
+            )
+            ref = Path(coordinate_inputs["ref"])
+            text = ref.read_text()
+            ref.write_text(text.replace("GCT", "AAA", 1))
+            import pysam
+            pysam.faidx(str(ref))
+
+            outdir = root / "core_v11_mismatch"
+            args = self._args(paths, outdir)
+            args.policy_version = "cryptic_core_qc_v1.1"
+            args.orf_bed12 = str(coordinate_inputs["bed12"])
+            args.orf_bam = str(coordinate_inputs["bam"])
+            args.orf_cds_fasta = str(coordinate_inputs["cds"])
+            args.reference_genome_fasta = str(ref)
+
+            manifest = build_core(args)
+            parent_coords = pd.read_csv(outdir / "cryptic_parent_coordinates.tsv", sep="\t")
+            row = parent_coords.set_index("parent_record_id").loc["ENST_NC.1.p1"]
+            self.assertEqual(row["reference_genomic_translation_status"], "reference_translation_mismatch")
+            self.assertIn("reference_translation_mismatch", row["coordinate_mapping_reasons"])
+            self.assertEqual(row["rna_variant_coordinate_status"], "RNA_variant_aware_not_evaluated")
+            self.assertEqual(manifest["stage_counts"]["candidate_parents_reference_translation_mismatch"], 1)
 
 
 if __name__ == "__main__":

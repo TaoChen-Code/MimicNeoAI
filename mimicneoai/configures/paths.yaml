@@ -106,3 +106,6 @@ database:
       SMORF_PARENT_MAP: "../database/ref/RNA/cryptic_external_normal/frozen_20260727/processed/normal_smorf_peptide_parent_map.tsv.gz"
       HLA_LIGAND_MATCH_INDEX: "../database/ref/RNA/cryptic_external_normal/frozen_20260727/processed/normal_hla_peptide_match_index.tsv.gz"
       HLA_LIGAND_EVIDENCE: "../database/ref/RNA/cryptic_external_normal/frozen_20260727/processed/normal_hla_ligand_evidence.tsv.gz"
+      COORDINATE_MANIFEST: "../database/ref/RNA/cryptic_external_normal/frozen_20260727_v1.1_coordinates/resource_manifest.json"
+      SMORF_COORDINATES: "../database/ref/RNA/cryptic_external_normal/frozen_20260727_v1.1_coordinates/processed/normal_smorfs_coordinates.tsv.gz"
+      SMORF_ORFCDS: "../database/ref/RNA/cryptic_external_normal/frozen_20260727_v1.1_coordinates/processed/normal_smorf_orfcds.tsv.gz"

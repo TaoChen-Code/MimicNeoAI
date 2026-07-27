@@ -40,6 +40,7 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.assertTrue(cryptic["others"]["cryptic_core_qc"])
         self.assertFalse(cryptic["others"]["cryptic_external_normal_qc"])
         self.assertFalse(cryptic["others"]["allow_missing_external_normal_resources"])
+        self.assertFalse(cryptic["others"]["alignment_control"])
         self.assertEqual(cryptic["others"]["binding_prediction_backend"], "mimicneoai")
         self.assertEqual(cryptic["others"]["binding_prediction_preset"], "fast")
         self.assertEqual(cryptic["others"]["mhcI_lengths"], "8,9,10,11")
@@ -427,6 +428,7 @@ class PipelineBackendContractTest(unittest.TestCase):
             "others": {
                 "QC": False,
                 "alignment": False,
+                "alignment_control": False,
                 "known": False,
                 "novel": False,
                 "salmon_quant": False,

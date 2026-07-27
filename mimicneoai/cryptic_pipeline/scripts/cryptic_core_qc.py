@@ -22,8 +22,45 @@ from typing import Iterable, Optional
 
 import pandas as pd
 
+try:
+    from mimicneoai.cryptic_pipeline.scripts.cryptic_coordinate_utils import (
+        GenomicBlock,
+        blocks_to_json,
+        blocks_to_text,
+        canonical_chromosome,
+        extract_transcript_cds_from_reference,
+        genomic_order,
+        load_bam_alignment_stats,
+        map_transcript_interval_to_genome,
+        open_reference_fasta,
+        parse_bed12,
+        reference_contig_lookup,
+        read_fasta_records,
+        transcript_order,
+        translate_cds,
+    )
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from cryptic_coordinate_utils import (  # type: ignore
+        GenomicBlock,
+        blocks_to_json,
+        blocks_to_text,
+        canonical_chromosome,
+        extract_transcript_cds_from_reference,
+        genomic_order,
+        load_bam_alignment_stats,
+        map_transcript_interval_to_genome,
+        open_reference_fasta,
+        parse_bed12,
+        reference_contig_lookup,
+        read_fasta_records,
+        transcript_order,
+        translate_cds,
+    )
 
-POLICY_VERSION = "cryptic_core_qc_v1.0"
+POLICY_VERSION_V1 = "cryptic_core_qc_v1.0"
+POLICY_VERSION_V11 = "cryptic_core_qc_v1.1"
+POLICY_VERSION = POLICY_VERSION_V1
+COORDINATE_UTILS_PATH = Path(__file__).with_name("cryptic_coordinate_utils.py")
 CANONICAL_AA = set("ACDEFGHIKLMNPQRSTVWY")
 ACCEPTED_SOURCE_CLASSES = {"novel", "noncoding"}
 
@@ -326,9 +363,278 @@ def stable_peptide_id(sample: str, mhc_class: str, peptide: str, index: int) -> 
     return f"cryptic_core_{class_tag}_{index:07d}_{digest}"
 
 
+def is_v11(policy_version: str) -> bool:
+    return policy_version == POLICY_VERSION_V11
+
+
+def require_coordinate_inputs(args: argparse.Namespace) -> None:
+    required = [
+        ("--orf-bed12", args.orf_bed12),
+        ("--orf-bam", args.orf_bam),
+        ("--orf-cds-fasta", args.orf_cds_fasta),
+        ("--reference-genome-fasta", args.reference_genome_fasta),
+    ]
+    missing = [label for label, value in required if not str(value or "").strip()]
+    if missing:
+        raise ValueError(
+            "cryptic_core_qc_v1.1 requires coordinate inputs: " + ", ".join(missing)
+        )
+    for label, value in required:
+        path = Path(value)
+        if not path.exists():
+            raise FileNotFoundError(f"{label} file not found: {path}")
+
+
+def summarize_alignment_loci(alignments: list[dict[str, object]]) -> str:
+    values = []
+    for aln in alignments:
+        chrom = str(aln.get("chromosome", ""))
+        strand = str(aln.get("strand", ""))
+        start = str(aln.get("start0", ""))
+        end = str(aln.get("end0", ""))
+        mapq = str(aln.get("mapq", ""))
+        cigar = str(aln.get("cigar", ""))
+        values.append(f"{chrom}:{start}-{end}:{strand}:MAPQ{mapq}:{cigar}")
+    return ";".join(values)
+
+
+def build_coordinate_sidecars(
+    args: argparse.Namespace,
+    parent_core_rows: list[dict[str, object]],
+    peptide_parent_rows: list[dict[str, object]],
+    policy_version: str,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], dict[str, object]]:
+    if not is_v11(policy_version):
+        return [], [], [], {"status": "not_evaluated_policy_v1.0"}
+
+    require_coordinate_inputs(args)
+    bed12_entries = parse_bed12(Path(args.orf_bed12))
+    bam_stats = load_bam_alignment_stats(Path(args.orf_bam))
+    cds_records = read_fasta_records(Path(args.orf_cds_fasta))
+    reference_fasta = open_reference_fasta(Path(args.reference_genome_fasta))
+    reference_lookup = reference_contig_lookup(reference_fasta)
+    min_mapq = int(args.coordinate_min_mapq)
+    reference_build = str(args.reference_build or "GRCh38")
+
+    parent_by_id = {str(row["parent_record_id"]): row for row in parent_core_rows}
+    parent_coordinates: list[dict[str, object]] = []
+    parent_orfcds: list[dict[str, object]] = []
+    parent_status: dict[str, dict[str, object]] = {}
+
+    try:
+        for parent_id, parent_row in parent_by_id.items():
+            stats = bam_stats.get(parent_id, {"primary": [], "secondary": [], "supplementary": []})
+            primary = list(stats.get("primary", []))
+            secondary = list(stats.get("secondary", []))
+            supplementary = list(stats.get("supplementary", []))
+            bed_entries = bed12_entries.get(parent_id, [])
+            reasons: list[str] = []
+            status = "coordinate_evaluable"
+            chosen: dict[str, object] | None = primary[0] if len(primary) == 1 else None
+
+            if len(primary) != 1:
+                status = "ambiguous_candidate_mapping"
+                reasons.append("primary_alignment_count_not_one")
+            if secondary:
+                status = "ambiguous_candidate_mapping"
+                reasons.append("secondary_alignment_present")
+            if supplementary:
+                status = "ambiguous_candidate_mapping"
+                reasons.append("supplementary_alignment_present")
+            if chosen is None:
+                chosen = primary[0] if primary else None
+
+            blocks = [block for block in (chosen or {}).get("blocks", []) if isinstance(block, GenomicBlock)]
+            chrom = str((chosen or {}).get("chromosome", ""))
+            strand = str((chosen or {}).get("strand", ""))
+            mapq_values = [int(aln.get("mapq", 0)) for aln in primary]
+            mapq = mapq_values[0] if len(mapq_values) == 1 else ""
+            if chosen is not None and mapq != "" and int(mapq) < min_mapq:
+                status = "not_evaluable_candidate_coordinate_qc" if status == "coordinate_evaluable" else status
+                reasons.append(f"mapq_below_{min_mapq}")
+            if chosen is not None and not canonical_chromosome(chrom):
+                status = "not_evaluable_candidate_coordinate_qc" if status == "coordinate_evaluable" else status
+                reasons.append("noncanonical_contig")
+
+            tx_blocks = transcript_order(blocks, strand) if blocks and strand in {"+", "-"} else []
+            g_blocks = genomic_order(blocks)
+            input_cds_seq = cds_records.get(parent_id, "")
+            input_cds_length = len(input_cds_seq)
+            block_total = sum(block.length for block in blocks)
+            input_translated = translate_cds(input_cds_seq) if input_cds_seq else ""
+            parent_sequence = str(parent_row.get("parent_sequence", ""))
+            input_translation_status = "pass"
+            if not input_cds_seq:
+                input_translation_status = "missing_cds_fasta_record"
+                status = "not_evaluable_candidate_coordinate_qc" if status == "coordinate_evaluable" else status
+                reasons.append("missing_cds_fasta_record")
+            elif input_translated != parent_sequence:
+                input_translation_status = "input_cds_translation_mismatch"
+                status = "not_evaluable_candidate_coordinate_qc" if status == "coordinate_evaluable" else status
+                reasons.append("input_cds_translation_mismatch")
+            if chosen is not None and input_cds_seq and block_total != input_cds_length:
+                status = "not_evaluable_candidate_coordinate_qc" if status == "coordinate_evaluable" else status
+                reasons.append("input_cds_length_block_total_mismatch")
+
+            reference_cds_seq = ""
+            reference_reasons: list[str] = []
+            reference_translation_status = "not_evaluable_candidate_coordinate_qc"
+            rna_variant_coordinate_status = "not_evaluated"
+            if chosen is None or not tx_blocks:
+                reference_reasons.append("missing_trusted_primary_blocks")
+            else:
+                reference_cds_seq, reference_reasons = extract_transcript_cds_from_reference(
+                    reference_fasta,
+                    reference_lookup,
+                    tx_blocks,
+                )
+            if reference_reasons:
+                status = "not_evaluable_candidate_coordinate_qc" if status == "coordinate_evaluable" else status
+                reasons.extend(reference_reasons)
+                reference_translation_status = "reference_translation_not_evaluable"
+            else:
+                reference_translated = translate_cds(reference_cds_seq)
+                if reference_translated == parent_sequence:
+                    reference_translation_status = "pass"
+                else:
+                    status = "not_evaluable_candidate_coordinate_qc" if status == "coordinate_evaluable" else status
+                    reasons.append("reference_translation_mismatch")
+                    reference_translation_status = "reference_translation_mismatch"
+                    rna_variant_coordinate_status = "RNA_variant_aware_not_evaluated"
+            terminal_stop = (
+                len(input_cds_seq) >= 3
+                and len(input_cds_seq) % 3 == 0
+                and input_cds_seq[-3:].upper() in {"TAA", "TAG", "TGA"}
+            )
+            parent_info = {
+                "sample": args.sample,
+                "parent_record_id": parent_id,
+                "chromosome": chrom,
+                "strand": strand,
+                "genomic_start0": min((block.start0 for block in blocks), default=""),
+                "genomic_end0": max((block.end0 for block in blocks), default=""),
+                "block_count": len(blocks),
+                "source_blocks_genomic_order": blocks_to_text(g_blocks),
+                "blocks_transcript_order": blocks_to_text(tx_blocks),
+                "primary_alignment_count": len(primary),
+                "secondary_alignment_count": len(secondary),
+                "supplementary_alignment_count": len(supplementary),
+                "MAPQ": mapq,
+                "cds_nucleotide_length": input_cds_length,
+                "block_total_length": block_total,
+                "terminal_stop_in_cds": terminal_stop,
+                "reference_genomic_cds_length": len(reference_cds_seq),
+                "input_cds_translation_status": input_translation_status,
+                "reference_genomic_translation_status": reference_translation_status,
+                "rna_variant_coordinate_status": rna_variant_coordinate_status,
+                "reference_build": reference_build,
+                "bed12_alignment_count": len(bed_entries),
+                "all_alignment_loci": summarize_alignment_loci(primary + secondary + supplementary),
+                "coordinate_mapping_status": status,
+                "coordinate_mapping_reasons": ";".join(sorted(set(reasons))),
+            }
+            parent_coordinates.append(parent_info)
+            parent_status[parent_id] = {**parent_info, "transcript_blocks": tx_blocks}
+
+            for idx, block in enumerate(tx_blocks, start=1):
+                cumulative_before = sum(prev.length for prev in tx_blocks[: idx - 1])
+                parent_orfcds.append({
+                    "sample": args.sample,
+                    "parent_record_id": parent_id,
+                    "transcript_block_order": idx,
+                    "chromosome": block.chrom,
+                    "strand": block.strand,
+                    "start0": block.start0,
+                    "end0": block.end0,
+                    "block_length": block.length,
+                    "derived_phase": cumulative_before % 3,
+                    "phase_provenance": "derived_from_zero_phase_candidate_orf_start",
+                    "coordinate_mapping_status": status,
+                })
+    finally:
+        reference_fasta.close()
+
+    peptide_footprints: list[dict[str, object]] = []
+    for row in peptide_parent_rows:
+        parent_id = str(row.get("parent_record_id", ""))
+        parent_info = parent_status.get(parent_id, {})
+        status = str(parent_info.get("coordinate_mapping_status", "not_evaluable_candidate_coordinate_qc"))
+        reasons = str(parent_info.get("coordinate_mapping_reasons", ""))
+        tx_blocks = parent_info.get("transcript_blocks", [])
+        peptide_start = int(row.get("peptide_start", 0))
+        peptide_length = int(row.get("peptide_length", 0))
+        cds_start0 = (peptide_start - 1) * 3
+        cds_end0 = cds_start0 + peptide_length * 3
+        footprint_blocks: list[GenomicBlock] = []
+        if status == "coordinate_evaluable":
+            try:
+                footprint_blocks = [
+                    block
+                    for _segment_start, _segment_end, block in map_transcript_interval_to_genome(
+                        tx_blocks, str(parent_info.get("strand", "")), cds_start0, cds_end0
+                    )
+                ]
+            except Exception as exc:
+                status = "not_evaluable_candidate_coordinate_qc"
+                reasons = ";".join(filter(None, [reasons, f"peptide_footprint_mapping_failed:{exc}"]))
+        peptide_footprints.append({
+            "sample": args.sample,
+            "peptide_record_id": row.get("peptide_record_id", ""),
+            "parent_record_id": parent_id,
+            "source_parent_id": row.get("source_parent_id", ""),
+            "mhc_class": row.get("mhc_class", ""),
+            "peptide": row.get("peptide", ""),
+            "peptide_start": peptide_start,
+            "peptide_length": peptide_length,
+            "chromosome": parent_info.get("chromosome", ""),
+            "strand": parent_info.get("strand", ""),
+            "peptide_cds_start0": cds_start0,
+            "peptide_cds_end0": cds_end0,
+            "codon_blocks_transcript_order": blocks_to_json(footprint_blocks),
+            "codon_blocks_text": blocks_to_text(footprint_blocks),
+            "peptide_footprint_phase": cds_start0 % 3,
+            "candidate_coordinate_status": status,
+            "candidate_coordinate_reasons": reasons,
+            "reference_build": reference_build,
+        })
+
+    summary = {
+        "status": "evaluated",
+        "parent_rows": len(parent_coordinates),
+        "parent_coordinate_evaluable": sum(
+            1 for row in parent_coordinates if row["coordinate_mapping_status"] == "coordinate_evaluable"
+        ),
+        "parent_coordinate_not_evaluable": sum(
+            1 for row in parent_coordinates if row["coordinate_mapping_status"] != "coordinate_evaluable"
+        ),
+        "parent_reference_translation_pass": sum(
+            1 for row in parent_coordinates if row["reference_genomic_translation_status"] == "pass"
+        ),
+        "parent_reference_translation_mismatch": sum(
+            1 for row in parent_coordinates
+            if row["reference_genomic_translation_status"] == "reference_translation_mismatch"
+        ),
+        "parent_reference_translation_not_evaluable": sum(
+            1 for row in parent_coordinates
+            if row["reference_genomic_translation_status"] == "reference_translation_not_evaluable"
+        ),
+        "peptide_footprint_rows": len(peptide_footprints),
+        "peptide_coordinate_evaluable": sum(
+            1 for row in peptide_footprints if row["candidate_coordinate_status"] == "coordinate_evaluable"
+        ),
+    }
+    return parent_coordinates, parent_orfcds, peptide_footprints, summary
+
+
 def build_core(args: argparse.Namespace) -> dict[str, object]:
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+
+    policy_version = str(args.policy_version)
+    if policy_version not in {POLICY_VERSION_V1, POLICY_VERSION_V11}:
+        raise ValueError(f"Unsupported Cryptic Core QC policy_version: {policy_version}")
+    if is_v11(policy_version):
+        require_coordinate_inputs(args)
 
     script_sha256 = sha256_file(Path(__file__))
     mhc_i_lengths = parse_int_list(args.mhc_i_lengths)
@@ -342,6 +648,11 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         "orf_filtered_fasta": file_identity(Path(args.orf_filtered_fasta)),
         "orf_final": file_identity(Path(args.orf_final)),
     }
+    if is_v11(policy_version):
+        input_paths["orf_bed12"] = file_identity(Path(args.orf_bed12))
+        input_paths["orf_bam"] = file_identity(Path(args.orf_bam))
+        input_paths["orf_cds_fasta"] = file_identity(Path(args.orf_cds_fasta))
+        input_paths["coordinate_utils"] = file_identity(COORDINATE_UTILS_PATH)
     human_proteome = Path(args.human_proteome_fasta) if args.human_proteome_fasta else None
     if human_proteome:
         input_paths["human_reference_proteome_fasta"] = file_identity(human_proteome)
@@ -359,8 +670,9 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
             input_paths[key] = file_identity(Path(value))
 
     signature = {
-        "policy_version": POLICY_VERSION,
+        "policy_version": policy_version,
         "script_sha256": script_sha256,
+        "coordinate_utils_sha256": sha256_file(COORDINATE_UTILS_PATH) if is_v11(policy_version) else "",
         "sample": args.sample,
         "matched_control_sample": args.matched_control_sample,
         "accepted_source_classes": sorted(ACCEPTED_SOURCE_CLASSES),
@@ -371,6 +683,8 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         "mhc_ii_lengths": mhc_ii_lengths,
         "allow_missing_human_reference": bool(args.allow_missing_human_reference),
         "strandedness": args.strandedness,
+        "coordinate_min_mapq": int(args.coordinate_min_mapq),
+        "reference_build": str(args.reference_build or "GRCh38"),
         "input_paths": input_paths,
     }
 
@@ -390,6 +704,12 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         outdir / "cryptic_normal_resource_evidence.tsv",
         outdir / "stagewise_qc.tsv",
     ]
+    if is_v11(policy_version):
+        required_outputs.extend([
+            outdir / "cryptic_parent_coordinates.tsv",
+            outdir / "cryptic_parent_orfcds.tsv",
+            outdir / "cryptic_peptide_genomic_footprint.tsv",
+        ])
     if manifest_path.exists():
         old = read_json(manifest_path)
         if old.get("input_signature") != signature:
@@ -547,6 +867,12 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
 
     hla_i_rows = [row for row in unique_core_peptide_rows if row["mhc_class"] == "MHC-I"]
     hla_ii_rows = [row for row in unique_core_peptide_rows if row["mhc_class"] == "MHC-II"]
+    parent_coordinate_rows, parent_orfcds_rows, peptide_footprint_rows, coordinate_summary = build_coordinate_sidecars(
+        args,
+        parent_core_rows,
+        core_peptide_rows,
+        policy_version,
+    )
 
     with (outdir / "cryptic_parent_core.fasta").open("w") as handle:
         for record_id, sequence in parent_fasta_rows:
@@ -578,6 +904,32 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
     write_tsv(unique_core_peptide_rows, outdir / "cryptic_peptide_core.tsv", peptide_fields)
     write_tsv(core_peptide_rows + excluded_peptide_rows, outdir / "cryptic_peptide_parent_map.tsv", peptide_fields)
     write_tsv(core_peptide_rows + excluded_peptide_rows, outdir / "cryptic_normal_resource_evidence.tsv", peptide_fields)
+    if is_v11(policy_version):
+        parent_coordinate_fields = [
+            "sample", "parent_record_id", "chromosome", "strand", "genomic_start0", "genomic_end0",
+            "block_count", "source_blocks_genomic_order", "blocks_transcript_order",
+            "primary_alignment_count", "secondary_alignment_count", "supplementary_alignment_count",
+            "MAPQ", "cds_nucleotide_length", "block_total_length", "terminal_stop_in_cds",
+            "reference_genomic_cds_length", "input_cds_translation_status",
+            "reference_genomic_translation_status", "rna_variant_coordinate_status",
+            "reference_build", "bed12_alignment_count", "all_alignment_loci",
+            "coordinate_mapping_status", "coordinate_mapping_reasons",
+        ]
+        parent_orfcds_fields = [
+            "sample", "parent_record_id", "transcript_block_order", "chromosome", "strand",
+            "start0", "end0", "block_length", "derived_phase", "phase_provenance",
+            "coordinate_mapping_status",
+        ]
+        peptide_footprint_fields = [
+            "sample", "peptide_record_id", "parent_record_id", "source_parent_id", "mhc_class",
+            "peptide", "peptide_start", "peptide_length", "chromosome", "strand",
+            "peptide_cds_start0", "peptide_cds_end0", "codon_blocks_transcript_order",
+            "codon_blocks_text", "peptide_footprint_phase", "candidate_coordinate_status",
+            "candidate_coordinate_reasons", "reference_build",
+        ]
+        write_tsv(parent_coordinate_rows, outdir / "cryptic_parent_coordinates.tsv", parent_coordinate_fields)
+        write_tsv(parent_orfcds_rows, outdir / "cryptic_parent_orfcds.tsv", parent_orfcds_fields)
+        write_tsv(peptide_footprint_rows, outdir / "cryptic_peptide_genomic_footprint.tsv", peptide_footprint_fields)
 
     stage_counts = [
         {"stage": "orf_filtered_parent_records", "count": len(parent_rows)},
@@ -590,13 +942,40 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         {"stage": "hla_i_unique_peptide_core_records", "count": len(hla_i_rows)},
         {"stage": "hla_ii_unique_peptide_core_records", "count": len(hla_ii_rows)},
     ]
+    if is_v11(policy_version):
+        stage_counts.extend([
+            {
+                "stage": "candidate_parents_coordinate_evaluable",
+                "count": int(coordinate_summary.get("parent_coordinate_evaluable", 0)),
+            },
+            {
+                "stage": "candidate_parents_coordinate_not_evaluable",
+                "count": int(coordinate_summary.get("parent_coordinate_not_evaluable", 0)),
+            },
+            {
+                "stage": "candidate_parents_reference_translation_pass",
+                "count": int(coordinate_summary.get("parent_reference_translation_pass", 0)),
+            },
+            {
+                "stage": "candidate_parents_reference_translation_mismatch",
+                "count": int(coordinate_summary.get("parent_reference_translation_mismatch", 0)),
+            },
+            {
+                "stage": "candidate_parents_reference_translation_not_evaluable",
+                "count": int(coordinate_summary.get("parent_reference_translation_not_evaluable", 0)),
+            },
+            {
+                "stage": "peptides_coordinate_evaluable",
+                "count": int(coordinate_summary.get("peptide_coordinate_evaluable", 0)),
+            },
+        ])
     write_tsv(stage_counts, outdir / "stagewise_qc.tsv", ["stage", "count"])
 
     outputs_hash = output_signature(required_outputs)
     manifest = {
         "sample": args.sample,
         "matched_control_sample": args.matched_control_sample,
-        "policy_version": POLICY_VERSION,
+        "policy_version": policy_version,
         "run_status": "complete",
         "started_at": ts(),
         "finished_at": ts(),
@@ -605,6 +984,7 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         "input_signature": signature,
         "human_reference_evaluation": human_reference_summary["status"],
         "human_reference_summary": human_reference_summary,
+        "candidate_coordinate_summary": coordinate_summary,
         "outputs": {path.name: str(path) for path in required_outputs},
         "output_signature": outputs_hash,
         "stage_counts": {row["stage"]: row["count"] for row in stage_counts},
@@ -619,11 +999,20 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-s", "--sample", required=True)
+    parser.add_argument(
+        "--policy-version",
+        default=POLICY_VERSION_V1,
+        choices=[POLICY_VERSION_V1, POLICY_VERSION_V11],
+        help="Cryptic Core QC policy version. v1.1 writes candidate coordinate sidecars.",
+    )
     parser.add_argument("--matched-control-sample", default="")
     parser.add_argument("--ae-seps-fasta", required=True)
     parser.add_argument("--aeseps-annotation", required=True)
     parser.add_argument("--orf-filtered-fasta", required=True)
     parser.add_argument("--orf-final", required=True)
+    parser.add_argument("--orf-bed12", default="")
+    parser.add_argument("--orf-bam", default="")
+    parser.add_argument("--orf-cds-fasta", default="")
     parser.add_argument("-o", "--outdir", required=True)
     parser.add_argument("--human-proteome-fasta", default="")
     parser.add_argument(
@@ -634,12 +1023,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reference-genome-fasta", default="")
     parser.add_argument("--reference-gtf", default="")
     parser.add_argument("--reference-lnc-gtf", default="")
+    parser.add_argument("--reference-build", default="GRCh38")
     parser.add_argument("--strandedness", default="")
     parser.add_argument("--min-tpm-tumor", type=float, default=5.0)
     parser.add_argument("--max-tpm-ctrl", type=float, default=0.5)
     parser.add_argument("--min-log2fc", type=float, default=4.0)
     parser.add_argument("--mhc-i-lengths", default="8,9,10,11")
     parser.add_argument("--mhc-ii-lengths", default="13,14,15,16,17")
+    parser.add_argument("--coordinate-min-mapq", type=int, default=20)
     return parser
 
 

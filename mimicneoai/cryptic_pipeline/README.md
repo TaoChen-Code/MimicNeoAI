@@ -96,10 +96,12 @@ Notable subfolders:
 - `08b-cryptic_core_qc`: materializes the strict pre-binding Cryptic Core
   with parent sidecars, HLA-I/HLA-II peptide-core FASTA files, stagewise counts,
   and an input/config manifest.
-- `08c-external_normal_qc`: applies frozen external-normal sequence
-  resources using exact peptide sequence plus HLA class. It keeps the complete
-  source-Core landscape and writes the tumor-restricted primary Core FASTA used
-  by downstream binding.
+- `08c-external_normal_qc`: applies frozen external-normal resources. Policy
+  `cryptic_external_normal_qc_v1.0` uses exact peptide sequence plus HLA class.
+  Policy `cryptic_external_normal_qc_v1.1` keeps those exact-match rules and
+  adds normal smORF coordinate/frame evidence. It keeps the complete source-Core
+  landscape and writes the tumor-restricted primary Core FASTA used by
+  downstream binding.
 - `09-hla_binding_pred/<tumor_sample>/pvacbind` for the pVACbind backend, or
   `09-hla_binding_pred_mimicneoai/<tumor_sample>/` for the MimicNeoAI backend
 
@@ -121,6 +123,22 @@ Notable subfolders:
   rely on populated `paths.yaml` resource entries. Missing or hash-mismatched
   resources fail closed. `allow_missing_external_normal_resources: true` is
   exploratory only and cannot be routed into binding.
+- External-normal QC v1.1 only uses coordinate/frame evidence when the candidate
+  parent has exactly one primary ORF-genome alignment in the complete
+  `orf2genome.bam`, no secondary/supplementary ambiguity, MAPQ above the
+  configured threshold, canonical GRCh38 contig coordinates, consistent
+  CDS/block length, and strand-aware genomic translation from the configured
+  GRCh38 FASTA reproduces the parent peptide. Reference translation mismatch is
+  recorded as RNA-variant-aware not evaluable, not as normal evidence.
+- In v1.1, a unique peptide is removed from the strict primary Core only when at
+  least one trusted candidate parent is
+  `normal_smorf_coordinate_frame_concordant`. Partial overlap, frame-discordant
+  overlap, incompatible junction chains, low MAPQ, secondary/supplementary
+  alignments, noncanonical contigs, and reference-translation mismatch are
+  annotated as not evaluable or non-excluding coordinate evidence.
+- `external_normal_status` distinguishes exact-match exclusions,
+  coordinate/frame exclusions, and peptides with both evidence types; use
+  `external_normal_qc_reasons` for the specific resource-level reason.
 - `others.binding_prediction_backend` defaults to `mimicneoai` in the template.
   The local backend estimates task scale before materializing the task table;
   see the [native binding backend documentation](../functions/binding_prediction/README.md).

@@ -13,6 +13,11 @@ from mimicneoai.cryptic_pipeline.scripts.cryptic_external_normal_qc import (
     build_external_normal_qc,
     sha256_file,
 )
+from mimicneoai.cryptic_pipeline.scripts.cryptic_coordinate_utils import (
+    GenomicBlock,
+    classify_coordinate_match,
+    blocks_to_json,
+)
 
 
 def write_tsv(path: Path, rows: list[dict[str, object]], columns: list[str]) -> None:
@@ -34,6 +39,7 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
         "parent_record_id",
         "source_parent_id",
         "mhc_class",
+        "peptide_start",
         "peptide_length",
         "peptide",
     ]
@@ -85,6 +91,7 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
                 "parent_record_id": f"parent_{row['peptide_record_id']}",
                 "source_parent_id": f"source_{row['peptide_record_id']}",
                 "mhc_class": row["mhc_class"],
+                "peptide_start": 1,
                 "peptide_length": row["peptide_length"],
                 "peptide": row["peptide"],
             }
@@ -97,6 +104,7 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
                 "parent_record_id": "parent_pep5_b",
                 "source_parent_id": "source_pep5_b",
                 "mhc_class": "MHC-I",
+                "peptide_start": 1,
                 "peptide_length": 8,
                 "peptide": "QRSTVWYA",
             }
@@ -291,18 +299,244 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
             "hla_evidence": hla_evidence,
         }
 
+    def _write_coordinate_resources(
+        self,
+        root: Path,
+        *,
+        freeze_version: str = "smorf_coordinate_resources_v1.1_20260727",
+    ) -> dict[str, Path]:
+        resource_root = root / "coordinate_resources"
+        processed = resource_root / "processed"
+        coords = processed / "normal_smorfs_coordinates.tsv.gz"
+        orfcds = processed / "normal_smorf_orfcds.tsv.gz"
+        coord_rows = []
+        block_rows = []
+        for idx in range(1, 7768):
+            iorf = "iORF_MATCH" if idx == 1 else f"iORF_FAKE_{idx}"
+            orf = "ORF_MATCH" if idx == 1 else f"ORF_FAKE_{idx}"
+            chrom = "1" if idx == 1 else "2"
+            start = 100 if idx == 1 else 1000000 + idx * 30
+            end = start + 24
+            coord_rows.append({
+                "iorf_id": iorf,
+                "orf_id": orf,
+                "source_record_id": f"SMORF_{idx}",
+                "reference_build": "GRCh38",
+                "coordinate_qc_status": "pass",
+            })
+            block_rows.append({
+                "iorf_id": iorf,
+                "orf_id": orf,
+                "chromosome": chrom,
+                "strand": "+",
+                "start0": start,
+                "end0": end,
+                "transcript_block_order": 1,
+            })
+        write_tsv_gz(
+            coords,
+            coord_rows,
+            ["iorf_id", "orf_id", "source_record_id", "reference_build", "coordinate_qc_status"],
+        )
+        write_tsv_gz(
+            orfcds,
+            block_rows,
+            ["iorf_id", "orf_id", "chromosome", "strand", "start0", "end0", "transcript_block_order"],
+        )
+        manifest = resource_root / "resource_manifest.json"
+        processed_files = {}
+        for path in [coords, orfcds]:
+            rel = path.relative_to(resource_root).as_posix()
+            processed_files[rel] = {"size_bytes": path.stat().st_size, "sha256": sha256_file(path)}
+        manifest.write_text(
+            json.dumps(
+                {
+                    "freeze_version": freeze_version,
+                    "source": {"reference_build": "GRCh38"},
+                    "coordinate_policy": {"normalized_internal_coordinates": "0_based_half_open"},
+                    "qc": {"formal_coordinate_qc_passes": 7767},
+                    "processed_files": processed_files,
+                },
+                indent=2,
+            )
+        )
+        return {"coordinate_manifest": manifest, "normal_smorf_coordinates": coords, "normal_smorf_orfcds": orfcds}
+
+    def _write_v11_coordinate_sidecars(
+        self,
+        root: Path,
+        inputs: dict[str, Path],
+        core_rows: list[dict[str, object]],
+        parent_rows: list[dict[str, object]],
+        *,
+        bad_parent_status: str | None = None,
+    ) -> dict[str, Path]:
+        sidecar_root = inputs["core"].parent
+        parent_coordinates = sidecar_root / "cryptic_parent_coordinates.tsv"
+        parent_orfcds = sidecar_root / "cryptic_parent_orfcds.tsv"
+        footprint = sidecar_root / "cryptic_peptide_genomic_footprint.tsv"
+        parent_ids = sorted({str(row["parent_record_id"]) for row in parent_rows})
+        block_length_by_parent: dict[str, int] = {}
+        for row in parent_rows:
+            parent_id = str(row["parent_record_id"])
+            block_length_by_parent[parent_id] = max(
+                block_length_by_parent.get(parent_id, 0),
+                int(row["peptide_length"]) * 3,
+            )
+        parent_coordinate_rows = []
+        parent_orfcds_rows = []
+        for idx, parent_id in enumerate(parent_ids, start=1):
+            status = bad_parent_status or "coordinate_evaluable"
+            block_length = block_length_by_parent[parent_id]
+            blocks = [GenomicBlock("1", "+", 100, 100 + block_length)]
+            parent_coordinate_rows.append({
+                "sample": "CRYPTIC-T",
+                "parent_record_id": parent_id,
+                "block_count": 1,
+                "blocks_transcript_order": blocks_to_json(blocks),
+                "block_total_length": block_length,
+                "coordinate_mapping_status": status,
+            })
+            parent_orfcds_rows.append({
+                "sample": "CRYPTIC-T",
+                "parent_record_id": parent_id,
+                "transcript_block_order": 1,
+                "chromosome": "1",
+                "strand": "+",
+                "start0": 100,
+                "end0": 100 + block_length,
+                "block_length": block_length,
+                "derived_phase": 0,
+                "phase_provenance": "synthetic",
+                "coordinate_mapping_status": status,
+            })
+        footprint_rows = []
+        for row in parent_rows:
+            peptide_id = str(row["peptide_record_id"])
+            if not peptide_id:
+                continue
+            blocks = [GenomicBlock("1", "+", 100, 100 + int(row["peptide_length"]) * 3)]
+            footprint_rows.append({
+                "sample": row["sample"],
+                "peptide_record_id": peptide_id,
+                "parent_record_id": row["parent_record_id"],
+                "source_parent_id": row["source_parent_id"],
+                "mhc_class": row["mhc_class"],
+                "peptide": row["peptide"],
+                "peptide_start": 1,
+                "peptide_length": row["peptide_length"],
+                "codon_blocks_transcript_order": blocks_to_json(blocks),
+                "peptide_cds_start0": 0,
+                "peptide_cds_end0": int(row["peptide_length"]) * 3,
+                "candidate_coordinate_status": status,
+                "reference_build": "GRCh38",
+            })
+        write_tsv(
+            parent_coordinates,
+            parent_coordinate_rows,
+            [
+                "sample", "parent_record_id", "block_count", "blocks_transcript_order",
+                "block_total_length", "coordinate_mapping_status",
+            ],
+        )
+        write_tsv(
+            parent_orfcds,
+            parent_orfcds_rows,
+            [
+                "sample", "parent_record_id", "transcript_block_order", "chromosome", "strand",
+                "start0", "end0", "block_length", "derived_phase", "phase_provenance",
+                "coordinate_mapping_status",
+            ],
+        )
+        write_tsv(
+            footprint,
+            footprint_rows,
+            [
+                "sample", "peptide_record_id", "parent_record_id", "source_parent_id",
+                "mhc_class", "peptide", "peptide_start", "peptide_length",
+                "codon_blocks_transcript_order", "peptide_cds_start0", "peptide_cds_end0",
+                "candidate_coordinate_status", "reference_build",
+            ],
+        )
+        self.write_08b_manifest(
+            inputs["manifest"],
+            inputs["core"],
+            inputs["parent_map"],
+            policy_version="cryptic_core_qc_v1.1",
+            output_signature_override={
+                "cryptic_parent_coordinates.tsv": {
+                    "path": str(parent_coordinates),
+                    "exists": True,
+                    "size": parent_coordinates.stat().st_size,
+                    "sha256": sha256_file(parent_coordinates),
+                },
+                "cryptic_parent_orfcds.tsv": {
+                    "path": str(parent_orfcds),
+                    "exists": True,
+                    "size": parent_orfcds.stat().st_size,
+                    "sha256": sha256_file(parent_orfcds),
+                },
+                "cryptic_peptide_genomic_footprint.tsv": {
+                    "path": str(footprint),
+                    "exists": True,
+                    "size": footprint.stat().st_size,
+                    "sha256": sha256_file(footprint),
+                },
+            },
+        )
+        return {
+            "cryptic_parent_coordinates": parent_coordinates,
+            "cryptic_parent_orfcds": parent_orfcds,
+            "cryptic_peptide_genomic_footprint": footprint,
+        }
+
+    def _refresh_v11_manifest_signature(self, inputs: dict[str, Path], sidecars: dict[str, Path]) -> None:
+        self.write_08b_manifest(
+            inputs["manifest"],
+            inputs["core"],
+            inputs["parent_map"],
+            policy_version="cryptic_core_qc_v1.1",
+            output_signature_override={
+                "cryptic_parent_coordinates.tsv": {
+                    "path": str(sidecars["cryptic_parent_coordinates"]),
+                    "exists": True,
+                    "size": sidecars["cryptic_parent_coordinates"].stat().st_size,
+                    "sha256": sha256_file(sidecars["cryptic_parent_coordinates"]),
+                },
+                "cryptic_parent_orfcds.tsv": {
+                    "path": str(sidecars["cryptic_parent_orfcds"]),
+                    "exists": True,
+                    "size": sidecars["cryptic_parent_orfcds"].stat().st_size,
+                    "sha256": sha256_file(sidecars["cryptic_parent_orfcds"]),
+                },
+                "cryptic_peptide_genomic_footprint.tsv": {
+                    "path": str(sidecars["cryptic_peptide_genomic_footprint"]),
+                    "exists": True,
+                    "size": sidecars["cryptic_peptide_genomic_footprint"].stat().st_size,
+                    "sha256": sha256_file(sidecars["cryptic_peptide_genomic_footprint"]),
+                },
+            },
+        )
+
     def _args(self, inputs: dict[str, Path], resources: dict[str, Path], outdir: Path) -> argparse.Namespace:
         return argparse.Namespace(
             sample="CRYPTIC-T",
+            policy_version="cryptic_external_normal_qc_v1.0",
             cryptic_peptide_core=str(inputs["core"]),
             cryptic_peptide_parent_map=str(inputs["parent_map"]),
             upstream_manifest=str(inputs["manifest"]),
+            cryptic_parent_coordinates=str(inputs.get("cryptic_parent_coordinates", "")),
+            cryptic_parent_orfcds=str(inputs.get("cryptic_parent_orfcds", "")),
+            cryptic_peptide_genomic_footprint=str(inputs.get("cryptic_peptide_genomic_footprint", "")),
             outdir=str(outdir),
             resource_manifest=str(resources.get("manifest", "")),
             smorf_match_index=str(resources.get("smorf_index", "")),
             smorf_parent_map=str(resources.get("smorf_parent_map", "")),
             hla_ligand_match_index=str(resources.get("hla_index", "")),
             hla_ligand_evidence=str(resources.get("hla_evidence", "")),
+            coordinate_resource_manifest=str(resources.get("coordinate_manifest", "")),
+            normal_smorf_coordinates=str(resources.get("normal_smorf_coordinates", "")),
+            normal_smorf_orfcds=str(resources.get("normal_smorf_orfcds", "")),
             allow_missing_external_normal_resources=False,
             coordinate_matching_enabled=False,
         )
@@ -360,6 +594,264 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
             reused = build_external_normal_qc(self._args(inputs, resources, outdir))
             self.assertTrue(reused["reused"])
 
+    def test_coordinate_classifier_synthetic_cases(self) -> None:
+        ref_plus = [GenomicBlock("1", "+", 100, 124)]
+        self.assertEqual(
+            classify_coordinate_match([GenomicBlock("1", "+", 100, 124)], 0, ref_plus)[0],
+            "coordinate_frame_concordant",
+        )
+        ref_minus = [GenomicBlock("1", "-", 100, 124)]
+        self.assertEqual(
+            classify_coordinate_match([GenomicBlock("1", "-", 100, 124)], 0, ref_minus)[0],
+            "coordinate_frame_concordant",
+        )
+        self.assertEqual(
+            classify_coordinate_match([GenomicBlock("1", "+", 101, 125)], 0, [GenomicBlock("1", "+", 100, 130)])[0],
+            "coordinate_overlap_frame_discordant",
+        )
+        self.assertEqual(
+            classify_coordinate_match([GenomicBlock("1", "+", 95, 119)], 0, ref_plus)[0],
+            "partial_coordinate_overlap",
+        )
+        self.assertEqual(
+            classify_coordinate_match(
+                [GenomicBlock("1", "+", 100, 106), GenomicBlock("1", "+", 202, 220)],
+                0,
+                [GenomicBlock("1", "+", 100, 110), GenomicBlock("1", "+", 200, 230)],
+            )[0],
+            "junction_chain_incompatible",
+        )
+
+    def test_v11_coordinate_matching_excludes_coordinate_only_without_double_counting_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            core_rows = [
+                {
+                    "sample": "CRYPTIC-T",
+                    "peptide_record_id": "pep_coord",
+                    "mhc_class": "MHC-I",
+                    "peptide_length": 8,
+                    "peptide": "AAAAAAAA",
+                },
+                {
+                    "sample": "CRYPTIC-T",
+                    "peptide_record_id": "pep_both",
+                    "mhc_class": "MHC-I",
+                    "peptide_length": 8,
+                    "peptide": "ACDEFGHI",
+                },
+                {
+                    "sample": "CRYPTIC-T",
+                    "peptide_record_id": "pep_retained",
+                    "mhc_class": "MHC-I",
+                    "peptide_length": 8,
+                    "peptide": "CDEFGHIK",
+                },
+            ]
+            parent_rows = self.default_parent_rows(core_rows)[:3]
+            inputs = self._write_08b_core(
+                root,
+                core_rows=core_rows,
+                parent_rows=parent_rows,
+                policy_version="cryptic_core_qc_v1.1",
+            )
+            sidecars = self._write_v11_coordinate_sidecars(root, inputs, core_rows, parent_rows)
+            footprint = pd.read_csv(sidecars["cryptic_peptide_genomic_footprint"], sep="\t", dtype=str)
+            retained_idx = footprint["peptide_record_id"].eq("pep_retained")
+            footprint.loc[retained_idx, "codon_blocks_transcript_order"] = blocks_to_json(
+                [GenomicBlock("1", "+", 1000, 1024)]
+            )
+            footprint.to_csv(sidecars["cryptic_peptide_genomic_footprint"], sep="\t", index=False)
+            self._refresh_v11_manifest_signature(inputs, sidecars)
+            resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
+            args = self._args({**inputs, **sidecars}, resources, root / "08c_v11")
+            args.policy_version = "cryptic_external_normal_qc_v1.1"
+            args.coordinate_matching_enabled = True
+
+            manifest = build_external_normal_qc(args)
+
+            self.assertEqual(manifest["stage_counts"]["v1.0_exact_excluded_peptides"], 1)
+            self.assertEqual(manifest["stage_counts"]["coordinate_frame_concordant_peptides"], 2)
+            self.assertEqual(manifest["stage_counts"]["v1.1_coordinate_additional_excluded_peptides"], 1)
+            self.assertEqual(manifest["stage_counts"]["final_primary_core_unique_peptides"], 1)
+            annotated = pd.read_csv(root / "08c_v11" / "cryptic_external_normal_annotated_core.tsv", sep="\t")
+            self.assertEqual(len(annotated), 3)
+            retained = pd.read_csv(root / "08c_v11" / "cryptic_tumor_restricted_primary_core.tsv", sep="\t")
+            self.assertEqual(set(retained["peptide_record_id"]), {"pep_retained"})
+            excluded = pd.read_csv(root / "08c_v11" / "cryptic_external_normal_excluded.tsv", sep="\t")
+            reasons = excluded.set_index("peptide_record_id")["external_normal_qc_reasons"].to_dict()
+            statuses = excluded.set_index("peptide_record_id")["external_normal_status"].to_dict()
+            self.assertIn("normal_smorf_coordinate_frame_concordant", reasons["pep_coord"])
+            self.assertIn("normal_smorf_exact_peptide_match", reasons["pep_both"])
+            self.assertIn("normal_smorf_coordinate_frame_concordant", reasons["pep_both"])
+            self.assertEqual(statuses["pep_coord"], "external_normal_coordinate_frame_excluded")
+            self.assertEqual(statuses["pep_both"], "external_normal_exact_and_coordinate_frame_excluded")
+
+    def test_v11_coordinate_hash_mismatches_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            core_rows = self.default_core_rows()[:1]
+            parent_rows = [
+                {
+                    "sample": row["sample"],
+                    "peptide_record_id": row["peptide_record_id"],
+                    "parent_record_id": f"parent_{row['peptide_record_id']}",
+                    "source_parent_id": f"source_{row['peptide_record_id']}",
+                    "mhc_class": row["mhc_class"],
+                    "peptide_start": 1,
+                    "peptide_length": row["peptide_length"],
+                    "peptide": row["peptide"],
+                }
+                for row in core_rows
+            ]
+            inputs = self._write_08b_core(
+                root,
+                core_rows=core_rows,
+                parent_rows=parent_rows,
+                policy_version="cryptic_core_qc_v1.1",
+            )
+            sidecars = self._write_v11_coordinate_sidecars(root, inputs, core_rows, parent_rows)
+            resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
+            sidecars["cryptic_peptide_genomic_footprint"].write_text(
+                sidecars["cryptic_peptide_genomic_footprint"].read_text() + "\n"
+            )
+            args = self._args({**inputs, **sidecars}, resources, root / "08c_v11_bad_sidecar")
+            args.policy_version = "cryptic_external_normal_qc_v1.1"
+            args.coordinate_matching_enabled = True
+            with self.assertRaisesRegex(ValueError, "output_signature mismatch"):
+                build_external_normal_qc(args)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            core_rows = self.default_core_rows()[:1]
+            parent_rows = [
+                {
+                    "sample": row["sample"],
+                    "peptide_record_id": row["peptide_record_id"],
+                    "parent_record_id": f"parent_{row['peptide_record_id']}",
+                    "source_parent_id": f"source_{row['peptide_record_id']}",
+                    "mhc_class": row["mhc_class"],
+                    "peptide_start": 1,
+                    "peptide_length": row["peptide_length"],
+                    "peptide": row["peptide"],
+                }
+                for row in core_rows
+            ]
+            inputs = self._write_08b_core(
+                root,
+                core_rows=core_rows,
+                parent_rows=parent_rows,
+                policy_version="cryptic_core_qc_v1.1",
+            )
+            sidecars = self._write_v11_coordinate_sidecars(root, inputs, core_rows, parent_rows)
+            resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
+            with gzip.open(resources["normal_smorf_orfcds"], "at") as handle:
+                handle.write("bad\n")
+            args = self._args({**inputs, **sidecars}, resources, root / "08c_v11_bad_resource")
+            args.policy_version = "cryptic_external_normal_qc_v1.1"
+            args.coordinate_matching_enabled = True
+            with self.assertRaisesRegex(ValueError, "identity mismatch"):
+                build_external_normal_qc(args)
+
+    def test_v11_coordinate_sidecar_content_mismatch_fails_after_hash_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            core_rows = self.default_core_rows()[:1]
+            parent_rows = self.default_parent_rows(core_rows)[:1]
+            inputs = self._write_08b_core(
+                root,
+                core_rows=core_rows,
+                parent_rows=parent_rows,
+                policy_version="cryptic_core_qc_v1.1",
+            )
+            sidecars = self._write_v11_coordinate_sidecars(root, inputs, core_rows, parent_rows)
+            footprint = pd.read_csv(sidecars["cryptic_peptide_genomic_footprint"], sep="\t", dtype=str)
+            footprint.loc[0, "peptide"] = "TTTTTTTT"
+            footprint.to_csv(sidecars["cryptic_peptide_genomic_footprint"], sep="\t", index=False)
+            self._refresh_v11_manifest_signature(inputs, sidecars)
+            resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
+            args = self._args({**inputs, **sidecars}, resources, root / "08c_v11_bad_content")
+            args.policy_version = "cryptic_external_normal_qc_v1.1"
+            args.coordinate_matching_enabled = True
+            with self.assertRaisesRegex(ValueError, "disagrees with Core"):
+                build_external_normal_qc(args)
+
+    def test_v11_coordinate_footprint_keys_must_match_parent_map(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            core_rows = self.default_core_rows()[:1]
+            parent_rows = self.default_parent_rows(core_rows)[:1]
+            inputs = self._write_08b_core(
+                root,
+                core_rows=core_rows,
+                parent_rows=parent_rows,
+                policy_version="cryptic_core_qc_v1.1",
+            )
+            sidecars = self._write_v11_coordinate_sidecars(root, inputs, core_rows, parent_rows)
+            footprint = pd.read_csv(sidecars["cryptic_peptide_genomic_footprint"], sep="\t", dtype=str)
+            footprint.iloc[0:0].to_csv(sidecars["cryptic_peptide_genomic_footprint"], sep="\t", index=False)
+            self._refresh_v11_manifest_signature(inputs, sidecars)
+            resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
+            args = self._args({**inputs, **sidecars}, resources, root / "08c_v11_missing_footprint")
+            args.policy_version = "cryptic_external_normal_qc_v1.1"
+            args.coordinate_matching_enabled = True
+            with self.assertRaisesRegex(ValueError, "keys must exactly match"):
+                build_external_normal_qc(args)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            core_rows = self.default_core_rows()[:1]
+            parent_rows = self.default_parent_rows(core_rows)[:1]
+            inputs = self._write_08b_core(
+                root,
+                core_rows=core_rows,
+                parent_rows=parent_rows,
+                policy_version="cryptic_core_qc_v1.1",
+            )
+            sidecars = self._write_v11_coordinate_sidecars(root, inputs, core_rows, parent_rows)
+            footprint = pd.read_csv(sidecars["cryptic_peptide_genomic_footprint"], sep="\t", dtype=str)
+            pd.concat([footprint, footprint.iloc[[0]]], ignore_index=True).to_csv(
+                sidecars["cryptic_peptide_genomic_footprint"],
+                sep="\t",
+                index=False,
+            )
+            self._refresh_v11_manifest_signature(inputs, sidecars)
+            resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
+            args = self._args({**inputs, **sidecars}, resources, root / "08c_v11_duplicate_footprint")
+            args.policy_version = "cryptic_external_normal_qc_v1.1"
+            args.coordinate_matching_enabled = True
+            with self.assertRaisesRegex(ValueError, "duplicate coordinate footprint keys"):
+                build_external_normal_qc(args)
+
+    def test_v11_empty_core_can_complete_and_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = self._write_08b_core(
+                root,
+                core_rows=[],
+                parent_rows=[],
+                policy_version="cryptic_core_qc_v1.1",
+            )
+            sidecars = self._write_v11_coordinate_sidecars(root, inputs, [], [])
+            resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
+            outdir = root / "empty_v11"
+            args = self._args({**inputs, **sidecars}, resources, outdir)
+            args.policy_version = "cryptic_external_normal_qc_v1.1"
+            args.coordinate_matching_enabled = True
+
+            manifest = build_external_normal_qc(args)
+
+            self.assertEqual(manifest["stage_counts"]["source_core_unique_peptides"], 0)
+            self.assertEqual(manifest["stage_counts"]["final_primary_core_unique_peptides"], 0)
+            reused = build_external_normal_qc(args)
+            self.assertTrue(reused["reused"])
+
+            saved = json.loads((outdir / "run_manifest.json").read_text())
+            saved["input_signature"]["coordinate_utils_sha256"] = "different-helper"
+            (outdir / "run_manifest.json").write_text(json.dumps(saved, indent=2))
+            with self.assertRaisesRegex(ValueError, "manifest does not match"):
+                build_external_normal_qc(args)
+
     def test_coordinate_matching_enabled_fails_in_v1(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -406,6 +898,7 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
                     "parent_record_id": "parent_orphan",
                     "source_parent_id": "source_orphan",
                     "mhc_class": "MHC-I",
+                    "peptide_start": 1,
                     "peptide_length": 8,
                     "peptide": "ACDEFGHI",
                 }

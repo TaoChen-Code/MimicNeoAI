@@ -161,6 +161,7 @@ def _run_one_sample(
         # Feature switches
         do_qc = bool(others.get("QC", True))
         do_align = bool(others.get("alignment", True))
+        do_align_ctrl = bool(others.get("alignment_control", False))
         do_known = bool(others.get("known", True))
         do_novel = bool(others.get("novel", True))
         do_quant = bool(others.get("salmon_quant", True))
@@ -225,6 +226,21 @@ def _run_one_sample(
             RAW_CTRL_R1 = f"{ipt_root}/{ctrl_sample}/{ctrl_sample}.R1.fq.gz"
             RAW_CTRL_R2 = f"{ipt_root}/{ctrl_sample}/{ctrl_sample}.R2.fq.gz"
 
+        if do_align_ctrl:
+            if not ctrl_sample:
+                raise ValueError("alignment_control requires paired sample format: Tumor,Normal")
+            if ctrl_sample == tumor_sample:
+                raise ValueError("alignment_control requires distinct tumor and control sample IDs")
+            missing_ctrl_fastqs = [
+                path for path in (RAW_CTRL_R1, RAW_CTRL_R2)
+                if not path or not os.path.isfile(path)
+            ]
+            if missing_ctrl_fastqs:
+                raise FileNotFoundError(
+                    "alignment_control requires existing control FASTQ input(s): "
+                    + ", ".join(missing_ctrl_fastqs)
+                )
+
         # Derived files
         QC_R1 = os.path.join(DIR00, f"{tumor_sample}.R1.QC.fq.gz")
         QC_R2 = os.path.join(DIR00, f"{tumor_sample}.R2.QC.fq.gz")
@@ -248,7 +264,13 @@ def _run_one_sample(
         CRYPTIC_CORE_PARENT_MAP = os.path.join(DIR08B_CORE, "cryptic_peptide_parent_map.tsv")
         CRYPTIC_CORE_MANIFEST = os.path.join(DIR08B_CORE, "run_manifest.json")
         CRYPTIC_CORE_FASTA = os.path.join(DIR08B_CORE, "cryptic_peptide_core.fasta")
+        CRYPTIC_PARENT_COORDINATES = os.path.join(DIR08B_CORE, "cryptic_parent_coordinates.tsv")
+        CRYPTIC_PARENT_ORFCDS = os.path.join(DIR08B_CORE, "cryptic_parent_orfcds.tsv")
+        CRYPTIC_PEPTIDE_FOOTPRINT = os.path.join(DIR08B_CORE, "cryptic_peptide_genomic_footprint.tsv")
         CRYPTIC_PRIMARY_CORE_FASTA = os.path.join(DIR08C_EXTERNAL, "cryptic_tumor_restricted_primary_core.fasta")
+        ORF_BED12 = os.path.join(DIR07_ORF, "orf.noUnmap.noSup.bed12")
+        ORF_BAM = os.path.join(DIR07_ORF, "orf2genome.bam")
+        ORF_CDS_FASTA = os.path.join(DIR07_ORF, f"{tumor_sample}.SEPs.cds.fa")
 
         # Minimum requirements for aeSEPs (can be overridden in YAML)
         min_tpm_tumor = float(others.get("min_tpm_tumor", 5.0))
@@ -285,7 +307,26 @@ def _run_one_sample(
                 "--genome-dir", STAR_GENOME_DIR,
                 "--out-root", DIR01,
                 "-p", str(n_align),
+                "--alignment-role", "tumor",
+                "--tumor-sample", tumor_sample,
+                "--raw-fq1", RAW_R1,
+                "--raw-fq2", RAW_R2,
             ], display_name="STAR alignment")
+
+        if do_align_ctrl:
+            _run_cmd(tool, sample, [
+                sys.executable, _script_path("01-alignment.py"),
+                "-s", ctrl_sample,
+                "--clean-dir", DIR00,
+                "--genome-dir", STAR_GENOME_DIR,
+                "--out-root", DIR01,
+                "-p", str(n_align),
+                "--alignment-role", "control",
+                "--tumor-sample", tumor_sample,
+                "--control-sample", ctrl_sample,
+                "--raw-fq1", RAW_CTRL_R1,
+                "--raw-fq2", RAW_CTRL_R2,
+            ], display_name="Control STAR alignment")
 
         # Use produced BAM if available (to pass into step 02)
         IN_BAM = os.path.join(DIR01, tumor_sample, f"{tumor_sample}.star", f"{tumor_sample}Aligned.out.bam")
@@ -417,6 +458,9 @@ def _run_one_sample(
         if do_cryptic_core:
             if not do_orf_filter:
                 raise ValueError("cryptic_core_qc requires orf_filter to be enabled")
+            cryptic_core_policy_version = str(
+                others.get("cryptic_core_qc_policy_version", "cryptic_core_qc_v1.0")
+            ).strip()
             human_proteome_fasta = str(others.get("human_reference_proteome_fasta", "") or "").strip()
             if not human_proteome_fasta:
                 human_proteome_fasta = str(
@@ -429,6 +473,7 @@ def _run_one_sample(
             cmd = [
                 sys.executable, _script_path("cryptic_core_qc.py"),
                 "-s", tumor_sample,
+                "--policy-version", cryptic_core_policy_version,
                 "--matched-control-sample", ctrl_sample or "",
                 "--ae-seps-fasta", AESEPs_PEP,
                 "--aeseps-annotation", ABERRANT_TABLE,
@@ -438,6 +483,7 @@ def _run_one_sample(
                 "--reference-genome-fasta", REF_GENOME,
                 "--reference-gtf", REF_GTF,
                 "--reference-lnc-gtf", REF_LNC_GTF,
+                "--reference-build", str(others.get("reference_build", "GRCh38")),
                 "--strandedness", strandedness,
                 "--min-tpm-tumor", str(min_tpm_tumor),
                 "--max-tpm-ctrl", str(max_tpm_ctrl),
@@ -449,6 +495,13 @@ def _run_one_sample(
                 cmd.extend(["--human-proteome-fasta", human_proteome_fasta])
             if bool(others.get("allow_missing_human_reference", False)):
                 cmd.append("--allow-missing-human-reference")
+            if cryptic_core_policy_version == "cryptic_core_qc_v1.1":
+                cmd.extend([
+                    "--orf-bed12", ORF_BED12,
+                    "--orf-bam", ORF_BAM,
+                    "--orf-cds-fasta", ORF_CDS_FASTA,
+                    "--coordinate-min-mapq", str(int(others.get("coordinate_min_mapq", 20))),
+                ])
             _run_cmd(tool, sample, cmd, display_name="Cryptic Core QC")
             binding_pep_fasta = CRYPTIC_CORE_FASTA
             binding_input_mode = "peptide-core"
@@ -464,9 +517,13 @@ def _run_one_sample(
             external_resources = configure.get("external_normal_resources", {}) or {}
             if not isinstance(external_resources, dict):
                 raise ValueError("external_normal_resources must be a mapping")
+            external_policy_version = str(
+                external_resources.get("policy_version", "cryptic_external_normal_qc_v1.0")
+            ).strip()
             cmd = [
                 sys.executable, _script_path("cryptic_external_normal_qc.py"),
                 "-s", tumor_sample,
+                "--policy-version", external_policy_version,
                 "--cryptic-peptide-core", CRYPTIC_CORE_TSV,
                 "--cryptic-peptide-parent-map", CRYPTIC_CORE_PARENT_MAP,
                 "--upstream-manifest", CRYPTIC_CORE_MANIFEST,
@@ -489,6 +546,21 @@ def _run_one_sample(
                 cmd.append("--allow-missing-external-normal-resources")
             if bool(external_resources.get("coordinate_matching_enabled", False)):
                 cmd.append("--coordinate-matching-enabled")
+            if external_policy_version == "cryptic_external_normal_qc_v1.1":
+                cmd.extend([
+                    "--cryptic-parent-coordinates", CRYPTIC_PARENT_COORDINATES,
+                    "--cryptic-parent-orfcds", CRYPTIC_PARENT_ORFCDS,
+                    "--cryptic-peptide-genomic-footprint", CRYPTIC_PEPTIDE_FOOTPRINT,
+                    "--coordinate-resource-manifest", _external_normal_resource_value(
+                        configure, paths, "coordinate_manifest", "COORDINATE_MANIFEST"
+                    ),
+                    "--normal-smorf-coordinates", _external_normal_resource_value(
+                        configure, paths, "smorf_coordinates", "SMORF_COORDINATES"
+                    ),
+                    "--normal-smorf-orfcds", _external_normal_resource_value(
+                        configure, paths, "smorf_orfcds", "SMORF_ORFCDS"
+                    ),
+                ])
             _run_cmd(tool, sample, cmd, display_name="External normal resource QC")
             binding_pep_fasta = CRYPTIC_PRIMARY_CORE_FASTA
             binding_input_mode = "peptide-core"
