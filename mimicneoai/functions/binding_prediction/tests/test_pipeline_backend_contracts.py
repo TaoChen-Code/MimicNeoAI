@@ -69,6 +69,12 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.assertTrue(common_paths["APPTAINER_BIN"].endswith("/apptainer"))
         self.assertTrue(common_paths["BCFTOOLS_BIN"].endswith("/bcftools"))
         self.assertTrue(common_paths["TABIX_BIN"].endswith("/tabix"))
+        human_proteome = paths["database"]["common"]["HUMAN_PROTEOME"]
+        self.assertTrue(
+            human_proteome["CANONICAL_FASTA"].endswith(
+                "human_proteome/processed/uniprot_swissprot_human_reviewed_canonical_20260626.fasta"
+            )
+        )
         predictor_paths = paths["path"]["common"]["BINDING_PREDICTORS"]
         self.assertTrue(
             predictor_paths["MHCFLURRY_PREDICT_BIN"].endswith("mhcflurry-predict")

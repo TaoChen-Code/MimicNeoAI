@@ -42,6 +42,8 @@ database:
       HLA_GENE:      "../database/soft/HLAHD/hlahd.1.7.0/HLA_gene.split.txt"
       DICTIONARY:    "../database/soft/HLAHD/hlahd.1.7.0/dictionary/"
       BOWTIE2_INDEX: "../database/soft/HLAHD/hla_gen/hla_gen"
+    HUMAN_PROTEOME:
+      CANONICAL_FASTA: "../database/ref/DNA/human_proteome/processed/uniprot_swissprot_human_reviewed_canonical_20260626.fasta"
 
   microbial:
     HOST:
