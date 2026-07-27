@@ -124,6 +124,26 @@ def iter_windows(sequence: str, lengths: Iterable[int]) -> Iterable[tuple[int, i
             yield start + 1, length, sequence[start : start + length]
 
 
+def iter_canonical_segments(sequence: str) -> Iterable[str]:
+    start: Optional[int] = None
+    for index, aa in enumerate(sequence):
+        if aa in CANONICAL_AA:
+            if start is None:
+                start = index
+        elif start is not None:
+            yield sequence[start:index]
+            start = None
+    if start is not None:
+        yield sequence[start:]
+
+
+def normalize_human_reference_sequence(sequence: str) -> str:
+    seq = str(sequence).replace(" ", "").replace("\n", "").strip().upper()
+    if seq.endswith("*"):
+        seq = seq[:-1]
+    return seq
+
+
 def load_human_reference_matches(
     human_proteome_fasta: Optional[Path],
     candidate_peptides: set[str],
@@ -134,24 +154,33 @@ def load_human_reference_matches(
         raise FileNotFoundError(f"human reference proteome FASTA not found: {human_proteome_fasta}")
     matches: set[str] = set()
     lengths = sorted({len(peptide) for peptide in candidate_peptides})
-    records = 0
+    records_encountered = 0
+    records_with_noncanonical_residues = 0
+    standard_windows_evaluated = 0
     for _header, raw_seq in read_fasta(human_proteome_fasta):
-        records += 1
-        seq, reasons = normalize_parent_sequence(raw_seq)
-        if reasons or not seq:
+        records_encountered += 1
+        seq = normalize_human_reference_sequence(raw_seq)
+        if not seq:
             continue
-        for length in lengths:
-            if len(seq) < length:
-                continue
-            for start in range(0, len(seq) - length + 1):
-                pep = seq[start : start + length]
-                if pep in candidate_peptides:
-                    matches.add(pep)
+        if set(seq).difference(CANONICAL_AA):
+            records_with_noncanonical_residues += 1
+        for segment in iter_canonical_segments(seq):
+            for length in lengths:
+                if len(segment) < length:
+                    continue
+                standard_windows_evaluated += len(segment) - length + 1
+                for start in range(0, len(segment) - length + 1):
+                    pep = segment[start : start + length]
+                    if pep in candidate_peptides:
+                        matches.add(pep)
     return matches, {
         "status": "evaluated",
         "path": str(human_proteome_fasta),
         "sha256": sha256_file(human_proteome_fasta),
-        "records_scanned": records,
+        "records_scanned": records_encountered,
+        "records_encountered": records_encountered,
+        "records_with_noncanonical_residues": records_with_noncanonical_residues,
+        "standard_windows_evaluated": standard_windows_evaluated,
         "candidate_peptides": len(candidate_peptides),
         "matched_peptides": len(matches),
     }

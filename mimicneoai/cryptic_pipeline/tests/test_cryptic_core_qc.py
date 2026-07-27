@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from mimicneoai.cryptic_pipeline.scripts.cryptic_core_qc import build_core
+from mimicneoai.cryptic_pipeline.scripts.cryptic_core_qc import build_core, load_human_reference_matches
 
 
 class CrypticCoreQCTest(unittest.TestCase):
@@ -200,6 +200,22 @@ class CrypticCoreQCTest(unittest.TestCase):
             self.assertEqual((outdir / "cryptic_peptide_core.fasta").read_text(), "")
             reused = build_core(args)
             self.assertTrue(reused["reused"])
+
+    def test_human_reference_keeps_standard_windows_around_u(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            human = root / "human_with_u.fa"
+            human.write_text(">HUMAN_U\nUUUACDEFGHIKUUUKLMNPQRS\n")
+
+            matches, summary = load_human_reference_matches(
+                human,
+                {"ACDEFGHI", "KLMNPQRS", "FGHIKKLM"},
+            )
+
+            self.assertEqual(matches, {"ACDEFGHI", "KLMNPQRS"})
+            self.assertEqual(summary["records_encountered"], 1)
+            self.assertEqual(summary["records_with_noncanonical_residues"], 1)
+            self.assertEqual(summary["standard_windows_evaluated"], 3)
 
 
 if __name__ == "__main__":
