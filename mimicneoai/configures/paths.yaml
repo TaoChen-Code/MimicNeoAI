@@ -100,3 +100,9 @@ database:
       REF_GENOME:   "../database/ref/RNA/cryptic_ref/GRCh38.p3.genome.fa"
 
     STAR_GENOME_DIR: "../database/ref/RNA/star_and_rsem/GRCh38_gencode.v23"
+    EXTERNAL_NORMAL_RESOURCES:
+      MANIFEST: "../database/ref/RNA/cryptic_external_normal/frozen_20260727/resource_manifest.json"
+      SMORF_MATCH_INDEX: "../database/ref/RNA/cryptic_external_normal/frozen_20260727/processed/normal_smorf_peptide_match_index.tsv.gz"
+      SMORF_PARENT_MAP: "../database/ref/RNA/cryptic_external_normal/frozen_20260727/processed/normal_smorf_peptide_parent_map.tsv.gz"
+      HLA_LIGAND_MATCH_INDEX: "../database/ref/RNA/cryptic_external_normal/frozen_20260727/processed/normal_hla_peptide_match_index.tsv.gz"
+      HLA_LIGAND_EVIDENCE: "../database/ref/RNA/cryptic_external_normal/frozen_20260727/processed/normal_hla_ligand_evidence.tsv.gz"

@@ -12,6 +12,8 @@ It mirrors the original run.sh flow:
 06  Extract aberrantly expressed sORF peptides (aeSEPs)
 07  ORF genome annotation
 08  ORF-level filtering
+08b Cryptic Core QC
+08c External-normal exact sequence QC
 09  HLA binding prediction (pvacbind/IEDB or MimicNeoAI backend)
 
 This module:
@@ -50,7 +52,8 @@ STEP_NAME = {
     "aeseps": "06-aeSEPs",
     "orf_genome_annotation": "07-orf_genome_annotation",
     "orf_filter": "08-orf_filter",
-    "cryptic_core": "08b.CrypticCoreQC_v1.0",
+    "cryptic_core": "08b-cryptic_core_qc",
+    "external_normal": "08c-external_normal_qc",
     "pvacbind": "09-hla_binding_pred",
     "mimicneoai_binding": "09-hla_binding_pred_mimicneoai",
     "immunogenicity": "10-immunogenicity_prediction_mimicneoai",
@@ -108,6 +111,27 @@ def _resolve_tumor_control(sample: str, ctrl_from_cfg: str | None) -> Tuple[str,
     return sample.strip(), (ctrl_from_cfg.strip() if ctrl_from_cfg else None)
 
 
+def _external_normal_resource_value(
+    configure: Dict[str, Any],
+    paths: Dict[str, Any],
+    config_key: str,
+    paths_key: str,
+) -> str:
+    config_resources = configure.get("external_normal_resources", {}) or {}
+    if not isinstance(config_resources, dict):
+        raise ValueError("external_normal_resources must be a mapping")
+    configured = str(config_resources.get(config_key, "") or "").strip()
+    if configured:
+        return configured
+    return str(
+        paths.get("database", {})
+        .get("cryptic", {})
+        .get("EXTERNAL_NORMAL_RESOURCES", {})
+        .get(paths_key, "")
+        or ""
+    ).strip()
+
+
 # ---------------------- One-sample pipeline ----------------------
 def _run_one_sample(
     sample: str,
@@ -146,7 +170,9 @@ def _run_one_sample(
         do_orf_annotation = bool(others.get("orf_genome_annotation", True))
         do_orf_filter = bool(others.get("orf_filter", True))
         do_cryptic_core = bool(others.get("cryptic_core_qc", False))
+        do_external_normal = bool(others.get("cryptic_external_normal_qc", False))
         do_pvacbind = bool(others.get("hla_binding_pred", True))
+        allow_missing_external_normal = bool(others.get("allow_missing_external_normal_resources", False))
 
         # Tumor/control resolution
         tumor_sample, ctrl_sample = _resolve_tumor_control(sample, None)
@@ -183,6 +209,7 @@ def _run_one_sample(
         DIR07_ORF = os.path.join(OPT, STEP_NAME["orf_genome_annotation"])
         DIR08_ORF = os.path.join(OPT, STEP_NAME["orf_filter"])
         DIR08B_CORE = os.path.join(OPT, STEP_NAME["cryptic_core"])
+        DIR08C_EXTERNAL = os.path.join(OPT, STEP_NAME["external_normal"])
         DIR07 = os.path.join(OPT, STEP_NAME["pvacbind"])
         SHARED = os.path.join(OPT, "023-shared")
 
@@ -217,7 +244,11 @@ def _run_one_sample(
         HLA_FINAL_TXT = os.path.join(DIR05, tumor_sample, "result", f"{tumor_sample}_final.result.txt")
         ORF_FILTERED_AESEPs_PEP = os.path.join(DIR08_ORF, f"{tumor_sample}.aeSEPs.orf_filtered.pep")
         ORF_FINAL_TABLE = os.path.join(DIR08_ORF, "orf_final.csv")
+        CRYPTIC_CORE_TSV = os.path.join(DIR08B_CORE, "cryptic_peptide_core.tsv")
+        CRYPTIC_CORE_PARENT_MAP = os.path.join(DIR08B_CORE, "cryptic_peptide_parent_map.tsv")
+        CRYPTIC_CORE_MANIFEST = os.path.join(DIR08B_CORE, "run_manifest.json")
         CRYPTIC_CORE_FASTA = os.path.join(DIR08B_CORE, "cryptic_peptide_core.fasta")
+        CRYPTIC_PRIMARY_CORE_FASTA = os.path.join(DIR08C_EXTERNAL, "cryptic_tumor_restricted_primary_core.fasta")
 
         # Minimum requirements for aeSEPs (can be overridden in YAML)
         min_tpm_tumor = float(others.get("min_tpm_tumor", 5.0))
@@ -420,6 +451,46 @@ def _run_one_sample(
                 cmd.append("--allow-missing-human-reference")
             _run_cmd(tool, sample, cmd, display_name="Cryptic Core QC")
             binding_pep_fasta = CRYPTIC_CORE_FASTA
+            binding_input_mode = "peptide-core"
+
+        if do_external_normal:
+            if not do_cryptic_core:
+                raise ValueError("cryptic_external_normal_qc requires cryptic_core_qc to be enabled")
+            if allow_missing_external_normal and do_pvacbind:
+                raise ValueError(
+                    "allow_missing_external_normal_resources is exploratory only; "
+                    "disable hla_binding_pred or provide formal external-normal resources"
+                )
+            external_resources = configure.get("external_normal_resources", {}) or {}
+            if not isinstance(external_resources, dict):
+                raise ValueError("external_normal_resources must be a mapping")
+            cmd = [
+                sys.executable, _script_path("cryptic_external_normal_qc.py"),
+                "-s", tumor_sample,
+                "--cryptic-peptide-core", CRYPTIC_CORE_TSV,
+                "--cryptic-peptide-parent-map", CRYPTIC_CORE_PARENT_MAP,
+                "--upstream-manifest", CRYPTIC_CORE_MANIFEST,
+                "-o", DIR08C_EXTERNAL,
+                "--resource-manifest", _external_normal_resource_value(configure, paths, "manifest", "MANIFEST"),
+                "--smorf-match-index", _external_normal_resource_value(
+                    configure, paths, "smorf_match_index", "SMORF_MATCH_INDEX"
+                ),
+                "--smorf-parent-map", _external_normal_resource_value(
+                    configure, paths, "smorf_parent_map", "SMORF_PARENT_MAP"
+                ),
+                "--hla-ligand-match-index", _external_normal_resource_value(
+                    configure, paths, "hla_ligand_match_index", "HLA_LIGAND_MATCH_INDEX"
+                ),
+                "--hla-ligand-evidence", _external_normal_resource_value(
+                    configure, paths, "hla_ligand_evidence", "HLA_LIGAND_EVIDENCE"
+                ),
+            ]
+            if allow_missing_external_normal:
+                cmd.append("--allow-missing-external-normal-resources")
+            if bool(external_resources.get("coordinate_matching_enabled", False)):
+                cmd.append("--coordinate-matching-enabled")
+            _run_cmd(tool, sample, cmd, display_name="External normal resource QC")
+            binding_pep_fasta = CRYPTIC_PRIMARY_CORE_FASTA
             binding_input_mode = "peptide-core"
 
         # ---------- 09 HLA binding prediction ----------

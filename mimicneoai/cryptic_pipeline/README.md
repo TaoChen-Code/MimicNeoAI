@@ -11,7 +11,8 @@ Discover and prioritize sORF-encoded peptides from known and novel transcripts.
 6. Aberrantly expressed sORF peptide extraction
 7. ORF genome annotation and ORF-level filtering
 8. Cryptic Core QC
-9. Binding prediction
+9. External-normal exact sequence QC
+10. Binding prediction
 
 ## Installation
 
@@ -81,7 +82,8 @@ Pipeline outputs are written under:
 ├── 06-aeSEPs
 ├── 07-orf_genome_annotation
 ├── 08-orf_filter
-├── 08b.CrypticCoreQC_v1.0
+├── 08b-cryptic_core_qc
+├── 08c-external_normal_qc
 ├── 09-hla_binding_pred_mimicneoai
 ├── 10-immunogenicity_prediction_mimicneoai
 └── 023-shared
@@ -91,9 +93,13 @@ Notable subfolders:
 - `04-salmon_quant/salmon_index`, `salmon_quant`, `salmon_quant_control`
 - `07-orf_genome_annotation`: maps selected ORF/CDS records back to the reference genome
 - `08-orf_filter`: writes the ORF-filtered aeSEP FASTA used by binding prediction
-- `08b.CrypticCoreQC_v1.0`: materializes the strict pre-binding Cryptic Core
+- `08b-cryptic_core_qc`: materializes the strict pre-binding Cryptic Core
   with parent sidecars, HLA-I/HLA-II peptide-core FASTA files, stagewise counts,
   and an input/config manifest.
+- `08c-external_normal_qc`: applies frozen external-normal sequence
+  resources using exact peptide sequence plus HLA class. It keeps the complete
+  source-Core landscape and writes the tumor-restricted primary Core FASTA used
+  by downstream binding.
 - `09-hla_binding_pred/<tumor_sample>/pvacbind` for the pVACbind backend, or
   `09-hla_binding_pred_mimicneoai/<tumor_sample>/` for the MimicNeoAI backend
 
@@ -109,12 +115,21 @@ Notable subfolders:
   `novel` and `noncoding` aeSEP sources, requires ORF-filtered parent records,
   preserves excluded rows, and writes pre-tiled peptide-core FASTA files for
   HLA-I 8-11 aa and HLA-II 13-17 aa.
+- `others.cryptic_external_normal_qc` defaults to disabled in the generic
+  template because the frozen resource package is project-specific. Formal
+  project configs should enable it and provide `external_normal_resources`, or
+  rely on populated `paths.yaml` resource entries. Missing or hash-mismatched
+  resources fail closed. `allow_missing_external_normal_resources: true` is
+  exploratory only and cannot be routed into binding.
 - `others.binding_prediction_backend` defaults to `mimicneoai` in the template.
   The local backend estimates task scale before materializing the task table;
   see the [native binding backend documentation](../functions/binding_prediction/README.md).
 - For legacy pVACtools reruns, disable `others.cryptic_core_qc` or explicitly
   provide a parent FASTA. The strict peptide-core output is routed only to the
   MimicNeoAI backend to avoid accidental second-pass peptide tiling.
+- When `08c` is enabled, binding consumes
+  `08c-external_normal_qc/cryptic_tumor_restricted_primary_core.fasta`.
+  It does not fall back to `08b`, `06-aeSEPs`, or the ORF-filtered parent FASTA.
 - With `others.binding_prediction_backend: mimicneoai`, set
   `others.binding_prediction_preset: full` for one-stage multialgorithm
   prediction or `fast` for EL-rank Stage 1 routing before formal local binding

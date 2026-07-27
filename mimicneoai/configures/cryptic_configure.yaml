@@ -32,6 +32,8 @@ others:
   orf_genome_annotation: true
   orf_filter: true
   cryptic_core_qc: true
+  cryptic_external_normal_qc: false
+  allow_missing_external_normal_resources: false
   hla_binding_pred: true
 
   min_tpm_tumor: 5.0
@@ -66,6 +68,16 @@ others:
   immunogenicity_device: "auto"
   immunogenicity_batch_size: 512
   immunogenicity_workers: 8
+
+# Frozen external-normal exact-match resources for 08c. Formal runs fail closed
+# when these paths are empty, missing, or SHA-mismatched against the manifest.
+external_normal_resources:
+  manifest: ""
+  smorf_match_index: ""
+  smorf_parent_map: ""
+  hla_ligand_match_index: ""
+  hla_ligand_evidence: ""
+  coordinate_matching_enabled: false
 
 samples:
   - Sample_001_T,Sample_001_N
