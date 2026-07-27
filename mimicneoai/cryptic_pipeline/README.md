@@ -9,7 +9,9 @@ Discover and prioritize sORF-encoded peptides from known and novel transcripts.
 4. Tumor/control quantification
 5. HLA typing
 6. Aberrantly expressed sORF peptide extraction
-7. Binding prediction
+7. ORF genome annotation and ORF-level filtering
+8. Cryptic Core QC
+9. Binding prediction
 
 ## Installation
 
@@ -79,7 +81,8 @@ Pipeline outputs are written under:
 ├── 06-aeSEPs
 ├── 07-orf_genome_annotation
 ├── 08-orf_filter
-├── 09-hla_binding_pred
+├── 08b.CrypticCoreQC_v1.0
+├── 09-hla_binding_pred_mimicneoai
 ├── 10-immunogenicity_prediction_mimicneoai
 └── 023-shared
 ```
@@ -88,18 +91,30 @@ Notable subfolders:
 - `04-salmon_quant/salmon_index`, `salmon_quant`, `salmon_quant_control`
 - `07-orf_genome_annotation`: maps selected ORF/CDS records back to the reference genome
 - `08-orf_filter`: writes the ORF-filtered aeSEP FASTA used by binding prediction
+- `08b.CrypticCoreQC_v1.0`: materializes the strict pre-binding Cryptic Core
+  with parent sidecars, HLA-I/HLA-II peptide-core FASTA files, stagewise counts,
+  and an input/config manifest.
 - `09-hla_binding_pred/<tumor_sample>/pvacbind` for the pVACbind backend, or
   `09-hla_binding_pred_mimicneoai/<tumor_sample>/` for the MimicNeoAI backend
 
 ## Notes
 
 - Tumor/control samples should be provided as `Tumor,Control` in `samples`.
-- The pipeline is resumable; existing non-empty outputs are skipped.
+- The pipeline is resumable when manifest, input, code, configuration, and
+  output signatures match. Empty Core FASTA files are valid for zero-candidate
+  samples and can be reused through the manifest.
 - `others.orf_genome_annotation` and `others.orf_filter` default to enabled;
   binding prediction uses the ORF-filtered aeSEP FASTA when `orf_filter` is enabled.
-- `others.binding_prediction_backend` defaults to `pvactools`. The optional
-  `mimicneoai` backend estimates task scale before materializing the task table;
+- `others.cryptic_core_qc` defaults to enabled in the template. It accepts only
+  `novel` and `noncoding` aeSEP sources, requires ORF-filtered parent records,
+  preserves excluded rows, and writes pre-tiled peptide-core FASTA files for
+  HLA-I 8-11 aa and HLA-II 13-17 aa.
+- `others.binding_prediction_backend` defaults to `mimicneoai` in the template.
+  The local backend estimates task scale before materializing the task table;
   see the [native binding backend documentation](../functions/binding_prediction/README.md).
+- For legacy pVACtools reruns, disable `others.cryptic_core_qc` or explicitly
+  provide a parent FASTA. The strict peptide-core output is routed only to the
+  MimicNeoAI backend to avoid accidental second-pass peptide tiling.
 - With `others.binding_prediction_backend: mimicneoai`, set
   `others.binding_prediction_preset: full` for one-stage multialgorithm
   prediction or `fast` for EL-rank Stage 1 routing before formal local binding

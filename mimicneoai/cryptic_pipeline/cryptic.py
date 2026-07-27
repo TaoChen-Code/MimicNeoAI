@@ -50,6 +50,7 @@ STEP_NAME = {
     "aeseps": "06-aeSEPs",
     "orf_genome_annotation": "07-orf_genome_annotation",
     "orf_filter": "08-orf_filter",
+    "cryptic_core": "08b.CrypticCoreQC_v1.0",
     "pvacbind": "09-hla_binding_pred",
     "mimicneoai_binding": "09-hla_binding_pred_mimicneoai",
     "immunogenicity": "10-immunogenicity_prediction_mimicneoai",
@@ -144,6 +145,7 @@ def _run_one_sample(
         do_aeseps = bool(others.get("extract_aeseps", True))
         do_orf_annotation = bool(others.get("orf_genome_annotation", True))
         do_orf_filter = bool(others.get("orf_filter", True))
+        do_cryptic_core = bool(others.get("cryptic_core_qc", False))
         do_pvacbind = bool(others.get("hla_binding_pred", True))
 
         # Tumor/control resolution
@@ -180,6 +182,7 @@ def _run_one_sample(
         DIR06 = os.path.join(OPT, STEP_NAME["aeseps"])
         DIR07_ORF = os.path.join(OPT, STEP_NAME["orf_genome_annotation"])
         DIR08_ORF = os.path.join(OPT, STEP_NAME["orf_filter"])
+        DIR08B_CORE = os.path.join(OPT, STEP_NAME["cryptic_core"])
         DIR07 = os.path.join(OPT, STEP_NAME["pvacbind"])
         SHARED = os.path.join(OPT, "023-shared")
 
@@ -213,6 +216,8 @@ def _run_one_sample(
         ABERRANT_TABLE = os.path.join(DIR06, f"{tumor_sample}.aberrant_noncoding.annot.csv")
         HLA_FINAL_TXT = os.path.join(DIR05, tumor_sample, "result", f"{tumor_sample}_final.result.txt")
         ORF_FILTERED_AESEPs_PEP = os.path.join(DIR08_ORF, f"{tumor_sample}.aeSEPs.orf_filtered.pep")
+        ORF_FINAL_TABLE = os.path.join(DIR08_ORF, "orf_final.csv")
+        CRYPTIC_CORE_FASTA = os.path.join(DIR08B_CORE, "cryptic_peptide_core.fasta")
 
         # Minimum requirements for aeSEPs (can be overridden in YAML)
         min_tpm_tumor = float(others.get("min_tpm_tumor", 5.0))
@@ -367,6 +372,7 @@ def _run_one_sample(
             ], display_name="ORF genome annotation")
 
         binding_pep_fasta = AESEPs_PEP
+        binding_input_mode = "parent-fasta"
         if do_orf_filter:
             _run_cmd(tool, sample, [
                 sys.executable, _script_path("08-orf_filter.py"),
@@ -377,6 +383,45 @@ def _run_one_sample(
             ], display_name="ORF annotation filtering")
             binding_pep_fasta = ORF_FILTERED_AESEPs_PEP
 
+        if do_cryptic_core:
+            if not do_orf_filter:
+                raise ValueError("cryptic_core_qc requires orf_filter to be enabled")
+            human_proteome_fasta = str(others.get("human_reference_proteome_fasta", "") or "").strip()
+            if not human_proteome_fasta:
+                human_proteome_fasta = str(
+                    paths.get("database", {})
+                    .get("common", {})
+                    .get("HUMAN_PROTEOME", {})
+                    .get("CANONICAL_FASTA", "")
+                    or ""
+                ).strip()
+            cmd = [
+                sys.executable, _script_path("cryptic_core_qc.py"),
+                "-s", tumor_sample,
+                "--matched-control-sample", ctrl_sample or "",
+                "--ae-seps-fasta", AESEPs_PEP,
+                "--aeseps-annotation", ABERRANT_TABLE,
+                "--orf-filtered-fasta", ORF_FILTERED_AESEPs_PEP,
+                "--orf-final", ORF_FINAL_TABLE,
+                "-o", DIR08B_CORE,
+                "--reference-genome-fasta", REF_GENOME,
+                "--reference-gtf", REF_GTF,
+                "--reference-lnc-gtf", REF_LNC_GTF,
+                "--strandedness", strandedness,
+                "--min-tpm-tumor", str(min_tpm_tumor),
+                "--max-tpm-ctrl", str(max_tpm_ctrl),
+                "--min-log2fc", str(min_log2fc),
+                "--mhc-i-lengths", str(others.get("mhcI_lengths", "8,9,10,11")),
+                "--mhc-ii-lengths", str(others.get("mhcII_lengths", "13,14,15,16,17")),
+            ]
+            if human_proteome_fasta:
+                cmd.extend(["--human-proteome-fasta", human_proteome_fasta])
+            if bool(others.get("allow_missing_human_reference", False)):
+                cmd.append("--allow-missing-human-reference")
+            _run_cmd(tool, sample, cmd, display_name="Cryptic Core QC")
+            binding_pep_fasta = CRYPTIC_CORE_FASTA
+            binding_input_mode = "peptide-core"
+
         # ---------- 09 HLA binding prediction ----------
         binding_output_dir = ""
         if do_pvacbind:
@@ -384,6 +429,10 @@ def _run_one_sample(
             e1_lengths = others.get("mhcI_lengths", "8,9,10")
             e2_lengths = others.get("mhcII_lengths", "15")
             if backend == "pvactools":
+                if binding_input_mode == "peptide-core":
+                    raise ValueError(
+                        "cryptic_core_qc peptide-core input requires binding_prediction_backend: mimicneoai"
+                    )
                 algos = others.get(
                     "algo",
                     "BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI "
@@ -422,6 +471,7 @@ def _run_one_sample(
                     sys.executable, _script_path("07-hla_binding_pred_mimicneoai.py"),
                     "-s", tumor_sample,
                     "--pep-fasta", binding_pep_fasta,
+                    "--input-mode", binding_input_mode,
                     "--hla-file", HLA_FINAL_TXT,
                     "-o", outdir_mimicneoai,
                     "-t", str(int(others.get("binding_prediction_workers", n_pvacbind))),

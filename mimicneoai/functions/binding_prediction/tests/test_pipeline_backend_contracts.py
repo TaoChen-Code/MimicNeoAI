@@ -37,8 +37,14 @@ class PipelineBackendContractTest(unittest.TestCase):
         )
 
         cryptic = yaml.safe_load((CONFIG_DIR / "cryptic_configure.yaml").read_text())
-        self.assertEqual(cryptic["others"]["binding_prediction_backend"], "pvactools")
+        self.assertTrue(cryptic["others"]["cryptic_core_qc"])
+        self.assertEqual(cryptic["others"]["binding_prediction_backend"], "mimicneoai")
+        self.assertEqual(cryptic["others"]["binding_prediction_preset"], "fast")
+        self.assertEqual(cryptic["others"]["mhcI_lengths"], "8,9,10,11")
+        self.assertEqual(cryptic["others"]["mhcII_lengths"], "13,14,15,16,17")
+        self.assertFalse(cryptic["others"]["allow_missing_human_reference"])
         self.assertIn("binding_prediction_algorithms", cryptic["others"])
+        self.assertNotIn("NNalign", cryptic["others"]["binding_prediction_algorithms"])
         self.assertEqual(cryptic["others"]["binding_prediction_max_task_rows"], 5_000_000)
         self.assertFalse(cryptic["others"]["binding_prediction_force_large_samples"])
 
@@ -225,6 +231,31 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.assertIn("--force-large-samples", native_command)
         self.assertIn("--netmhcpan-bin", native_command)
         self.assertIn("/tools/netMHCpan", native_command)
+
+        config = self.cryptic_config()
+        config["others"].update(
+            {
+                "cryptic_core_qc": True,
+                "binding_prediction_backend": "mimicneoai",
+                "binding_prediction_step_name": "09-hla_binding_pred_mimicneoai_core",
+                "binding_prediction_preset": "fast",
+                "allow_missing_human_reference": True,
+            }
+        )
+        with patch.object(cryptic, "_run_cmd") as run_cmd:
+            cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, paths, tool)
+        self.assertEqual(run_cmd.call_count, 4)
+        core_command = run_cmd.call_args_list[2].args[2]
+        self.assertTrue(core_command[1].endswith("cryptic_core_qc.py"))
+        self.assertIn("--matched-control-sample", core_command)
+        self.assertIn("CRYPTIC-N", core_command)
+        self.assertIn("--allow-missing-human-reference", core_command)
+        binding_command = run_cmd.call_args_list[3].args[2]
+        self.assertTrue(binding_command[1].endswith("07-hla_binding_pred_mimicneoai.py"))
+        self.assertIn("--input-mode", binding_command)
+        self.assertIn("peptide-core", binding_command)
+        self.assertTrue(any(str(value).endswith("/08b.CrypticCoreQC_v1.0/cryptic_peptide_core.fasta") for value in binding_command))
+        self.assertFalse(any(str(value).endswith("CRYPTIC-T.aeSEPs.orf_filtered.pep") for value in binding_command))
 
     def test_microbial_default_and_native_dispatch(self) -> None:
         sample = "MICROBIAL-T"

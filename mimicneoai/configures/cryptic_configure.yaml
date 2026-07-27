@@ -31,6 +31,7 @@ others:
   extract_aeseps: true
   orf_genome_annotation: true
   orf_filter: true
+  cryptic_core_qc: true
   hla_binding_pred: true
 
   min_tpm_tumor: 5.0
@@ -39,13 +40,21 @@ others:
   strandedness: "reverse"  # StringTie strandedness: reverse(--rf) / forward(--fr) / none(no extra flag)
   # Algorithms for pVACbind (space-separated)
   algo: "BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHC NetMHCIIpan NetMHCIIpanEL NetMHCpan NetMHCpanEL PickPocket SMM SMMPMBEC"
-  mhcI_lengths: "8,9,10"
-  mhcII_lengths: "15"
+  mhcI_lengths: "8,9,10,11"
+  mhcII_lengths: "13,14,15,16,17"
 
-  # Binding prediction backend. Default keeps the legacy pVACbind workflow.
-  binding_prediction_backend: "pvactools"  # pvactools | mimicneoai
+  # First reviewer-response Core implementation. Leave blank to record
+  # human-reference peptide matching as not_evaluated only when
+  # allow_missing_human_reference is true.
+  human_reference_proteome_fasta: ""
+  allow_missing_human_reference: false
+
+  # Binding prediction backend. The reviewer-response Core uses the local
+  # peptide-core backend; set pvactools explicitly only for legacy reruns.
+  binding_prediction_backend: "mimicneoai"  # mimicneoai | pvactools
+  binding_prediction_preset: "fast"         # fast | full
   binding_prediction_step_name: "09-hla_binding_pred_mimicneoai"
-  binding_prediction_algorithms: "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NNalign NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL"
+  binding_prediction_algorithms: "MHCflurry MHCflurryEL MHCnuggetsI MHCnuggetsII NetMHCpan NetMHCpanEL NetMHCIIpan NetMHCIIpanEL"
   binding_prediction_workers: 8
   # Estimate task scale before materializing binding_tasks.tsv.
   binding_prediction_max_task_rows: 5000000
