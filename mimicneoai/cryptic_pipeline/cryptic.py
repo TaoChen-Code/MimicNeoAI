@@ -25,6 +25,8 @@ This module:
 
 from __future__ import annotations
 import os
+import json
+import hashlib
 from pathlib import Path
 import yaml
 import argparse
@@ -38,6 +40,38 @@ from importlib.resources import files
 from mimicneoai.functions.binding_prediction import configured_predictor_cli_args
 from mimicneoai.functions.immunogenicity_runner import resolve_immunogenicity_python_bin
 from mimicneoai.functions.pipline_tools import raise_for_failed_samples, tools
+
+
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_peptide_core_binding_manifest(manifest_path: str, fasta_path: str) -> None:
+    if not os.path.isfile(manifest_path):
+        raise FileNotFoundError(f"peptide-core binding requires 08c manifest: {manifest_path}")
+    if not os.path.isfile(fasta_path):
+        raise FileNotFoundError(f"peptide-core binding FASTA does not exist: {fasta_path}")
+    with open(manifest_path) as handle:
+        manifest = json.load(handle)
+    if manifest.get("run_status") != "complete":
+        raise ValueError(f"08c manifest must have run_status=complete: {manifest_path}")
+    if manifest.get("binding_eligible") is not True:
+        raise ValueError(f"08c manifest must have binding_eligible=true before binding: {manifest_path}")
+    if manifest.get("binding_input_mode") != "peptide-core":
+        raise ValueError(f"08c manifest must have binding_input_mode=peptide-core: {manifest_path}")
+    identity = manifest.get("final_binding_fasta_identity", {})
+    if not isinstance(identity, dict):
+        raise ValueError(f"08c manifest missing final_binding_fasta_identity: {manifest_path}")
+    if os.path.abspath(str(identity.get("path", ""))) != os.path.abspath(fasta_path):
+        raise ValueError("08c final FASTA path does not match binding input")
+    if int(identity.get("size", -1)) != os.path.getsize(fasta_path):
+        raise ValueError("08c final FASTA size does not match manifest")
+    if str(identity.get("sha256", "")) != _sha256_file(fasta_path):
+        raise ValueError("08c final FASTA SHA256 does not match manifest")
 
 
 # ---------------------- Constants ----------------------
@@ -263,12 +297,18 @@ def _run_one_sample(
         CRYPTIC_CORE_TSV = os.path.join(DIR08B_CORE, "cryptic_peptide_core.tsv")
         CRYPTIC_CORE_PARENT_MAP = os.path.join(DIR08B_CORE, "cryptic_peptide_parent_map.tsv")
         CRYPTIC_DEFERRED_PEPTIDE = os.path.join(DIR08B_CORE, "cryptic_peptide_deferred.tsv")
+        CRYPTIC_DEFERRED_PARENT_MAP = os.path.join(DIR08B_CORE, "cryptic_peptide_deferred_parent_map.tsv")
+        CRYPTIC_PARENT_CORE_TSV = os.path.join(DIR08B_CORE, "cryptic_parent_core.tsv")
+        CRYPTIC_PARENT_RANKED = os.path.join(DIR08B_CORE, "cryptic_parent_ranked.tsv")
         CRYPTIC_CORE_MANIFEST = os.path.join(DIR08B_CORE, "run_manifest.json")
         CRYPTIC_CORE_FASTA = os.path.join(DIR08B_CORE, "cryptic_peptide_core.fasta")
         CRYPTIC_PARENT_COORDINATES = os.path.join(DIR08B_CORE, "cryptic_parent_coordinates.tsv")
         CRYPTIC_PARENT_ORFCDS = os.path.join(DIR08B_CORE, "cryptic_parent_orfcds.tsv")
         CRYPTIC_PEPTIDE_FOOTPRINT = os.path.join(DIR08B_CORE, "cryptic_peptide_genomic_footprint.tsv")
+        CRYPTIC_PARENT_JUNCTION_SUMMARY = os.path.join(DIR08B_CORE, "cryptic_parent_junction_summary.tsv")
+        CRYPTIC_PEPTIDE_JUNCTION_EVIDENCE = os.path.join(DIR08B_CORE, "cryptic_peptide_junction_evidence.tsv")
         CRYPTIC_PRIMARY_CORE_FASTA = os.path.join(DIR08C_EXTERNAL, "cryptic_tumor_restricted_primary_core.fasta")
+        CRYPTIC_EXTERNAL_MANIFEST = os.path.join(DIR08C_EXTERNAL, "run_manifest.json")
         ORF_BED12 = os.path.join(DIR07_ORF, "orf.noUnmap.noSup.bed12")
         ORF_BAM = os.path.join(DIR07_ORF, "orf2genome.bam")
         ORF_CDS_FASTA = os.path.join(DIR07_ORF, f"{tumor_sample}.SEPs.cds.fa")
@@ -446,6 +486,7 @@ def _run_one_sample(
 
         binding_pep_fasta = AESEPs_PEP
         binding_input_mode = "parent-fasta"
+        human_proteome_fasta = ""
         if do_orf_filter:
             _run_cmd(tool, sample, [
                 sys.executable, _script_path("08-orf_filter.py"),
@@ -628,7 +669,9 @@ def _run_one_sample(
                 "--policy-version", external_policy_version,
                 "--cryptic-peptide-core", CRYPTIC_CORE_TSV,
                 "--cryptic-peptide-parent-map", CRYPTIC_CORE_PARENT_MAP,
+                "--cryptic-parent-core", CRYPTIC_PARENT_CORE_TSV,
                 "--upstream-manifest", CRYPTIC_CORE_MANIFEST,
+                "--human-proteome-fasta", human_proteome_fasta,
                 "-o", DIR08C_EXTERNAL,
                 "--resource-manifest", _external_normal_resource_value(configure, paths, "manifest", "MANIFEST"),
                 "--smorf-match-index", _external_normal_resource_value(
@@ -648,6 +691,8 @@ def _run_one_sample(
             if str(candidate_selection.get("mode", "all")).strip().lower() == "ranked_cap":
                 cmd.extend([
                     "--cryptic-peptide-deferred", CRYPTIC_DEFERRED_PEPTIDE,
+                    "--cryptic-peptide-deferred-parent-map", CRYPTIC_DEFERRED_PARENT_MAP,
+                    "--cryptic-parent-ranked", CRYPTIC_PARENT_RANKED,
                     "--max-hla-i-peptides", str(int(candidate_selection.get("max_hla_i_peptides"))),
                     "--max-hla-ii-peptides", str(int(candidate_selection.get("max_hla_ii_peptides"))),
                 ])
@@ -660,6 +705,8 @@ def _run_one_sample(
                     "--cryptic-parent-coordinates", CRYPTIC_PARENT_COORDINATES,
                     "--cryptic-parent-orfcds", CRYPTIC_PARENT_ORFCDS,
                     "--cryptic-peptide-genomic-footprint", CRYPTIC_PEPTIDE_FOOTPRINT,
+                    "--cryptic-parent-junction-summary", CRYPTIC_PARENT_JUNCTION_SUMMARY,
+                    "--cryptic-peptide-junction-evidence", CRYPTIC_PEPTIDE_JUNCTION_EVIDENCE,
                     "--coordinate-resource-manifest", _external_normal_resource_value(
                         configure, paths, "coordinate_manifest", "COORDINATE_MANIFEST"
                     ),
@@ -673,6 +720,8 @@ def _run_one_sample(
             _run_cmd(tool, sample, cmd, display_name="External normal resource QC")
             binding_pep_fasta = CRYPTIC_PRIMARY_CORE_FASTA
             binding_input_mode = "peptide-core"
+            if do_pvacbind:
+                _validate_peptide_core_binding_manifest(CRYPTIC_EXTERNAL_MANIFEST, binding_pep_fasta)
 
         # ---------- 09 HLA binding prediction ----------
         binding_output_dir = ""
