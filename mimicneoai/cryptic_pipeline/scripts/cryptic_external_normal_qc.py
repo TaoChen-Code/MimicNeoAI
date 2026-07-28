@@ -126,6 +126,12 @@ def write_fasta(rows: list[dict[str, object]], path: Path) -> None:
             handle.write(f">{row['peptide_record_id']}\n{row['peptide']}\n")
 
 
+def stable_refill_peptide_id(sample: str, mhc_class: str, peptide: str, ordinal: int) -> str:
+    normalized_class = normalize_hla_class(mhc_class).replace("-", "")
+    digest = sha256_text(f"{sample}|cryptic_refill|{normalized_class}|{len(peptide)}|{peptide}")[:12]
+    return f"cryptic_refill_{normalized_class}_{ordinal:07d}_{digest}"
+
+
 def output_signature(paths: list[Path]) -> dict[str, dict[str, object]]:
     return {path.name: file_identity(path) for path in paths}
 
@@ -465,6 +471,38 @@ def validate_core_parent_contract(core: pd.DataFrame, parent_map: pd.DataFrame, 
             raise ValueError(
                 f"Core and parent-map disagree for peptide_record_id {peptide_id}: {', '.join(mismatches)}"
             )
+
+
+def load_deferred_peptide_core(path: Path, sample: str, existing_keys: set[tuple[str, str]]) -> pd.DataFrame:
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    deferred = load_table(path)
+    if deferred.empty:
+        return deferred
+    required_columns(
+        deferred,
+        ["sample", "mhc_class", "peptide_length", "peptide"],
+        "cryptic_peptide_deferred.tsv",
+    )
+    rows: list[dict[str, object]] = []
+    seen_keys = set(existing_keys)
+    for idx, row in enumerate(deferred.to_dict("records"), start=1):
+        validate_peptide_row(row, sample, "cryptic_peptide_deferred.tsv", str(idx))
+        key = (normalize_hla_class(row.get("mhc_class", "")), str(row.get("peptide", "")).upper())
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        out = dict(row)
+        if not str(out.get("peptide_record_id", "")):
+            out["peptide_record_id"] = stable_refill_peptide_id(
+                sample,
+                str(out["mhc_class"]),
+                str(out["peptide"]),
+                len(rows) + 1,
+            )
+        out["prebinding_selection_origin"] = "deferred_refill"
+        rows.append(out)
+    return pd.DataFrame(rows)
 
 
 def validate_coordinate_sidecar_contract(
@@ -929,6 +967,7 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
 
     core_path = Path(args.cryptic_peptide_core)
     parent_map_path = Path(args.cryptic_peptide_parent_map)
+    deferred_path = Path(args.cryptic_peptide_deferred) if args.cryptic_peptide_deferred else Path("")
     upstream_manifest_path = Path(args.upstream_manifest)
     coordinate_sidecars: dict[str, Path] = {}
     if is_v11(policy_version):
@@ -968,6 +1007,7 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
         "upstream_inputs": {
             "cryptic_peptide_core": file_identity(core_path),
             "cryptic_peptide_parent_map": file_identity(parent_map_path),
+            "cryptic_peptide_deferred": file_identity(deferred_path) if args.cryptic_peptide_deferred else {},
             "upstream_manifest": file_identity(upstream_manifest_path),
             "coordinate_sidecars": {label: file_identity(path) for label, path in coordinate_sidecars.items()},
             "coordinate_utils": file_identity(COORDINATE_UTILS_PATH) if is_v11(policy_version) else {},
@@ -981,6 +1021,14 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
             "cryptic_peptide_parent_map_output_signature": upstream_manifest.get("output_signature", {}).get(
                 "cryptic_peptide_parent_map.tsv", {}
             ),
+            "cryptic_peptide_deferred_output_signature": upstream_manifest.get("output_signature", {}).get(
+                "cryptic_peptide_deferred.tsv", {}
+            ),
+        },
+        "refill_policy": {
+            "enabled": bool(args.cryptic_peptide_deferred),
+            "max_hla_i_peptides": int(args.max_hla_i_peptides or 0),
+            "max_hla_ii_peptides": int(args.max_hla_ii_peptides or 0),
         },
         "resource_identities": resource_identity,
         "coordinate_resource_identities": coordinate_resource_identity,
@@ -996,6 +1044,7 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
         outdir / "cryptic_tumor_restricted_primary_core_hla_i.fasta",
         outdir / "cryptic_tumor_restricted_primary_core_hla_ii.fasta",
         outdir / "cryptic_tumor_restricted_primary_core.fasta",
+        outdir / "cryptic_external_normal_refill_deferred.tsv",
         outdir / "stagewise_qc.tsv",
     ]
     if is_v11(policy_version):
@@ -1028,6 +1077,24 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
     core_ids = {str(value) for value in core["peptide_record_id"].tolist()}
     core_parent_map = select_core_parent_map_rows(parent_map, core_ids)
     validate_core_parent_contract(core, core_parent_map, args.sample)
+    core_keys = {
+        (normalize_hla_class(row.get("mhc_class", "")), str(row.get("peptide", "")).upper())
+        for row in core.to_dict("records")
+    }
+    deferred = (
+        load_deferred_peptide_core(deferred_path, args.sample, core_keys)
+        if args.cryptic_peptide_deferred
+        else pd.DataFrame()
+    )
+    cap_by_class = {
+        "HLA-I": int(args.max_hla_i_peptides or 0),
+        "HLA-II": int(args.max_hla_ii_peptides or 0),
+    }
+    upstream_selection = upstream_manifest.get("candidate_selection", {})
+    if isinstance(upstream_selection, dict):
+        cap_by_class["HLA-I"] = cap_by_class["HLA-I"] or int(upstream_selection.get("max_hla_i_peptides") or 0)
+        cap_by_class["HLA-II"] = cap_by_class["HLA-II"] or int(upstream_selection.get("max_hla_ii_peptides") or 0)
+    cap_by_class = {klass: (value if value > 0 else 10**18) for klass, value in cap_by_class.items()}
     coordinate_summaries: dict[str, dict[str, object]] = {}
     coordinate_evidence_rows: list[dict[str, object]] = []
     parent_coordinate_evaluable_count = 0
@@ -1084,20 +1151,33 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
         smorf_evidence = group_rows_by_key(smorf_parent_map)
         hla_evidence = group_rows_by_key(hla_ligand_evidence)
 
-    core_records: list[dict[str, object]] = []
+    candidate_records: list[dict[str, object]] = []
     evidence_rows: list[dict[str, object]] = []
     excluded_rows: list[dict[str, object]] = []
     retained_rows: list[dict[str, object]] = []
+    refill_deferred_rows: list[dict[str, object]] = []
     smorf_match_count = 0
     hla_match_count = 0
     both_match_count = 0
     exact_excluded_count = 0
     coordinate_concordant_count = 0
     coordinate_additional_excluded_count = 0
+    refill_selected_count = 0
+    retained_by_class: defaultdict[str, int] = defaultdict(int)
 
-    for record in core.to_dict("records"):
+    source_core_records = core.to_dict("records")
+    input_candidate_records: list[dict[str, object]] = []
+    for record in source_core_records:
+        row = dict(record)
+        row["prebinding_selection_origin"] = "initial_core"
+        input_candidate_records.append(row)
+    if not deferred.empty:
+        input_candidate_records.extend(deferred.to_dict("records"))
+
+    for record in input_candidate_records:
         row = base_output_row(record, freeze_version)
         peptide_id = str(row.get("peptide_record_id", ""))
+        origin = str(row.get("prebinding_selection_origin", "initial_core"))
         coordinate_summary = coordinate_summaries.get(peptide_id, {})
         coordinate_concordant = int(coordinate_summary.get("coordinate_match_count", 0) or 0) > 0
         row["candidate_coordinate_status"] = coordinate_summary.get("candidate_coordinate_status", "")
@@ -1153,7 +1233,16 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
             else:
                 row["external_normal_status"] = RETAINED_STATUS
                 row["external_normal_qc_reasons"] = ""
-                retained_rows.append(row)
+                hla_class = normalize_hla_class(row.get("mhc_class", ""))
+                if retained_by_class[hla_class] < cap_by_class.get(hla_class, 10**18):
+                    retained_rows.append(row)
+                    retained_by_class[hla_class] += 1
+                    if origin == "deferred_refill":
+                        refill_selected_count += 1
+                else:
+                    row["external_normal_status"] = "not_selected_due_to_analysis_cap_after_external_normal_qc"
+                    row["external_normal_qc_reasons"] = "not_selected_due_to_analysis_cap"
+                    refill_deferred_rows.append(row)
         else:
             row["normal_translation_status"] = SMORF_NOT_EVALUATED
             row["normal_hla_presentation_status"] = HLA_NOT_EVALUATED
@@ -1169,7 +1258,7 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
         row["normal_hla_ligand_donor_hla_genotypes"] = (
             compact_values(hla_evidence.get(key, []), "donor_hla_genotype") if hla_match else ""
         )
-        core_records.append(row)
+        candidate_records.append(row)
         if smorf_match:
             for evidence in smorf_evidence.get(key, []):
                 evidence_rows.append(make_smorf_evidence(row, evidence, freeze_version))
@@ -1177,7 +1266,7 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
             for evidence in hla_evidence.get(key, []):
                 evidence_rows.append(make_hla_evidence(row, evidence, freeze_version))
 
-    core_by_peptide_id = {str(record.get("peptide_record_id", "")): record for record in core_records}
+    core_by_peptide_id = {str(record.get("peptide_record_id", "")): record for record in candidate_records}
     for row in core_parent_map.to_dict("records"):
         peptide_id = str(row.get("peptide_record_id", ""))
         enriched = core_by_peptide_id.get(peptide_id, {})
@@ -1193,13 +1282,15 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
 
     if not resources_evaluated:
         retained_rows = []
-        excluded_rows = list(core_records)
+        refill_deferred_rows = []
+        excluded_rows = list(candidate_records)
 
     hla_i_rows = [row for row in retained_rows if normalize_hla_class(row.get("mhc_class", "")) == "HLA-I"]
     hla_ii_rows = [row for row in retained_rows if normalize_hla_class(row.get("mhc_class", "")) == "HLA-II"]
 
     common_fields = list(core.columns)
     extra_fields = [
+        "prebinding_selection_origin",
         "hla_class_normalized",
         "normal_translation_status",
         "normal_hla_presentation_status",
@@ -1234,17 +1325,23 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
         "hla_ligand_donor_hla_genotype",
     ]
 
-    if len(core_records) != len(core):
-        raise AssertionError("annotated Core row count must equal input Core row count")
-    if len(retained_rows) + len(excluded_rows) != len(core_records):
-        raise AssertionError("retained + excluded rows must equal annotated Core rows")
+    if len(candidate_records) != len(input_candidate_records):
+        raise AssertionError("annotated candidate row count must equal input candidate row count")
+    if len(retained_rows) + len(excluded_rows) + len(refill_deferred_rows) != len(candidate_records):
+        raise AssertionError("retained + excluded + deferred rows must equal annotated candidate rows")
     if is_v11(policy_version):
-        if exact_excluded_count + coordinate_additional_excluded_count + len(retained_rows) != len(core_records):
+        if (
+            exact_excluded_count
+            + coordinate_additional_excluded_count
+            + len(retained_rows)
+            + len(refill_deferred_rows)
+            != len(candidate_records)
+        ):
             raise AssertionError(
-                "annotated must equal exact_excluded + coordinate_additional_excluded + retained for v1.1"
+                "annotated must equal exact_excluded + coordinate_additional_excluded + retained/deferred for v1.1"
             )
 
-    write_tsv(core_records, outdir / "cryptic_external_normal_annotated_core.tsv", main_fields)
+    write_tsv(candidate_records, outdir / "cryptic_external_normal_annotated_core.tsv", main_fields)
     write_tsv(evidence_rows, outdir / "cryptic_external_normal_evidence.tsv", evidence_fields)
     if is_v11(policy_version):
         coordinate_evidence_fields = [
@@ -1260,6 +1357,7 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
             coordinate_evidence_fields,
         )
     write_tsv(excluded_rows, outdir / "cryptic_external_normal_excluded.tsv", main_fields)
+    write_tsv(refill_deferred_rows, outdir / "cryptic_external_normal_refill_deferred.tsv", main_fields)
     write_tsv(retained_rows, outdir / "cryptic_tumor_restricted_primary_core.tsv", main_fields)
     write_tsv(hla_i_rows, outdir / "cryptic_tumor_restricted_primary_core_hla_i.tsv", main_fields)
     write_tsv(hla_ii_rows, outdir / "cryptic_tumor_restricted_primary_core_hla_ii.tsv", main_fields)
@@ -1268,8 +1366,9 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
     write_fasta(retained_rows, outdir / "cryptic_tumor_restricted_primary_core.fasta")
 
     stage_counts = [
-        {"stage": "source_core_unique_peptides", "count": len(core_records)},
-        {"stage": "annotated_core_unique_peptides", "count": len(core_records)},
+        {"stage": "source_core_unique_peptides", "count": len(source_core_records)},
+        {"stage": "source_deferred_unique_peptides", "count": 0 if deferred.empty else len(deferred)},
+        {"stage": "annotated_core_unique_peptides", "count": len(candidate_records)},
         {"stage": "external_normal_resources_evaluated", "count": int(resources_evaluated)},
         {"stage": "normal_smorf_exact_match_peptides", "count": smorf_match_count},
         {"stage": "normal_hla_ligand_exact_match_peptides", "count": hla_match_count},
@@ -1277,11 +1376,13 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
         {"stage": "external_normal_excluded_unique_peptides", "count": len(excluded_rows)},
         {
             "stage": "external_normal_not_evaluated_unique_peptides",
-            "count": len(core_records) if not resources_evaluated else 0,
+            "count": len(candidate_records) if not resources_evaluated else 0,
         },
         {"stage": "tumor_restricted_primary_core_unique_peptides", "count": len(retained_rows)},
         {"stage": "hla_i_tumor_restricted_primary_core_unique_peptides", "count": len(hla_i_rows)},
         {"stage": "hla_ii_tumor_restricted_primary_core_unique_peptides", "count": len(hla_ii_rows)},
+        {"stage": "external_normal_refill_selected_unique_peptides", "count": refill_selected_count},
+        {"stage": "external_normal_deferred_after_qc_unique_peptides", "count": len(refill_deferred_rows)},
         {"stage": "external_normal_evidence_rows", "count": len(evidence_rows)},
     ]
     if is_v11(policy_version):
@@ -1379,6 +1480,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--cryptic-peptide-core", required=True)
     parser.add_argument("--cryptic-peptide-parent-map", required=True)
+    parser.add_argument("--cryptic-peptide-deferred", default="")
     parser.add_argument("--upstream-manifest", required=True)
     parser.add_argument("--cryptic-parent-coordinates", default="")
     parser.add_argument("--cryptic-parent-orfcds", default="")
@@ -1394,6 +1496,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--normal-smorf-orfcds", default="")
     parser.add_argument("--allow-missing-external-normal-resources", action="store_true")
     parser.add_argument("--coordinate-matching-enabled", action="store_true")
+    parser.add_argument("--max-hla-i-peptides", type=int, default=0)
+    parser.add_argument("--max-hla-ii-peptides", type=int, default=0)
     return parser
 
 

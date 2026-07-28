@@ -524,6 +524,7 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
             policy_version="cryptic_external_normal_qc_v1.0",
             cryptic_peptide_core=str(inputs["core"]),
             cryptic_peptide_parent_map=str(inputs["parent_map"]),
+            cryptic_peptide_deferred=str(inputs.get("deferred", "")),
             upstream_manifest=str(inputs["manifest"]),
             cryptic_parent_coordinates=str(inputs.get("cryptic_parent_coordinates", "")),
             cryptic_parent_orfcds=str(inputs.get("cryptic_parent_orfcds", "")),
@@ -539,6 +540,8 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
             normal_smorf_orfcds=str(resources.get("normal_smorf_orfcds", "")),
             allow_missing_external_normal_resources=False,
             coordinate_matching_enabled=False,
+            max_hla_i_peptides=0,
+            max_hla_ii_peptides=0,
         )
 
     def test_exact_sequence_and_class_matching(self) -> None:
@@ -593,6 +596,75 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
 
             reused = build_external_normal_qc(self._args(inputs, resources, outdir))
             self.assertTrue(reused["reused"])
+
+    def test_external_normal_refills_from_deferred_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            core_rows = [
+                {
+                    "sample": "CRYPTIC-T",
+                    "peptide_record_id": "pep1",
+                    "mhc_class": "MHC-I",
+                    "peptide_length": 8,
+                    "peptide": "ACDEFGHI",
+                },
+                {
+                    "sample": "CRYPTIC-T",
+                    "peptide_record_id": "pep2",
+                    "mhc_class": "MHC-I",
+                    "peptide_length": 8,
+                    "peptide": "CDEFGHIK",
+                },
+            ]
+            inputs = self._write_08b_core(
+                root,
+                core_rows=core_rows,
+                parent_rows=self.default_parent_rows(core_rows)[: len(core_rows)],
+            )
+            deferred = root / "08b" / "cryptic_peptide_deferred.tsv"
+            write_tsv(
+                deferred,
+                [
+                    {
+                        "sample": "CRYPTIC-T",
+                        "peptide_record_id": "",
+                        "parent_record_id": "parent_deferred_1",
+                        "source_parent_id": "source_deferred_1",
+                        "mhc_class": "MHC-I",
+                        "peptide_start": 1,
+                        "peptide_length": 8,
+                        "peptide": "QRSTVWYA",
+                    },
+                    {
+                        "sample": "CRYPTIC-T",
+                        "peptide_record_id": "",
+                        "parent_record_id": "parent_deferred_2",
+                        "source_parent_id": "source_deferred_2",
+                        "mhc_class": "MHC-I",
+                        "peptide_start": 1,
+                        "peptide_length": 8,
+                        "peptide": "KLMNPQRS",
+                    },
+                ],
+                self.parent_columns,
+            )
+            inputs["deferred"] = deferred
+            resources = self._write_resources(root)
+            outdir = root / "08c_refill"
+            args = self._args(inputs, resources, outdir)
+            args.max_hla_i_peptides = 2
+            args.max_hla_ii_peptides = 1
+
+            manifest = build_external_normal_qc(args)
+
+            self.assertEqual(manifest["stage_counts"]["source_core_unique_peptides"], 2)
+            self.assertEqual(manifest["stage_counts"]["source_deferred_unique_peptides"], 2)
+            self.assertEqual(manifest["stage_counts"]["external_normal_refill_selected_unique_peptides"], 1)
+            retained = pd.read_csv(outdir / "cryptic_tumor_restricted_primary_core.tsv", sep="\t")
+            self.assertEqual(set(retained["peptide"]), {"CDEFGHIK", "QRSTVWYA"})
+            self.assertIn("deferred_refill", set(retained["prebinding_selection_origin"]))
+            refill_deferred = pd.read_csv(outdir / "cryptic_external_normal_refill_deferred.tsv", sep="\t")
+            self.assertTrue(refill_deferred.empty)
 
     def test_coordinate_classifier_synthetic_cases(self) -> None:
         ref_plus = [GenomicBlock("1", "+", 100, 124)]

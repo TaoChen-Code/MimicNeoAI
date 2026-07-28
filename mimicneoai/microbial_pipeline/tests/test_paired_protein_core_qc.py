@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,7 @@ import pandas as pd
 
 from mimicneoai.microbial_pipeline.scripts.paired_protein_core_qc import (
     build_pair_core,
+    parse_fragment_id,
     validate_pair_id,
 )
 
@@ -63,6 +65,18 @@ class PairedProteinCoreQCTest(unittest.TestCase):
             ]
         ).to_csv(path, sep="\t", index=False)
 
+    def test_real_qseqid_parser_counts_qname_not_alignment_position(self) -> None:
+        qseqid_a = (
+            "protIndex:1|WP-T-RNA|E250188958L1C005R01202870515|99|150M|"
+            "YP:Z:AAA|CTAXA:511145|PROT:NP_417779.1"
+        )
+        qseqid_b = (
+            "protIndex:2|WP-T-RNA|E250188958L1C005R01202870515|184|66M|"
+            "YP:Z:BBB|CTAXA:511145|PROT:NP_417780.1"
+        )
+        self.assertEqual(parse_fragment_id(qseqid_a), ("WP-T-RNA|E250188958L1C005R01202870515", "parsed"))
+        self.assertEqual(parse_fragment_id(qseqid_b), ("WP-T-RNA|E250188958L1C005R01202870515", "parsed"))
+
     def test_pair_core_subtracts_normal_peptides_and_keeps_traceability(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
@@ -107,6 +121,8 @@ class PairedProteinCoreQCTest(unittest.TestCase):
             self.assertTrue((outdir / "microbial_peptide_core.fasta").exists())
             self.assertTrue((outdir / "microbial_peptide_core_hla_i.fasta").exists())
             self.assertTrue((outdir / "microbial_peptide_core_hla_ii.fasta").exists())
+            self.assertTrue((outdir / "microbial_peptide_core_hla_i.tsv").exists())
+            self.assertTrue((outdir / "microbial_peptide_core_hla_ii.tsv").exists())
             self.assertEqual(manifest["stagewise_counts"]["tumor_parent_qc_pass"], 5)
             self.assertEqual(manifest["stagewise_counts"]["tumor_parent_qc_excluded"], 1)
             self.assertEqual(manifest["stagewise_counts"]["tumor_parent_exact_normal_excluded"], 1)
@@ -260,6 +276,164 @@ class PairedProteinCoreQCTest(unittest.TestCase):
             self.assertTrue((outdir / "run_manifest.json").exists())
             self.assertFalse((outdir / "microbial_peptide_core.fasta").exists())
             self.assertFalse((outdir / "microbial_peptide_core.tsv").exists())
+
+    def test_ranked_cap_bypasses_full_scale_gate_and_refills_after_normal_subtraction(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            tumor_hits = root / "tumor.tsv"
+            normal_hits = root / "normal.tsv"
+            blacklist = root / "blacklist.tsv"
+            outdir = root / "ranked"
+            self.write_blacklist(blacklist)
+            self.write_hits(
+                tumor_hits,
+                [
+                    hit_row(1, "A_HIGH.1", "111", "ACDEFGHIKLM"),
+                    hit_row(2, "B_FILL.1", "111", "LMNPQRSTVWYAC"),
+                ],
+            )
+            self.write_hits(
+                normal_hits,
+                [
+                    hit_row(1, "N_SHARED.1", "111", "ACDEFGHIKLMNP"),
+                ],
+            )
+
+            manifest = build_pair_core(
+                tumor_protein_hits=tumor_hits,
+                normal_protein_hits=normal_hits,
+                outdir=outdir,
+                tumor_sample="T",
+                normal_sample="N",
+                pair_id="T,N",
+                blacklist=blacklist,
+                mhc_i_lengths=[9],
+                mhc_ii_lengths=[13],
+                max_estimated_peptide_windows=1,
+                candidate_selection_mode="ranked_cap",
+                max_hla_i_peptides=1,
+                max_hla_ii_peptides=1,
+            )
+
+            self.assertEqual(manifest["run_status"], "completed")
+            self.assertEqual(manifest["candidate_selection"]["mode"], "ranked_cap")
+            self.assertEqual(manifest["stagewise_counts"]["scale_gate_skipped"], 0)
+            self.assertEqual(manifest["stagewise_counts"]["ranked_selected_hla_i"], 1)
+            self.assertEqual(manifest["stagewise_counts"]["ranked_selected_hla_ii"], 1)
+            peptide_core = pd.read_csv(outdir / "microbial_peptide_core.tsv", sep="\t")
+            peptide_excluded = pd.read_csv(outdir / "microbial_peptide_excluded.tsv", sep="\t")
+            matched_normal = pd.read_csv(outdir / "matched_normal_peptide.tsv", sep="\t")
+            self.assertEqual(int((peptide_core["mhc_class"] == "MHC-I").sum()), 1)
+            self.assertEqual(int((peptide_core["mhc_class"] == "MHC-II").sum()), 1)
+            self.assertIn("excluded_exact_peptide_in_matched_normal", set(peptide_excluded["peptide_qc_reasons"]))
+            self.assertGreater(len(matched_normal), 0)
+            self.assertTrue((outdir / "microbial_ranked_source.tsv").exists())
+            self.assertTrue((outdir / "microbial_peptide_selection_evidence.tsv").exists())
+            evidence = pd.read_csv(outdir / "microbial_peptide_selection_evidence.tsv", sep="\t")
+            self.assertIn("excluded_exact_matched_normal", set(evidence["selection_status"]))
+            self.assertIn("selected_for_binding", set(evidence["selection_status"]))
+
+    def test_ranked_cap_aggregates_all_sources_before_blacklist(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            tumor_hits = root / "tumor.tsv"
+            normal_hits = root / "normal.tsv"
+            blacklist = root / "blacklist.tsv"
+            outdir = root / "ranked_aggregate"
+            self.write_blacklist(blacklist)
+            shared_sequence = "ACDEFGHIKLMNP"
+            self.write_hits(
+                tumor_hits,
+                [
+                    hit_row(1, "A_CONTAM.1", "999", shared_sequence),
+                    hit_row(2, "Z_ALLOWED.1", "111", shared_sequence),
+                ],
+            )
+            self.write_hits(normal_hits, [])
+
+            manifest = build_pair_core(
+                tumor_protein_hits=tumor_hits,
+                normal_protein_hits=normal_hits,
+                outdir=outdir,
+                tumor_sample="T",
+                normal_sample="N",
+                pair_id="T,N",
+                blacklist=blacklist,
+                mhc_i_lengths=[9],
+                mhc_ii_lengths=[13],
+                candidate_selection_mode="ranked_cap",
+                max_hla_i_peptides=1,
+                max_hla_ii_peptides=1,
+            )
+
+            self.assertEqual(manifest["run_status"], "completed")
+            peptide_core = pd.read_csv(outdir / "microbial_peptide_core.tsv", sep="\t")
+            self.assertEqual(len(peptide_core), 2)
+            self.assertTrue((peptide_core["parent_record_count"] == 2).all())
+            self.assertTrue((peptide_core["protein_count"] == 2).all())
+            parent_map = pd.read_csv(outdir / "microbial_peptide_parent_map.tsv", sep="\t")
+            self.assertEqual(
+                parent_map[["mhc_class", "peptide", "parent_record_id"]].drop_duplicates().shape[0],
+                4,
+            )
+            self.assertIn(
+                "blacklist_partial_contaminant_retained",
+                ";".join(peptide_core["peptide_qc_flags"].fillna("").astype(str)),
+            )
+
+    def test_manifest_resume_requires_input_and_output_signatures(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            tumor_hits = root / "tumor.tsv"
+            normal_hits = root / "normal.tsv"
+            blacklist = root / "blacklist.tsv"
+            outdir = root / "resume"
+            self.write_blacklist(blacklist)
+            rows = [hit_row(1, "WP_1.1", "111", "ACDEFGHIKLMN")]
+            self.write_hits(tumor_hits, rows)
+            self.write_hits(normal_hits, [])
+
+            manifest = build_pair_core(
+                tumor_protein_hits=tumor_hits,
+                normal_protein_hits=normal_hits,
+                outdir=outdir,
+                tumor_sample="T",
+                normal_sample="N",
+                pair_id="T,N",
+                blacklist=blacklist,
+                mhc_i_lengths=[9],
+                mhc_ii_lengths=[13],
+            )
+            self.assertFalse(manifest.get("reused", False))
+            reused = build_pair_core(
+                tumor_protein_hits=tumor_hits,
+                normal_protein_hits=normal_hits,
+                outdir=outdir,
+                tumor_sample="T",
+                normal_sample="N",
+                pair_id="T,N",
+                blacklist=blacklist,
+                mhc_i_lengths=[9],
+                mhc_ii_lengths=[13],
+            )
+            self.assertTrue(reused["reused"])
+
+            manifest_path = outdir / "run_manifest.json"
+            saved = json.loads(manifest_path.read_text())
+            saved["input_signature"]["min_qcovs"] = 99.0
+            manifest_path.write_text(json.dumps(saved, indent=2))
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                build_pair_core(
+                    tumor_protein_hits=tumor_hits,
+                    normal_protein_hits=normal_hits,
+                    outdir=outdir,
+                    tumor_sample="T",
+                    normal_sample="N",
+                    pair_id="T,N",
+                    blacklist=blacklist,
+                    mhc_i_lengths=[9],
+                    mhc_ii_lengths=[13],
+                )
 
     def test_pair_id_validation_is_strict(self) -> None:
         with self.assertRaisesRegex(ValueError, "different"):

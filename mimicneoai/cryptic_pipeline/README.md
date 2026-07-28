@@ -11,8 +11,9 @@ Discover and prioritize sORF-encoded peptides from known and novel transcripts.
 6. Aberrantly expressed sORF peptide extraction
 7. ORF genome annotation and ORF-level filtering
 8. Cryptic Core QC
-9. External-normal exact sequence QC
-10. Binding prediction
+9. Optional junction QC inside Cryptic Core v1.1
+10. External-normal exact sequence QC
+11. Binding prediction
 
 ## Installation
 
@@ -91,6 +92,9 @@ Pipeline outputs are written under:
 
 Notable subfolders:
 - `04-salmon_quant/salmon_index`, `salmon_quant`, `salmon_quant_control`
+- `01-star/star-provenance-freeze`: optional frozen STAR provenance for
+  paired junction QC. The directory name is stable; the policy version is
+  recorded inside the manifests.
 - `07-orf_genome_annotation`: maps selected ORF/CDS records back to the reference genome
 - `08-orf_filter`: writes the ORF-filtered aeSEP FASTA used by binding prediction
 - `08b-cryptic_core_qc`: materializes the strict pre-binding Cryptic Core
@@ -117,6 +121,27 @@ Notable subfolders:
   `novel` and `noncoding` aeSEP sources, requires ORF-filtered parent records,
   preserves excluded rows, and writes pre-tiled peptide-core FASTA files for
   HLA-I 8-11 aa and HLA-II 13-17 aa.
+- `candidate_selection.mode: all` keeps the complete Cryptic Core and is the
+  default. `ranked_cap` ranks parent ORFs before peptide tiling and caps unique
+  peptide sequences independently for HLA-I and HLA-II, for example:
+  `max_hla_i_peptides: 400000` and `max_hla_ii_peptides: 400000`. Cap-external
+  parents or peptides are recorded as `not_selected_due_to_analysis_cap`; this
+  is a compute-routing state, not binding-negative evidence.
+  `ranked_cap` currently fails closed when `junction_qc.enabled: true` because
+  deferred/refill candidates must first receive the same coordinate and junction
+  QC contract before this mode can be used for formal freezing.
+- `junction_qc.enabled: true` enables production junction support QC for
+  `cryptic_core_qc_v1.1`. It consumes the explicit STAR pair table produced by
+  `freeze_star_provenance.py`; downstream code should read SJ paths from that
+  table rather than infer unprefixed filenames. The primary policy is
+  `junction_qc_v1.0`, requiring all required parent junctions to have tumor
+  unique split reads >=2. It also records threshold sensitivity for 1, 2, 3,
+  and 5 reads. Intronless parents are retained as not applicable. Matched-normal
+  junctions are annotation-only and are reported as unique-read threshold
+  fields, not as full-chain support.
+  `cryptic_peptide_junction_evidence.tsv` covers retained Core peptide windows
+  with stable peptide IDs; human-reference-excluded peptide windows remain in
+  the QC/excluded tables and are not assigned peptide-level junction evidence.
 - `others.cryptic_external_normal_qc` defaults to disabled in the generic
   template because the frozen resource package is project-specific. Formal
   project configs should enable it and provide `external_normal_resources`, or

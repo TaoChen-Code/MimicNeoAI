@@ -22,6 +22,14 @@ args:
   mem : "128G"  # Maximum memory allocation
   mem_perthread : "256M"  # Memory per thread in samtools sort
 
+# Pre-binding candidate selection for microbial peptide Core.
+# all keeps the complete Core. ranked_cap ranks microbial source groups before
+# peptide tiling and keeps up to the requested unique HLA-I/HLA-II peptides.
+candidate_selection:
+  mode: "all"                    # all | ranked_cap
+  max_hla_i_peptides: null       # e.g. 400000 for Fig. 5 ranked runs
+  max_hla_ii_peptides: null      # e.g. 400000 for Fig. 5 ranked runs
+
 # Analysis Parameters
 others:
   species: "human"              # Species selection (human/mouse)

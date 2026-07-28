@@ -20,6 +20,22 @@ args:
   hla_binding_threads : 5 # Number of threads for parallel pvactools runs; too many may reduce efficiency—adjust based on server performance.
   pool_size: 1
   trinity_mem: "100G"
+
+# Pre-binding candidate selection for Cryptic Core.
+# all keeps the complete Core. ranked_cap ranks parent ORFs before peptide
+# tiling and keeps up to the requested unique HLA-I/HLA-II peptides.
+candidate_selection:
+  mode: "all"                    # all | ranked_cap
+  max_hla_i_peptides: null       # e.g. 400000 for Fig. 5 ranked runs
+  max_hla_ii_peptides: null      # e.g. 400000 for Fig. 5 ranked runs
+
+junction_qc:
+  enabled: false
+  policy_version: "junction_qc_v1.0"
+  star_pair_inputs: ""
+  primary_min_tumor_unique_reads: 2
+  sensitivity_thresholds: "1,2,3,5"
+
 others:
   QC: true
   alignment: true

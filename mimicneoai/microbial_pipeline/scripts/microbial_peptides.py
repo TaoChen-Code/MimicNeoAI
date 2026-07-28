@@ -79,6 +79,8 @@ def MicrobialPairedProteinCoreQC(tumor_sample, normal_sample, configure, paths, 
 
     output_path = configure['path']['output_dir'].rstrip("/") + "/"
     others = configure.get("others", {})
+    candidate_selection = configure.get("candidate_selection", {}) or {}
+    scan_workers = int(configure.get("args", {}).get("thread", 1))
     outdir = output_path + f"{tumor_sample}/{_paired_core_step_name(configure)}/"
     tumor_hits = _microbial_protein_hits_path(tumor_sample, configure)
     normal_hits = _microbial_protein_hits_path(normal_sample, configure)
@@ -110,7 +112,20 @@ def MicrobialPairedProteinCoreQC(tumor_sample, normal_sample, configure, paths, 
         str(float(others.get("blastx_min_query_coverage", 90))),
         "--max-estimated-peptide-windows",
         str(int(others.get("paired_core_max_estimated_peptide_windows", 20_000_000))),
+        "--candidate-selection-mode",
+        str(candidate_selection.get("mode", "all")),
+        "--scan-workers",
+        str(scan_workers),
     ]
+    if candidate_selection.get("max_hla_i_peptides") is not None:
+        cmd.extend(["--max-hla-i-peptides", str(int(candidate_selection.get("max_hla_i_peptides")))])
+    if candidate_selection.get("max_hla_ii_peptides") is not None:
+        cmd.extend(["--max-hla-ii-peptides", str(int(candidate_selection.get("max_hla_ii_peptides")))])
+    if candidate_selection.get("ranking_abundance_pseudocount") is not None:
+        cmd.extend([
+            "--ranking-abundance-pseudocount",
+            str(float(candidate_selection.get("ranking_abundance_pseudocount"))),
+        ])
     blacklist = _resolve_contaminant_blacklist(paths)
     allow_missing_blacklist = bool(others.get("allow_missing_blacklist", False))
     if blacklist:
@@ -126,10 +141,9 @@ def MicrobialPairedProteinCoreQC(tumor_sample, normal_sample, configure, paths, 
     if expected_blacklist_sha256:
         cmd.extend(["--blacklist-sha256", expected_blacklist_sha256])
     manifest_path = f"{outdir}run_manifest.json"
-    tool.judge_then_exec(
-        f"{tumor_sample},{normal_sample}",
+    tool.exec_cmd(
         " ".join(shlex.quote(item) for item in cmd),
-        manifest_path,
+        f"{tumor_sample},{normal_sample}",
         display_name="Paired microbial Core QC",
     )
 

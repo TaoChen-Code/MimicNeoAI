@@ -262,6 +262,7 @@ def _run_one_sample(
         ORF_FINAL_TABLE = os.path.join(DIR08_ORF, "orf_final.csv")
         CRYPTIC_CORE_TSV = os.path.join(DIR08B_CORE, "cryptic_peptide_core.tsv")
         CRYPTIC_CORE_PARENT_MAP = os.path.join(DIR08B_CORE, "cryptic_peptide_parent_map.tsv")
+        CRYPTIC_DEFERRED_PEPTIDE = os.path.join(DIR08B_CORE, "cryptic_peptide_deferred.tsv")
         CRYPTIC_CORE_MANIFEST = os.path.join(DIR08B_CORE, "run_manifest.json")
         CRYPTIC_CORE_FASTA = os.path.join(DIR08B_CORE, "cryptic_peptide_core.fasta")
         CRYPTIC_PARENT_COORDINATES = os.path.join(DIR08B_CORE, "cryptic_parent_coordinates.tsv")
@@ -458,6 +459,7 @@ def _run_one_sample(
         if do_cryptic_core:
             if not do_orf_filter:
                 raise ValueError("cryptic_core_qc requires orf_filter to be enabled")
+            candidate_selection = configure.get("candidate_selection", {}) or {}
             cryptic_core_policy_version = str(
                 others.get("cryptic_core_qc_policy_version", "cryptic_core_qc_v1.0")
             ).strip()
@@ -490,7 +492,12 @@ def _run_one_sample(
                 "--min-log2fc", str(min_log2fc),
                 "--mhc-i-lengths", str(others.get("mhcI_lengths", "8,9,10,11")),
                 "--mhc-ii-lengths", str(others.get("mhcII_lengths", "13,14,15,16,17")),
+                "--candidate-selection-mode", str(candidate_selection.get("mode", "all")),
             ]
+            if candidate_selection.get("max_hla_i_peptides") is not None:
+                cmd.extend(["--max-hla-i-peptides", str(int(candidate_selection.get("max_hla_i_peptides")))])
+            if candidate_selection.get("max_hla_ii_peptides") is not None:
+                cmd.extend(["--max-hla-ii-peptides", str(int(candidate_selection.get("max_hla_ii_peptides")))])
             if human_proteome_fasta:
                 cmd.extend(["--human-proteome-fasta", human_proteome_fasta])
             if bool(others.get("allow_missing_human_reference", False)):
@@ -501,6 +508,19 @@ def _run_one_sample(
                     "--orf-bam", ORF_BAM,
                     "--orf-cds-fasta", ORF_CDS_FASTA,
                     "--coordinate-min-mapq", str(int(others.get("coordinate_min_mapq", 20))),
+                ])
+            junction_qc = configure.get("junction_qc", {}) or {}
+            if not isinstance(junction_qc, dict):
+                raise ValueError("junction_qc must be a mapping")
+            if bool(junction_qc.get("enabled", False)):
+                cmd.extend([
+                    "--junction-qc-enabled",
+                    "--junction-policy-version", str(junction_qc.get("policy_version", "junction_qc_v1.0")),
+                    "--star-pair-inputs", str(junction_qc.get("star_pair_inputs", "")),
+                    "--primary-min-tumor-unique-reads",
+                    str(int(junction_qc.get("primary_min_tumor_unique_reads", 2))),
+                    "--junction-sensitivity-thresholds",
+                    str(junction_qc.get("sensitivity_thresholds", "1,2,3,5")),
                 ])
             _run_cmd(tool, sample, cmd, display_name="Cryptic Core QC")
             binding_pep_fasta = CRYPTIC_CORE_FASTA
@@ -542,6 +562,13 @@ def _run_one_sample(
                     configure, paths, "hla_ligand_evidence", "HLA_LIGAND_EVIDENCE"
                 ),
             ]
+            candidate_selection = configure.get("candidate_selection", {}) or {}
+            if str(candidate_selection.get("mode", "all")).strip().lower() == "ranked_cap":
+                cmd.extend([
+                    "--cryptic-peptide-deferred", CRYPTIC_DEFERRED_PEPTIDE,
+                    "--max-hla-i-peptides", str(int(candidate_selection.get("max_hla_i_peptides"))),
+                    "--max-hla-ii-peptides", str(int(candidate_selection.get("max_hla_ii_peptides"))),
+                ])
             if allow_missing_external_normal:
                 cmd.append("--allow-missing-external-normal-resources")
             if bool(external_resources.get("coordinate_matching_enabled", False)):

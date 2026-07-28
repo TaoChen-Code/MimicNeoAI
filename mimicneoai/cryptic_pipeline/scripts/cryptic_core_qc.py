@@ -2,9 +2,10 @@
 """Materialize a strict, pre-binding Cryptic Core.
 
 This stage consumes aeSEP parent ORFs after ORF-genome filtering and writes
-pre-tiled HLA-I/HLA-II peptide Core FASTA files. It intentionally keeps RNA
-editing, junction support, and external atlas checks as explicit not-evaluated
-fields until those resources are configured.
+pre-tiled HLA-I/HLA-II peptide Core FASTA files. In v1.1 it can apply
+coordinate/translation QC and junction_qc_v1.0 before peptide generation.
+RNA editing and external atlas checks remain explicit not-evaluated fields
+until those resources are configured.
 """
 
 from __future__ import annotations
@@ -39,6 +40,14 @@ try:
         transcript_order,
         translate_cds,
     )
+    from mimicneoai.cryptic_pipeline.scripts.cryptic_junction_qc import (
+        POLICY_VERSION as JUNCTION_POLICY_VERSION,
+        PRIMARY_PASS as JUNCTION_PRIMARY_PASS,
+        annotate_peptide_junctions,
+        evaluate_parent_junctions,
+        validate_junction_policy,
+        validate_star_pair_contract,
+    )
 except ImportError:  # pragma: no cover - direct script execution fallback
     from cryptic_coordinate_utils import (  # type: ignore
         GenomicBlock,
@@ -56,13 +65,26 @@ except ImportError:  # pragma: no cover - direct script execution fallback
         transcript_order,
         translate_cds,
     )
+    from cryptic_junction_qc import (  # type: ignore
+        POLICY_VERSION as JUNCTION_POLICY_VERSION,
+        PRIMARY_PASS as JUNCTION_PRIMARY_PASS,
+        annotate_peptide_junctions,
+        evaluate_parent_junctions,
+        validate_junction_policy,
+        validate_star_pair_contract,
+    )
 
 POLICY_VERSION_V1 = "cryptic_core_qc_v1.0"
 POLICY_VERSION_V11 = "cryptic_core_qc_v1.1"
 POLICY_VERSION = POLICY_VERSION_V1
 COORDINATE_UTILS_PATH = Path(__file__).with_name("cryptic_coordinate_utils.py")
+JUNCTION_QC_PATH = Path(__file__).with_name("cryptic_junction_qc.py")
 CANONICAL_AA = set("ACDEFGHIKLMNPQRSTVWY")
 ACCEPTED_SOURCE_CLASSES = {"novel", "noncoding"}
+CANDIDATE_SELECTION_POLICY_VERSION = "ranked_prebinding_selection_v1.0"
+CRYPTIC_RANKING_POLICY = "cryptic_parent_expression_v1.0"
+ALL_MODE = "all"
+RANKED_CAP_MODE = "ranked_cap"
 
 
 def ts() -> str:
@@ -78,6 +100,23 @@ def parse_int_list(value: str) -> list[int]:
     if not out:
         raise ValueError("At least one peptide length is required")
     return sorted(set(out))
+
+
+def validate_candidate_selection(
+    mode: str,
+    max_hla_i_peptides: Optional[int],
+    max_hla_ii_peptides: Optional[int],
+) -> tuple[str, Optional[int], Optional[int]]:
+    mode = str(mode or ALL_MODE).strip().lower()
+    if mode not in {ALL_MODE, RANKED_CAP_MODE}:
+        raise ValueError(f"candidate_selection.mode must be '{ALL_MODE}' or '{RANKED_CAP_MODE}', got {mode!r}")
+    if mode == ALL_MODE:
+        return mode, None, None
+    if max_hla_i_peptides is None or int(max_hla_i_peptides) <= 0:
+        raise ValueError("ranked_cap requires positive max_hla_i_peptides")
+    if max_hla_ii_peptides is None or int(max_hla_ii_peptides) <= 0:
+        raise ValueError("ranked_cap requires positive max_hla_ii_peptides")
+    return mode, int(max_hla_i_peptides), int(max_hla_ii_peptides)
 
 
 def sha256_text(value: str) -> str:
@@ -363,6 +402,81 @@ def stable_peptide_id(sample: str, mhc_class: str, peptide: str, index: int) -> 
     return f"cryptic_core_{class_tag}_{index:07d}_{digest}"
 
 
+def stable_selection_digest(sample: str, parent_id: str, mhc_class: str = "", peptide: str = "") -> str:
+    return sha256_text(f"{sample}|cryptic|{parent_id}|{mhc_class}|{len(peptide)}|{peptide}")
+
+
+def sort_parent_core_for_ranked(rows: list[dict[str, object]], sample: str) -> list[dict[str, object]]:
+    def key(row: dict[str, object]) -> tuple:
+        tumor_tpm = parse_float(row.get("TPM_tumor", "")) or 0.0
+        log2fc = parse_float(row.get("log2FC", "")) or 0.0
+        ctrl_tpm = parse_float(row.get("TPM_ctrl", "")) or 0.0
+        nc_class = str(row.get("nc_class", ""))
+        nc_rank = 0 if nc_class == "novel" else 1 if nc_class == "noncoding" else 2
+        sequence = str(row.get("parent_sequence", ""))
+        parent_id = str(row.get("parent_record_id", ""))
+        digest = stable_selection_digest(sample, parent_id)
+        return (-tumor_tpm, -log2fc, ctrl_tpm, nc_rank, -len(sequence), parent_id, digest)
+
+    return sorted(rows, key=key)
+
+
+def make_candidate_window_row(
+    sample: str,
+    parent_row: dict[str, object],
+    mhc_class: str,
+    start: int,
+    length: int,
+    peptide: str,
+) -> dict[str, object]:
+    return {
+        "sample": sample,
+        "parent_record_id": parent_row["parent_record_id"],
+        "source_parent_id": parent_row["source_parent_id"],
+        "mhc_class": mhc_class,
+        "peptide_start": start,
+        "peptide_length": length,
+        "peptide": peptide,
+        "peptide_sequence_sha256": sha256_text(peptide),
+        "peptide_core_status": "core",
+        "peptide_qc_reasons": "",
+        "human_reference_peptide_status": "not_evaluated",
+        "normal_hla_presentation_status": "normal_hla_atlas_not_evaluated",
+        "normal_translation_status": "normal_translation_not_evaluable",
+        "external_normal_status": "external_normal_not_evaluated",
+    }
+
+
+def iter_parent_candidate_rows(
+    sample: str,
+    parent_row: dict[str, object],
+    mhc_i_lengths: list[int],
+    mhc_ii_lengths: list[int],
+) -> Iterable[dict[str, object]]:
+    sequence = str(parent_row["parent_sequence"])
+    for mhc_class, lengths in [("MHC-I", mhc_i_lengths), ("MHC-II", mhc_ii_lengths)]:
+        for start, length, peptide in iter_windows(sequence, lengths):
+            yield make_candidate_window_row(sample, parent_row, mhc_class, start, length, peptide)
+
+
+def rebuild_selected_parent_windows(
+    sample: str,
+    parent_core_rows: list[dict[str, object]],
+    selected_keys: set[tuple[str, str]],
+    peptide_id_by_key: dict[tuple[str, str], str],
+    mhc_i_lengths: list[int],
+    mhc_ii_lengths: list[int],
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for parent_row in parent_core_rows:
+        for row in iter_parent_candidate_rows(sample, parent_row, mhc_i_lengths, mhc_ii_lengths):
+            key = (str(row["mhc_class"]), str(row["peptide"]))
+            if key in selected_keys:
+                row["peptide_record_id"] = peptide_id_by_key[key]
+                rows.append(row)
+    return rows
+
+
 def is_v11(policy_version: str) -> bool:
     return policy_version == POLICY_VERSION_V11
 
@@ -626,6 +740,276 @@ def build_coordinate_sidecars(
     return parent_coordinates, parent_orfcds, peptide_footprints, summary
 
 
+def build_all_candidate_rows(
+    sample: str,
+    parent_core_rows: list[dict[str, object]],
+    mhc_i_lengths: list[int],
+    mhc_ii_lengths: list[int],
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for parent_row in parent_core_rows:
+        rows.extend(iter_parent_candidate_rows(sample, parent_row, mhc_i_lengths, mhc_ii_lengths))
+    return rows
+
+
+def build_ranked_candidate_rows(
+    args: argparse.Namespace,
+    parent_core_rows: list[dict[str, object]],
+    human_proteome: Optional[Path],
+    mhc_i_lengths: list[int],
+    mhc_ii_lengths: list[int],
+    max_hla_i_peptides: int,
+    max_hla_ii_peptides: int,
+) -> tuple[
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    dict[str, object],
+    dict[str, object],
+]:
+    ranked_parents = sort_parent_core_for_ranked(parent_core_rows, args.sample)
+    caps = {"MHC-I": int(max_hla_i_peptides), "MHC-II": int(max_hla_ii_peptides)}
+    selected_by_class: dict[str, dict[tuple[str, str], dict[str, object]]] = {"MHC-I": {}, "MHC-II": {}}
+    selected_keys: set[tuple[str, str]] = set()
+    peptide_id_by_key: dict[tuple[str, str], str] = {}
+    excluded_peptide_rows: list[dict[str, object]] = []
+    deferred_peptide_rows: list[dict[str, object]] = []
+    evidence_rows: list[dict[str, object]] = []
+    deferred_parent_rows: list[dict[str, object]] = []
+    parent_rank_rows: list[dict[str, object]] = []
+    examined_keys: set[tuple[str, str]] = set()
+    human_reference_summaries: list[dict[str, object]] = []
+    boundary_parent = ""
+    pending_rows_by_key: dict[tuple[str, str], dict[str, object]] = {}
+    parent_rank_by_id: dict[str, dict[str, object]] = {}
+    parent_status_counts: defaultdict[str, defaultdict[str, int]] = defaultdict(lambda: defaultdict(int))
+
+    def caps_full() -> bool:
+        return all(len(selected_by_class[mhc_class]) >= cap for mhc_class, cap in caps.items())
+
+    def pending_count(mhc_class: str) -> int:
+        return sum(1 for key in pending_rows_by_key if key[0] == mhc_class)
+
+    def should_flush() -> bool:
+        if not pending_rows_by_key:
+            return False
+        if all(len(selected_by_class[mhc]) + pending_count(mhc) >= caps[mhc] for mhc in caps):
+            return True
+        return len(pending_rows_by_key) >= 50000
+
+    def add_evidence(row: dict[str, object], status: str, reason: str) -> None:
+        parent_id = str(row["parent_record_id"])
+        parent_status_counts[parent_id][status] += 1
+        evidence_rows.append({
+            "sample": args.sample,
+            "parent_record_id": parent_id,
+            "source_parent_id": row.get("source_parent_id", ""),
+            "parent_rank": row.get("_parent_rank", ""),
+            "mhc_class": row["mhc_class"],
+            "peptide": row["peptide"],
+            "peptide_length": row["peptide_length"],
+            "selection_status": status,
+            "selection_reason": reason,
+            "selection_digest": stable_selection_digest(
+                args.sample,
+                parent_id,
+                str(row["mhc_class"]),
+                str(row["peptide"]),
+            ),
+        })
+
+    def flush_pending() -> None:
+        nonlocal boundary_parent
+        if not pending_rows_by_key:
+            return
+        candidate_keys = set(pending_rows_by_key)
+        human_matches, human_summary = load_human_reference_matches(
+            human_proteome,
+            {peptide for _mhc, peptide in candidate_keys},
+        )
+        human_reference_summaries.append(human_summary)
+        ordered = sorted(
+            candidate_keys,
+            key=lambda key: (
+                int(pending_rows_by_key[key].get("_parent_rank", 0)),
+                key[0],
+                len(key[1]),
+                stable_selection_digest(
+                    args.sample,
+                    str(pending_rows_by_key[key]["parent_record_id"]),
+                    key[0],
+                    key[1],
+                ),
+            ),
+        )
+        for key in ordered:
+            row = dict(pending_rows_by_key[key])
+            row.pop("_parent_rank", None)
+            reason = ""
+            status = "selected_for_binding"
+            if human_summary["status"] == "evaluated" and key[1] in human_matches:
+                status = "excluded_human_reference"
+                reason = "human_reference_peptide_match"
+                row["peptide_core_status"] = "excluded"
+                row["peptide_qc_reasons"] = reason
+                row["human_reference_peptide_status"] = "human_reference_peptide_match"
+                excluded_peptide_rows.append(row)
+            elif len(selected_by_class[key[0]]) >= caps[key[0]]:
+                status = "not_selected_due_to_analysis_cap"
+                reason = "not_selected_due_to_analysis_cap"
+                row["peptide_core_status"] = "deferred"
+                row["peptide_qc_reasons"] = reason
+                row["human_reference_peptide_status"] = (
+                    "human_reference_peptide_not_detected"
+                    if human_summary["status"] == "evaluated"
+                    else "not_evaluated"
+                )
+                deferred_peptide_rows.append(row)
+                if not boundary_parent:
+                    boundary_parent = str(row["parent_record_id"])
+            else:
+                row["human_reference_peptide_status"] = (
+                    "human_reference_peptide_not_detected"
+                    if human_summary["status"] == "evaluated"
+                    else "not_evaluated"
+                )
+                selected_by_class[key[0]][key] = row
+                selected_keys.add(key)
+                peptide_id_by_key[key] = stable_peptide_id(args.sample, key[0], key[1], len(peptide_id_by_key) + 1)
+            add_evidence(pending_rows_by_key[key], status, reason)
+        pending_rows_by_key.clear()
+
+    for rank, parent_row in enumerate(ranked_parents, start=1):
+        parent_id = str(parent_row["parent_record_id"])
+        parent_rank_record = {
+            "sample": args.sample,
+            "parent_record_id": parent_id,
+            "source_parent_id": parent_row.get("source_parent_id", ""),
+            "parent_rank": rank,
+            "selection_status": "not_evaluated",
+            "selection_reason": "",
+        }
+        parent_rank_by_id[parent_id] = parent_rank_record
+        parent_rank_rows.append(parent_rank_record)
+        if caps_full():
+            parent_rank_record["selection_status"] = "not_selected_due_to_analysis_cap"
+            parent_rank_record["selection_reason"] = "not_selected_due_to_analysis_cap"
+            deferred_parent_rows.append(dict(parent_rank_record))
+            continue
+
+        queued = 0
+        for row in iter_parent_candidate_rows(args.sample, parent_row, mhc_i_lengths, mhc_ii_lengths):
+            key = (str(row["mhc_class"]), str(row["peptide"]))
+            if key in examined_keys:
+                continue
+            if len(selected_by_class[key[0]]) >= caps[key[0]]:
+                continue
+            row["_parent_rank"] = rank
+            pending_rows_by_key[key] = row
+            examined_keys.add(key)
+            queued += 1
+        if not queued:
+            parent_rank_record["selection_status"] = "no_new_candidate_before_cap"
+        else:
+            parent_rank_record["selection_status"] = "examined_for_selection"
+        if should_flush():
+            flush_pending()
+        if caps_full():
+            continue
+
+    flush_pending()
+
+    for parent_id, rank_record in parent_rank_by_id.items():
+        if rank_record["selection_status"] not in {"examined_for_selection", "no_new_candidate_before_cap"}:
+            continue
+        counts = parent_status_counts.get(parent_id, {})
+        if counts.get("selected_for_binding", 0):
+            rank_record["selection_status"] = (
+                "boundary_partially_selected"
+                if counts.get("not_selected_due_to_analysis_cap", 0)
+                else "selected_for_binding"
+            )
+        elif counts.get("not_selected_due_to_analysis_cap", 0):
+            rank_record["selection_status"] = "not_selected_due_to_analysis_cap"
+            rank_record["selection_reason"] = "not_selected_due_to_analysis_cap"
+            deferred_parent_rows.append(dict(rank_record))
+        elif counts:
+            rank_record["selection_status"] = "examined_no_selected_peptides"
+
+    selected_window_rows = rebuild_selected_parent_windows(
+        args.sample,
+        parent_core_rows,
+        selected_keys,
+        peptide_id_by_key,
+        mhc_i_lengths,
+        mhc_ii_lengths,
+    )
+    unique_rows_by_key: dict[tuple[str, str], dict[str, object]] = {}
+    support_counts: defaultdict[tuple[str, str], int] = defaultdict(int)
+    for row in selected_window_rows:
+        key = (str(row["mhc_class"]), str(row["peptide"]))
+        support_counts[key] += 1
+        if key not in unique_rows_by_key:
+            unique = dict(row)
+            unique["supporting_window_count"] = 0
+            unique_rows_by_key[key] = unique
+    for key, unique in unique_rows_by_key.items():
+        unique["supporting_window_count"] = support_counts[key]
+    unique_core_peptide_rows = [
+        unique_rows_by_key[key]
+        for key in sorted(unique_rows_by_key, key=lambda item: (item[0], len(item[1]), item[1]))
+    ]
+    for row in selected_window_rows:
+        row["supporting_window_count"] = support_counts[(str(row["mhc_class"]), str(row["peptide"]))]
+    for row in excluded_peptide_rows:
+        row["peptide_record_id"] = ""
+        row["supporting_window_count"] = ""
+    for row in deferred_peptide_rows:
+        row["peptide_record_id"] = ""
+        row["supporting_window_count"] = ""
+
+    human_reference_summary = {
+        "status": "evaluated" if human_proteome else "not_evaluated",
+        "path": str(human_proteome) if human_proteome else "",
+        "selection_scans": len(human_reference_summaries),
+        "candidate_peptides": len(examined_keys),
+        "matched_peptides": sum(int(summary.get("matched_peptides", 0)) for summary in human_reference_summaries),
+        "records_scanned": sum(int(summary.get("records_scanned", 0)) for summary in human_reference_summaries),
+        "standard_windows_evaluated": sum(int(summary.get("standard_windows_evaluated", 0)) for summary in human_reference_summaries),
+    }
+    if human_proteome:
+        human_reference_summary["sha256"] = sha256_file(human_proteome)
+    selection_summary = {
+        "mode": RANKED_CAP_MODE,
+        "ranking_policy": CRYPTIC_RANKING_POLICY,
+        "max_hla_i_peptides": max_hla_i_peptides,
+        "max_hla_ii_peptides": max_hla_ii_peptides,
+        "examined_candidate_peptides": len(examined_keys),
+        "selected_hla_i": len(selected_by_class["MHC-I"]),
+        "selected_hla_ii": len(selected_by_class["MHC-II"]),
+        "cap_reached_hla_i": len(selected_by_class["MHC-I"]) >= caps["MHC-I"],
+        "cap_reached_hla_ii": len(selected_by_class["MHC-II"]) >= caps["MHC-II"],
+        "boundary_parent_record_id": boundary_parent,
+        "deferred_parent_records": len(deferred_parent_rows),
+        "deferred_peptide_window_rows": len(deferred_peptide_rows),
+    }
+    return (
+        selected_window_rows,
+        excluded_peptide_rows,
+        deferred_peptide_rows,
+        unique_core_peptide_rows,
+        parent_rank_rows,
+        evidence_rows,
+        deferred_parent_rows,
+        human_reference_summary,
+        selection_summary,
+    )
+
+
 def build_core(args: argparse.Namespace) -> dict[str, object]:
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -641,6 +1025,32 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
     mhc_ii_lengths = parse_int_list(args.mhc_ii_lengths)
     if set(mhc_i_lengths).intersection(mhc_ii_lengths):
         raise ValueError("MHC-I and MHC-II peptide lengths must not overlap for peptide-core binding")
+    candidate_selection_mode, max_hla_i_peptides, max_hla_ii_peptides = validate_candidate_selection(
+        args.candidate_selection_mode,
+        args.max_hla_i_peptides,
+        args.max_hla_ii_peptides,
+    )
+    junction_qc_enabled = bool(getattr(args, "junction_qc_enabled", False))
+    if junction_qc_enabled and not is_v11(policy_version):
+        raise ValueError("junction_qc requires cryptic_core_qc_v1.1 coordinate sidecars")
+    if junction_qc_enabled and candidate_selection_mode == RANKED_CAP_MODE:
+        raise ValueError(
+            "ranked_cap with junction_qc is disabled until deferred candidates receive full coordinate/junction QC"
+        )
+    junction_policy_version = str(getattr(args, "junction_policy_version", JUNCTION_POLICY_VERSION))
+    if junction_qc_enabled and junction_policy_version != JUNCTION_POLICY_VERSION:
+        raise ValueError(f"Unsupported junction QC policy version: {junction_policy_version}")
+    junction_thresholds = parse_int_list(str(getattr(args, "junction_sensitivity_thresholds", "1,2,3,5")))
+    star_pair_validation: dict[str, object] | None = None
+    if junction_qc_enabled:
+        validate_junction_policy(
+            policy_version=junction_policy_version,
+            primary_min_tumor_unique_reads=int(getattr(args, "primary_min_tumor_unique_reads", 2)),
+            sensitivity_thresholds=tuple(junction_thresholds),
+        )
+        if not str(getattr(args, "star_pair_inputs", "")).strip():
+            raise ValueError("junction_qc requires --star-pair-inputs")
+        star_pair_validation = validate_star_pair_contract(Path(args.star_pair_inputs), args.sample)
 
     input_paths = {
         "aeseps_fasta": file_identity(Path(args.ae_seps_fasta)),
@@ -653,6 +1063,9 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         input_paths["orf_bam"] = file_identity(Path(args.orf_bam))
         input_paths["orf_cds_fasta"] = file_identity(Path(args.orf_cds_fasta))
         input_paths["coordinate_utils"] = file_identity(COORDINATE_UTILS_PATH)
+    if junction_qc_enabled:
+        input_paths["star_pair_inputs"] = file_identity(Path(args.star_pair_inputs))
+        input_paths["junction_qc_script"] = file_identity(JUNCTION_QC_PATH)
     human_proteome = Path(args.human_proteome_fasta) if args.human_proteome_fasta else None
     if human_proteome:
         input_paths["human_reference_proteome_fasta"] = file_identity(human_proteome)
@@ -681,9 +1094,31 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         "min_log2fc": float(args.min_log2fc),
         "mhc_i_lengths": mhc_i_lengths,
         "mhc_ii_lengths": mhc_ii_lengths,
+        "candidate_selection_policy_version": CANDIDATE_SELECTION_POLICY_VERSION,
+        "candidate_selection": {
+            "mode": candidate_selection_mode,
+            "max_hla_i_peptides": max_hla_i_peptides,
+            "max_hla_ii_peptides": max_hla_ii_peptides,
+            "ranking_policy": CRYPTIC_RANKING_POLICY if candidate_selection_mode == RANKED_CAP_MODE else "",
+        },
         "allow_missing_human_reference": bool(args.allow_missing_human_reference),
         "strandedness": args.strandedness,
         "coordinate_min_mapq": int(args.coordinate_min_mapq),
+        "junction_qc": {
+            "enabled": junction_qc_enabled,
+            "policy_version": junction_policy_version if junction_qc_enabled else "",
+            "junction_qc_sha256": sha256_file(JUNCTION_QC_PATH) if junction_qc_enabled else "",
+            "primary_min_tumor_unique_reads": int(getattr(args, "primary_min_tumor_unique_reads", 2)),
+            "sensitivity_thresholds": junction_thresholds if junction_qc_enabled else [],
+            "intronless_policy": "retain_as_not_applicable" if junction_qc_enabled else "",
+            "normal_junction_policy": "annotate_only" if junction_qc_enabled else "",
+            "mapping_min_mapq": int(args.coordinate_min_mapq) if junction_qc_enabled else "",
+            "star_pair_validation": {
+                key: value
+                for key, value in (star_pair_validation or {}).items()
+                if key != "row"
+            } if junction_qc_enabled else {},
+        },
         "reference_build": str(args.reference_build or "GRCh38"),
         "input_paths": input_paths,
     }
@@ -704,11 +1139,27 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         outdir / "cryptic_normal_resource_evidence.tsv",
         outdir / "stagewise_qc.tsv",
     ]
+    if candidate_selection_mode == RANKED_CAP_MODE:
+        required_outputs.extend([
+            outdir / "cryptic_parent_ranked.tsv",
+            outdir / "cryptic_peptide_selection_evidence.tsv",
+            outdir / "cryptic_deferred_parent.tsv",
+            outdir / "cryptic_peptide_deferred.tsv",
+        ])
     if is_v11(policy_version):
         required_outputs.extend([
             outdir / "cryptic_parent_coordinates.tsv",
             outdir / "cryptic_parent_orfcds.tsv",
             outdir / "cryptic_peptide_genomic_footprint.tsv",
+        ])
+    if junction_qc_enabled:
+        required_outputs.extend([
+            outdir / "cryptic_parent_junctions.tsv",
+            outdir / "cryptic_parent_junction_summary.tsv",
+            outdir / "cryptic_peptide_junction_evidence.tsv",
+            outdir / "junction_threshold_sensitivity.tsv",
+            outdir / "junction_qc_stagewise.tsv",
+            outdir / "junction_qc.manifest.json",
         ])
     if manifest_path.exists():
         old = read_json(manifest_path)
@@ -800,70 +1251,148 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
             "rna_variant_status": "not_evaluated",
             "rna_editing_qc_status": "editing_resource_not_evaluated",
             "junction_support_status": "not_evaluated",
+            "primary_core_status": "primary_core_eligible" if parent_status == "core" else "excluded_upstream_qc",
+            "primary_core_reasons": "",
+            "rna_variant_rescue_status": "not_evaluated",
             "cryptic_discovery_fdr_status": "not_estimable_single_pair_rule_based_qc",
         }
         parent_rows.append(parent_row)
         if parent_status == "core":
             parent_core_rows.append(parent_row)
             parent_fasta_rows.append((record_id, sequence))
-            for mhc_class, lengths in [("MHC-I", mhc_i_lengths), ("MHC-II", mhc_ii_lengths)]:
-                for start, length, peptide in iter_windows(sequence, lengths):
-                    candidate_peptide_rows.append({
-                        "sample": args.sample,
-                        "parent_record_id": record_id,
-                        "source_parent_id": src_id,
-                        "mhc_class": mhc_class,
-                        "peptide_start": start,
-                        "peptide_length": length,
-                        "peptide": peptide,
-                        "peptide_sequence_sha256": sha256_text(peptide),
-                        "peptide_core_status": "core",
-                        "peptide_qc_reasons": "",
-                        "human_reference_peptide_status": "not_evaluated",
-                        "normal_hla_presentation_status": "normal_hla_atlas_not_evaluated",
-                        "normal_translation_status": "normal_translation_not_evaluable",
-                        "external_normal_status": "external_normal_not_evaluated",
-                    })
+            if candidate_selection_mode == ALL_MODE and not junction_qc_enabled:
+                candidate_peptide_rows.extend(
+                    iter_parent_candidate_rows(args.sample, parent_row, mhc_i_lengths, mhc_ii_lengths)
+                )
         else:
             parent_excluded_rows.append(parent_row)
 
-    candidate_peptides = {str(row["peptide"]) for row in candidate_peptide_rows}
-    human_matches, human_reference_summary = load_human_reference_matches(human_proteome, candidate_peptides)
+    phase_a_parent_coordinate_rows: list[dict[str, object]] = []
+    phase_a_parent_orfcds_rows: list[dict[str, object]] = []
+    phase_a_coordinate_summary: dict[str, object] = {"status": "not_evaluated"}
+    junction_result: dict[str, object] | None = None
+    if junction_qc_enabled:
+        (
+            phase_a_parent_coordinate_rows,
+            phase_a_parent_orfcds_rows,
+            _phase_a_peptide_footprints,
+            phase_a_coordinate_summary,
+        ) = build_coordinate_sidecars(args, parent_core_rows, [], policy_version)
+        if star_pair_validation is None:
+            raise ValueError("Internal error: junction_qc star pair validation was not initialized")
+        star_pair = star_pair_validation["row"]  # type: ignore[index]
+        junction_result = evaluate_parent_junctions(
+            sample=args.sample,
+            parent_coordinates=phase_a_parent_coordinate_rows,
+            tumor_sj_path=Path(star_pair["tumor_sj_path"]),
+            normal_sj_path=Path(star_pair["normal_sj_path"]),
+            primary_min_tumor_unique_reads=int(getattr(args, "primary_min_tumor_unique_reads", 2)),
+            sensitivity_thresholds=tuple(junction_thresholds),
+            min_mapq=int(args.coordinate_min_mapq),
+        )
+        summary_by_parent = {
+            str(row.get("parent_record_id", "")): row
+            for row in junction_result["parent_summary_rows"]  # type: ignore[index]
+        }
+        filtered_core_rows: list[dict[str, object]] = []
+        filtered_fasta_rows: list[tuple[str, str]] = []
+        for row in parent_core_rows:
+            parent_id = str(row["parent_record_id"])
+            summary = summary_by_parent.get(parent_id, {})
+            primary_status = str(summary.get("primary_core_status", "provisional_coordinate_not_evaluable"))
+            row["primary_core_status"] = primary_status
+            row["primary_core_reasons"] = summary.get("junction_qc_reasons", "")
+            row["junction_support_status"] = summary.get("junction_qc_status", "")
+            row["rna_variant_rescue_status"] = summary.get("rna_variant_rescue_status", "not_evaluated")
+            if primary_status == JUNCTION_PRIMARY_PASS:
+                filtered_core_rows.append(row)
+                filtered_fasta_rows.append((parent_id, str(row["parent_sequence"])))
+            else:
+                row["parent_qc_status"] = primary_status
+                reasons = [str(row.get("parent_qc_reasons", "")), str(summary.get("junction_qc_reasons", ""))]
+                row["parent_qc_reasons"] = ";".join(token for token in reasons if token)
+                parent_excluded_rows.append(row)
+        parent_core_rows = filtered_core_rows
+        parent_fasta_rows = filtered_fasta_rows
+        if candidate_selection_mode == ALL_MODE:
+            candidate_peptide_rows = build_all_candidate_rows(
+                args.sample,
+                parent_core_rows,
+                mhc_i_lengths,
+                mhc_ii_lengths,
+            )
 
-    core_peptide_rows: list[dict[str, object]] = []
-    excluded_peptide_rows: list[dict[str, object]] = []
-    for row in candidate_peptide_rows:
-        peptide = str(row["peptide"])
-        if human_reference_summary["status"] == "evaluated":
-            if peptide in human_matches:
-                row["peptide_core_status"] = "excluded"
-                row["peptide_qc_reasons"] = "human_reference_peptide_match"
-                row["human_reference_peptide_status"] = "human_reference_peptide_match"
-                excluded_peptide_rows.append(row)
-                continue
-            row["human_reference_peptide_status"] = "human_reference_peptide_not_detected"
-        core_peptide_rows.append(row)
+    parent_rank_rows: list[dict[str, object]] = []
+    peptide_selection_evidence_rows: list[dict[str, object]] = []
+    deferred_parent_rows: list[dict[str, object]] = []
+    deferred_peptide_rows: list[dict[str, object]] = []
+    selection_summary: dict[str, object] = {
+        "mode": candidate_selection_mode,
+        "ranking_policy": CRYPTIC_RANKING_POLICY if candidate_selection_mode == RANKED_CAP_MODE else "",
+        "max_hla_i_peptides": max_hla_i_peptides,
+        "max_hla_ii_peptides": max_hla_ii_peptides,
+    }
 
-    peptide_id_by_key: dict[tuple[str, str], str] = {}
-    unique_core_peptide_rows: list[dict[str, object]] = []
-    support_counts: defaultdict[tuple[str, str], int] = defaultdict(int)
-    for row in core_peptide_rows:
-        key = (str(row["mhc_class"]), str(row["peptide"]))
-        support_counts[key] += 1
-        if key not in peptide_id_by_key:
-            peptide_id = stable_peptide_id(args.sample, key[0], key[1], len(unique_core_peptide_rows) + 1)
-            peptide_id_by_key[key] = peptide_id
-            unique_row = dict(row)
-            unique_row["peptide_record_id"] = peptide_id
-            unique_row["supporting_window_count"] = 0
-            unique_core_peptide_rows.append(unique_row)
-        row["peptide_record_id"] = peptide_id_by_key[key]
-    for row in unique_core_peptide_rows:
-        key = (str(row["mhc_class"]), str(row["peptide"]))
-        row["supporting_window_count"] = support_counts[key]
-    for row in excluded_peptide_rows:
-        row["peptide_record_id"] = ""
-        row["supporting_window_count"] = ""
+    if candidate_selection_mode == RANKED_CAP_MODE:
+        (
+            core_peptide_rows,
+            excluded_peptide_rows,
+            deferred_peptide_rows,
+            unique_core_peptide_rows,
+            parent_rank_rows,
+            peptide_selection_evidence_rows,
+            deferred_parent_rows,
+            human_reference_summary,
+            ranked_selection_summary,
+        ) = build_ranked_candidate_rows(
+            args,
+            parent_core_rows,
+            human_proteome,
+            mhc_i_lengths,
+            mhc_ii_lengths,
+            int(max_hla_i_peptides),
+            int(max_hla_ii_peptides),
+        )
+        candidate_peptide_rows = core_peptide_rows + excluded_peptide_rows + deferred_peptide_rows
+        selection_summary.update(ranked_selection_summary)
+    else:
+        candidate_peptides = {str(row["peptide"]) for row in candidate_peptide_rows}
+        human_matches, human_reference_summary = load_human_reference_matches(human_proteome, candidate_peptides)
+
+        core_peptide_rows = []
+        excluded_peptide_rows = []
+        for row in candidate_peptide_rows:
+            peptide = str(row["peptide"])
+            if human_reference_summary["status"] == "evaluated":
+                if peptide in human_matches:
+                    row["peptide_core_status"] = "excluded"
+                    row["peptide_qc_reasons"] = "human_reference_peptide_match"
+                    row["human_reference_peptide_status"] = "human_reference_peptide_match"
+                    excluded_peptide_rows.append(row)
+                    continue
+                row["human_reference_peptide_status"] = "human_reference_peptide_not_detected"
+            core_peptide_rows.append(row)
+
+        peptide_id_by_key: dict[tuple[str, str], str] = {}
+        unique_core_peptide_rows = []
+        support_counts: defaultdict[tuple[str, str], int] = defaultdict(int)
+        for row in core_peptide_rows:
+            key = (str(row["mhc_class"]), str(row["peptide"]))
+            support_counts[key] += 1
+            if key not in peptide_id_by_key:
+                peptide_id = stable_peptide_id(args.sample, key[0], key[1], len(unique_core_peptide_rows) + 1)
+                peptide_id_by_key[key] = peptide_id
+                unique_row = dict(row)
+                unique_row["peptide_record_id"] = peptide_id
+                unique_row["supporting_window_count"] = 0
+                unique_core_peptide_rows.append(unique_row)
+            row["peptide_record_id"] = peptide_id_by_key[key]
+        for row in unique_core_peptide_rows:
+            key = (str(row["mhc_class"]), str(row["peptide"]))
+            row["supporting_window_count"] = support_counts[key]
+        for row in excluded_peptide_rows:
+            row["peptide_record_id"] = ""
+            row["supporting_window_count"] = ""
 
     hla_i_rows = [row for row in unique_core_peptide_rows if row["mhc_class"] == "MHC-I"]
     hla_ii_rows = [row for row in unique_core_peptide_rows if row["mhc_class"] == "MHC-II"]
@@ -873,6 +1402,24 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         core_peptide_rows,
         policy_version,
     )
+    if junction_qc_enabled:
+        parent_coordinate_rows = phase_a_parent_coordinate_rows
+        parent_orfcds_rows = phase_a_parent_orfcds_rows
+        coordinate_summary = {
+            **phase_a_coordinate_summary,
+            "peptide_footprint_rows": len(peptide_footprint_rows),
+            "peptide_coordinate_evaluable": sum(
+                1 for row in peptide_footprint_rows if row["candidate_coordinate_status"] == "coordinate_evaluable"
+            ),
+        }
+        peptide_junction_rows = annotate_peptide_junctions(
+            sample=args.sample,
+            peptide_parent_rows=core_peptide_rows,
+            peptide_footprint_rows=peptide_footprint_rows,
+            parent_summary_rows=junction_result["parent_summary_rows"] if junction_result else [],  # type: ignore[index]
+        )
+    else:
+        peptide_junction_rows: list[dict[str, object]] = []
 
     with (outdir / "cryptic_parent_core.fasta").open("w") as handle:
         for record_id, sequence in parent_fasta_rows:
@@ -887,7 +1434,8 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         "TPM_tumor", "TPM_ctrl", "log2FC", "expression_qc_status", "expression_qc_reasons",
         "parent_sequence", "parent_sequence_sha256",
         "parent_qc_status", "parent_qc_reasons", "rna_variant_status",
-        "rna_editing_qc_status", "junction_support_status", "cryptic_discovery_fdr_status",
+        "rna_editing_qc_status", "junction_support_status", "primary_core_status",
+        "primary_core_reasons", "rna_variant_rescue_status", "cryptic_discovery_fdr_status",
     ]
     peptide_fields = [
         "sample", "peptide_record_id", "parent_record_id", "source_parent_id", "mhc_class", "peptide_start",
@@ -904,6 +1452,20 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
     write_tsv(unique_core_peptide_rows, outdir / "cryptic_peptide_core.tsv", peptide_fields)
     write_tsv(core_peptide_rows + excluded_peptide_rows, outdir / "cryptic_peptide_parent_map.tsv", peptide_fields)
     write_tsv(core_peptide_rows + excluded_peptide_rows, outdir / "cryptic_normal_resource_evidence.tsv", peptide_fields)
+    if candidate_selection_mode == RANKED_CAP_MODE:
+        parent_rank_fields = [
+            "sample", "parent_record_id", "source_parent_id", "parent_rank",
+            "selection_status", "selection_reason",
+        ]
+        peptide_selection_fields = [
+            "sample", "parent_record_id", "source_parent_id", "parent_rank",
+            "mhc_class", "peptide", "peptide_length", "selection_status",
+            "selection_reason", "selection_digest",
+        ]
+        write_tsv(parent_rank_rows, outdir / "cryptic_parent_ranked.tsv", parent_rank_fields)
+        write_tsv(peptide_selection_evidence_rows, outdir / "cryptic_peptide_selection_evidence.tsv", peptide_selection_fields)
+        write_tsv(deferred_parent_rows, outdir / "cryptic_deferred_parent.tsv", parent_rank_fields)
+        write_tsv(deferred_peptide_rows, outdir / "cryptic_peptide_deferred.tsv", peptide_fields)
     if is_v11(policy_version):
         parent_coordinate_fields = [
             "sample", "parent_record_id", "chromosome", "strand", "genomic_start0", "genomic_end0",
@@ -930,6 +1492,77 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         write_tsv(parent_coordinate_rows, outdir / "cryptic_parent_coordinates.tsv", parent_coordinate_fields)
         write_tsv(parent_orfcds_rows, outdir / "cryptic_parent_orfcds.tsv", parent_orfcds_fields)
         write_tsv(peptide_footprint_rows, outdir / "cryptic_peptide_genomic_footprint.tsv", peptide_footprint_fields)
+    if junction_qc_enabled and junction_result is not None:
+        parent_junction_fields = [
+            "sample", "parent_record_id", "junction_id", "junction_order", "chromosome", "strand",
+            "junction_start0", "junction_end0", "source_cigar", "tumor_unique_reads", "tumor_multi_reads",
+            "tumor_unknown_strand_unique_reads", "tumor_max_overhang", "tumor_annotated",
+            "normal_unique_reads", "normal_multi_reads", "normal_unknown_strand_unique_reads",
+            "normal_max_overhang", "normal_annotated", "primary_support_pass",
+        ]
+        parent_junction_summary_fields = [
+            "sample", "parent_record_id", "primary_core_status", "junction_qc_status", "junction_qc_reasons",
+            "rna_variant_rescue_status", "required_junction_count", "tumor_min_required_unique_reads",
+            "tumor_all_required_junctions_unique_ge1", "tumor_all_required_junctions_unique_ge2",
+            "tumor_all_required_junctions_unique_ge3", "tumor_all_required_junctions_unique_ge5",
+            "normal_any_required_junction_unique_ge1", "normal_all_required_junctions_unique_ge1",
+            "normal_any_required_junction_unique_ge2", "normal_all_required_junctions_unique_ge2",
+            "required_junction_ids", "normal_junction_policy",
+        ]
+        peptide_junction_fields = [
+            "sample", "peptide_record_id", "parent_record_id", "source_parent_id", "mhc_class",
+            "peptide", "peptide_start", "peptide_length", "peptide_crosses_junction",
+            "crossed_required_junction_ids", "parent_primary_core_status",
+            "parent_junction_qc_status", "parent_required_junction_count",
+        ]
+        write_tsv(
+            junction_result["parent_junction_rows"],  # type: ignore[index]
+            outdir / "cryptic_parent_junctions.tsv",
+            parent_junction_fields,
+        )
+        write_tsv(
+            junction_result["parent_summary_rows"],  # type: ignore[index]
+            outdir / "cryptic_parent_junction_summary.tsv",
+            parent_junction_summary_fields,
+        )
+        write_tsv(peptide_junction_rows, outdir / "cryptic_peptide_junction_evidence.tsv", peptide_junction_fields)
+        write_tsv(
+            junction_result["sensitivity_rows"],  # type: ignore[index]
+            outdir / "junction_threshold_sensitivity.tsv",
+            [
+                "sample", "threshold_tumor_unique_reads", "mapping_eligible_parents", "intronless_parents",
+                "spliced_evaluable_parents", "parents_pass", "parents_fail", "spliced_parents_pass",
+                "spliced_parents_fail", "total_parent_records",
+            ],
+        )
+        junction_stage_counts = [
+            {"stage": "parent_junction_rows", "count": len(junction_result["parent_junction_rows"])},  # type: ignore[arg-type,index]
+            {"stage": "peptide_junction_evidence_rows", "count": len(peptide_junction_rows)},
+        ] + [
+            {"stage": f"parent_status_{status}", "count": count}
+            for status, count in sorted(junction_result["stage_counts"].items())  # type: ignore[index,union-attr]
+        ]
+        write_tsv(junction_stage_counts, outdir / "junction_qc_stagewise.tsv", ["stage", "count"])
+        write_json(
+            outdir / "junction_qc.manifest.json",
+            {
+                "policy_version": JUNCTION_POLICY_VERSION,
+                "sample": args.sample,
+                "run_status": "complete",
+                "star_pair_inputs": str(Path(args.star_pair_inputs)),
+                "star_pair_validation": {
+                    key: value
+                    for key, value in (star_pair_validation or {}).items()
+                    if key != "row"
+                },
+                "junction_qc_script_sha256": sha256_file(JUNCTION_QC_PATH),
+                "primary_min_tumor_unique_reads": int(getattr(args, "primary_min_tumor_unique_reads", 2)),
+                "sensitivity_thresholds": junction_thresholds,
+                "tumor_sj_summary": junction_result["tumor_sj_summary"],
+                "normal_sj_summary": junction_result["normal_sj_summary"],
+                "stage_counts": {row["stage"]: row["count"] for row in junction_stage_counts},
+            },
+        )
 
     stage_counts = [
         {"stage": "orf_filtered_parent_records", "count": len(parent_rows)},
@@ -938,10 +1571,68 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         {"stage": "candidate_peptide_window_rows", "count": len(candidate_peptide_rows)},
         {"stage": "peptide_core_window_rows", "count": len(core_peptide_rows)},
         {"stage": "peptide_excluded_window_rows", "count": len(excluded_peptide_rows)},
+        {"stage": "peptide_deferred_window_rows", "count": len(deferred_peptide_rows)},
         {"stage": "unique_peptide_core_records", "count": len(unique_core_peptide_rows)},
         {"stage": "hla_i_unique_peptide_core_records", "count": len(hla_i_rows)},
         {"stage": "hla_ii_unique_peptide_core_records", "count": len(hla_ii_rows)},
+        {"stage": "candidate_selection_mode_ranked_cap", "count": 1 if candidate_selection_mode == RANKED_CAP_MODE else 0},
+        {"stage": "candidate_selection_max_hla_i_peptides", "count": int(max_hla_i_peptides or 0)},
+        {"stage": "candidate_selection_max_hla_ii_peptides", "count": int(max_hla_ii_peptides or 0)},
     ]
+    if candidate_selection_mode == RANKED_CAP_MODE:
+        stage_counts.extend([
+            {
+                "stage": "ranked_examined_candidate_peptides",
+                "count": int(selection_summary.get("examined_candidate_peptides", 0)),
+            },
+            {
+                "stage": "ranked_selected_hla_i",
+                "count": int(selection_summary.get("selected_hla_i", 0)),
+            },
+            {
+                "stage": "ranked_selected_hla_ii",
+                "count": int(selection_summary.get("selected_hla_ii", 0)),
+            },
+            {
+                "stage": "ranked_cap_reached_hla_i",
+                "count": 1 if selection_summary.get("cap_reached_hla_i") else 0,
+            },
+            {
+                "stage": "ranked_cap_reached_hla_ii",
+                "count": 1 if selection_summary.get("cap_reached_hla_ii") else 0,
+            },
+            {
+                "stage": "ranked_deferred_parent_records",
+                "count": int(selection_summary.get("deferred_parent_records", 0)),
+            },
+        ])
+    if junction_qc_enabled and junction_result is not None:
+        junction_counts = junction_result["stage_counts"]  # type: ignore[index]
+        stage_counts.extend([
+            {"stage": "junction_qc_enabled", "count": 1},
+            {
+                "stage": "junction_parent_primary_core_eligible",
+                "count": int(junction_counts.get("primary_core_eligible", 0)),  # type: ignore[union-attr]
+            },
+            {
+                "stage": "junction_parent_provisional_low_support",
+                "count": int(junction_counts.get("provisional_junction_low_support", 0)),  # type: ignore[union-attr]
+            },
+            {
+                "stage": "junction_parent_provisional_mapping_ambiguous",
+                "count": int(junction_counts.get("provisional_mapping_ambiguous", 0)),  # type: ignore[union-attr]
+            },
+            {
+                "stage": "junction_parent_provisional_reference_translation_mismatch",
+                "count": int(junction_counts.get("provisional_reference_translation_mismatch", 0)),  # type: ignore[union-attr]
+            },
+            {
+                "stage": "junction_parent_provisional_coordinate_not_evaluable",
+                "count": int(junction_counts.get("provisional_coordinate_not_evaluable", 0)),  # type: ignore[union-attr]
+            },
+        ])
+    else:
+        stage_counts.append({"stage": "junction_qc_enabled", "count": 0})
     if is_v11(policy_version):
         stage_counts.extend([
             {
@@ -984,7 +1675,22 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         "input_signature": signature,
         "human_reference_evaluation": human_reference_summary["status"],
         "human_reference_summary": human_reference_summary,
+        "candidate_selection_policy_version": CANDIDATE_SELECTION_POLICY_VERSION,
+        "candidate_selection": selection_summary,
         "candidate_coordinate_summary": coordinate_summary,
+        "junction_qc": {
+            "enabled": junction_qc_enabled,
+            "policy_version": JUNCTION_POLICY_VERSION if junction_qc_enabled else "",
+            "junction_qc_sha256": sha256_file(JUNCTION_QC_PATH) if junction_qc_enabled else "",
+            "primary_min_tumor_unique_reads": int(getattr(args, "primary_min_tumor_unique_reads", 2)) if junction_qc_enabled else "",
+            "sensitivity_thresholds": junction_thresholds if junction_qc_enabled else [],
+            "manifest": str(outdir / "junction_qc.manifest.json") if junction_qc_enabled else "",
+            "star_pair_validation": {
+                key: value
+                for key, value in (star_pair_validation or {}).items()
+                if key != "row"
+            } if junction_qc_enabled else {},
+        },
         "outputs": {path.name: str(path) for path in required_outputs},
         "output_signature": outputs_hash,
         "stage_counts": {row["stage"]: row["count"] for row in stage_counts},
@@ -1030,7 +1736,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-log2fc", type=float, default=4.0)
     parser.add_argument("--mhc-i-lengths", default="8,9,10,11")
     parser.add_argument("--mhc-ii-lengths", default="13,14,15,16,17")
+    parser.add_argument(
+        "--candidate-selection-mode",
+        choices=[ALL_MODE, RANKED_CAP_MODE],
+        default=ALL_MODE,
+        help="Use all candidates or rank parent ORFs and cap unique HLA-I/HLA-II peptides before binding.",
+    )
+    parser.add_argument("--max-hla-i-peptides", type=int, default=None)
+    parser.add_argument("--max-hla-ii-peptides", type=int, default=None)
     parser.add_argument("--coordinate-min-mapq", type=int, default=20)
+    parser.add_argument("--junction-qc-enabled", action="store_true")
+    parser.add_argument("--junction-policy-version", default=JUNCTION_POLICY_VERSION)
+    parser.add_argument("--star-pair-inputs", default="")
+    parser.add_argument("--primary-min-tumor-unique-reads", type=int, default=2)
+    parser.add_argument("--junction-sensitivity-thresholds", default="1,2,3,5")
     return parser
 
 

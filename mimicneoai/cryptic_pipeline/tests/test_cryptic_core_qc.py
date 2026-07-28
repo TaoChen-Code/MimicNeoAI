@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 from mimicneoai.cryptic_pipeline.scripts.cryptic_core_qc import build_core, load_human_reference_matches
+from mimicneoai.cryptic_pipeline.scripts.cryptic_junction_qc import manifest_critical_parameter_digest
 
 
 class CrypticCoreQCTest(unittest.TestCase):
@@ -24,6 +26,110 @@ class CrypticCoreQCTest(unittest.TestCase):
 
     def _reverse_complement(self, seq: str) -> str:
         return seq.translate(str.maketrans("ACGT", "TGCA"))[::-1]
+
+    def _sha256_file(self, path: Path) -> str:
+        h = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _write_star_pair(self, root: Path, tumor_sj: Path, normal_sj: Path) -> Path:
+        tumor_sha = self._sha256_file(tumor_sj)
+        normal_sha = self._sha256_file(normal_sj)
+        star_cmd = (
+            "STAR --runThreadN 8 --genomeDir {index} --readFilesIn R1.fq.gz R2.fq.gz "
+            "--readFilesCommand zcat --outSAMtype BAM Unsorted "
+            "--outFilterMultimapNmax 20 --alignSJoverhangMin 8 "
+            "--alignSJDBoverhangMin 1 --alignIntronMin 20 --alignIntronMax 1000000 "
+            "--alignMatesGapMax 1000000 --outFileNamePrefix out/"
+        ).format(index=root / "STAR-index")
+        tumor_log = root / "tumor.Log.out"
+        normal_log = root / "normal.Log.out"
+        tumor_log.write_text(f"##### Command Line:\n{star_cmd}\n")
+        normal_log.write_text(f"##### Command Line:\n{star_cmd}\n")
+        tumor_log_sha = self._sha256_file(tumor_log)
+        normal_log_sha = self._sha256_file(normal_log)
+        critical_parameters = {
+            "--readFilesCommand": ["zcat"],
+            "--outSAMtype": ["BAM", "Unsorted"],
+            "--outFilterMultimapNmax": ["20"],
+            "--alignSJoverhangMin": ["8"],
+            "--alignSJDBoverhangMin": ["1"],
+            "--alignIntronMin": ["20"],
+            "--alignIntronMax": ["1000000"],
+            "--alignMatesGapMax": ["1000000"],
+        }
+        critical_digest = manifest_critical_parameter_digest(critical_parameters)
+        tumor_manifest = root / "tumor_star.json"
+        normal_manifest = root / "normal_star.json"
+        source_manifest = root / "normal_source_star_alignment.manifest.json"
+        source_manifest.write_text(json.dumps({
+            "status": "completed",
+            "input_signature": {
+                "alignment_role": "control",
+                "sample": "CTRL",
+                "tumor_sample": "TEST",
+                "control_sample": "CTRL",
+            },
+        }))
+        source_manifest_sha = self._sha256_file(source_manifest)
+        common = {
+            "policy_version": "star_provenance_freeze_v1.0",
+            "tumor_sample": "TEST",
+            "normal_sample": "CTRL",
+            "star_version": "STAR_2.5.3a_modified",
+            "star_index": str(root / "STAR-index"),
+        }
+        tumor_manifest.write_text(json.dumps({
+            **common,
+            "status": "frozen_legacy_complete",
+            "critical_parameter_compatibility": "compatible",
+            "critical_star_parameters": critical_parameters,
+            "critical_star_parameter_digest": critical_digest,
+            "current_outputs": {
+                "SJ.out.tab": {
+                    "path": str(tumor_sj),
+                    "sha256": tumor_sha,
+                    "size_bytes": tumor_sj.stat().st_size,
+                },
+                "Log.out": {
+                    "path": str(tumor_log),
+                    "sha256": tumor_log_sha,
+                    "size_bytes": tumor_log.stat().st_size,
+                },
+            },
+        }))
+        normal_manifest.write_text(json.dumps({
+            **common,
+            "status": "relocated_complete",
+            "critical_parameter_compatibility": "compatible",
+            "critical_star_parameters": critical_parameters,
+            "critical_star_parameter_digest": critical_digest,
+            "source_manifest_path": str(source_manifest),
+            "source_manifest_sha256": source_manifest_sha,
+            "current_outputs": {
+                "SJ.out.tab": {
+                    "path": str(normal_sj),
+                    "sha256": normal_sha,
+                    "size_bytes": normal_sj.stat().st_size,
+                },
+                "Log.out": {
+                    "path": str(normal_log),
+                    "sha256": normal_log_sha,
+                    "size_bytes": normal_log.stat().st_size,
+                },
+            },
+        }))
+        star_pairs = root / "star_pairs.tsv"
+        star_pairs.write_text(
+            "tumor_sample\tnormal_sample\ttumor_sj_path\tnormal_sj_path\t"
+            "tumor_sj_sha256\tnormal_sj_sha256\ttumor_star_manifest\tnormal_star_manifest\t"
+            "critical_parameter_compatibility\ttumor_critical_parameter_digest\tnormal_critical_parameter_digest\n"
+            f"TEST\tCTRL\t{tumor_sj}\t{normal_sj}\t{tumor_sha}\t{normal_sha}\t"
+            f"{tumor_manifest}\t{normal_manifest}\tcompatible\t{critical_digest}\t{critical_digest}\n"
+        )
+        return star_pairs
 
     def _write_inputs(self, root: Path) -> dict[str, Path]:
         annot = pd.DataFrame(
@@ -224,6 +330,9 @@ class CrypticCoreQCTest(unittest.TestCase):
             min_log2fc=4.0,
             mhc_i_lengths="8",
             mhc_ii_lengths="13",
+            candidate_selection_mode="all",
+            max_hla_i_peptides=None,
+            max_hla_ii_peptides=None,
             coordinate_min_mapq=20,
         )
 
@@ -306,6 +415,41 @@ class CrypticCoreQCTest(unittest.TestCase):
             reused = build_core(args)
             self.assertTrue(reused["reused"])
 
+    def test_ranked_cap_limits_unique_peptides_and_records_deferred_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self._write_inputs(root)
+            outdir = root / "ranked"
+            args = self._args(paths, outdir)
+            args.candidate_selection_mode = "ranked_cap"
+            args.max_hla_i_peptides = 1
+            args.max_hla_ii_peptides = 1
+
+            manifest = build_core(args)
+
+            self.assertEqual(manifest["candidate_selection"]["mode"], "ranked_cap")
+            self.assertEqual(manifest["stage_counts"]["hla_i_unique_peptide_core_records"], 1)
+            self.assertEqual(manifest["stage_counts"]["hla_ii_unique_peptide_core_records"], 1)
+            self.assertTrue((outdir / "cryptic_parent_ranked.tsv").exists())
+            self.assertTrue((outdir / "cryptic_peptide_selection_evidence.tsv").exists())
+            self.assertTrue((outdir / "cryptic_deferred_parent.tsv").exists())
+            self.assertTrue((outdir / "cryptic_peptide_deferred.tsv").exists())
+            evidence = pd.read_csv(outdir / "cryptic_peptide_selection_evidence.tsv", sep="\t")
+            self.assertIn("human_reference_peptide_match", set(evidence["selection_reason"].dropna().astype(str)))
+            self.assertIn("selected_for_binding", set(evidence["selection_status"]))
+            parent_map = pd.read_csv(outdir / "cryptic_peptide_parent_map.tsv", sep="\t")
+            selected = parent_map[parent_map["peptide_record_id"].fillna("").astype(str).ne("")]
+            self.assertEqual(selected[["mhc_class", "peptide"]].drop_duplicates().shape[0], 2)
+            stage = pd.read_csv(outdir / "stagewise_qc.tsv", sep="\t").set_index("stage")["count"].to_dict()
+            self.assertGreater(stage["peptide_deferred_window_rows"], 0)
+            self.assertEqual(
+                int(stage["peptide_excluded_window_rows"]),
+                int(parent_map["human_reference_peptide_status"].eq("human_reference_peptide_match").sum()),
+            )
+            deferred = pd.read_csv(outdir / "cryptic_peptide_deferred.tsv", sep="\t")
+            self.assertTrue(deferred["peptide_core_status"].eq("deferred").all())
+            self.assertNotIn("not_selected_due_to_analysis_cap", set(parent_map["peptide_qc_reasons"].dropna().astype(str)))
+
     def test_human_reference_keeps_standard_windows_around_u(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -377,6 +521,86 @@ class CrypticCoreQCTest(unittest.TestCase):
             self.assertEqual(manifest["stage_counts"]["candidate_parents_coordinate_evaluable"], 2)
             self.assertEqual(manifest["stage_counts"]["candidate_parents_coordinate_not_evaluable"], 1)
             self.assertEqual(manifest["stage_counts"]["candidate_parents_reference_translation_pass"], 3)
+
+    def test_v11_junction_qc_filters_before_peptide_core(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self._write_inputs(root)
+            coordinate_inputs = self._write_coordinate_inputs(
+                root,
+                {
+                    "ENST_NC.1.p1": "ACDEFGHIKLMNP",
+                    "TRINITY_X|NOVEL|.|..p1": "KLMNPQRSTVWY",
+                    "ENST_DUP.1.p1": "ACDEFGHIKLMNP",
+                },
+            )
+            tumor_sj = root / "tumor.SJ.out.tab"
+            normal_sj = root / "normal.SJ.out.tab"
+            tumor_sj.write_text("chr1\t119\t200\t1\t1\t1\t2\t0\t20\n")
+            normal_sj.write_text("chr1\t119\t200\t1\t1\t1\t1\t0\t20\n")
+            star_pairs = self._write_star_pair(root, tumor_sj, normal_sj)
+            outdir = root / "core_v11_junction"
+            args = self._args(paths, outdir)
+            args.policy_version = "cryptic_core_qc_v1.1"
+            args.orf_bed12 = str(coordinate_inputs["bed12"])
+            args.orf_bam = str(coordinate_inputs["bam"])
+            args.orf_cds_fasta = str(coordinate_inputs["cds"])
+            args.reference_genome_fasta = str(coordinate_inputs["ref"])
+            args.junction_qc_enabled = True
+            args.junction_policy_version = "junction_qc_v1.0"
+            args.star_pair_inputs = str(star_pairs)
+            args.primary_min_tumor_unique_reads = 2
+            args.junction_sensitivity_thresholds = "1,2,3,5"
+
+            manifest = build_core(args)
+
+            core_parents = pd.read_csv(outdir / "cryptic_parent_core.tsv", sep="\t")
+            excluded = pd.read_csv(outdir / "cryptic_parent_excluded.tsv", sep="\t")
+            junction_summary = pd.read_csv(outdir / "cryptic_parent_junction_summary.tsv", sep="\t")
+            self.assertEqual(set(core_parents["parent_record_id"]), {"ENST_NC.1.p1", "TRINITY_X|NOVEL|.|..p1"})
+            self.assertIn("ENST_DUP.1.p1", set(excluded["parent_record_id"]))
+            self.assertTrue((outdir / "cryptic_peptide_junction_evidence.tsv").exists())
+            self.assertEqual(
+                junction_summary.set_index("parent_record_id").loc["ENST_NC.1.p1", "junction_qc_status"],
+                "all_required_junctions_tumor_unique_ge2",
+            )
+            self.assertEqual(manifest["junction_qc"]["enabled"], True)
+            self.assertEqual(manifest["stage_counts"]["junction_parent_primary_core_eligible"], 2)
+            self.assertIn("junction_qc_sha256", manifest["input_signature"]["junction_qc"])
+            self.assertIn("pair_row_sha256", manifest["input_signature"]["junction_qc"]["star_pair_validation"])
+
+            saved_path = outdir / "run_manifest.json"
+            saved = json.loads(saved_path.read_text())
+            saved["input_signature"]["junction_qc"]["junction_qc_sha256"] = "changed"
+            saved_path.write_text(json.dumps(saved, indent=2))
+            with self.assertRaises(ValueError):
+                build_core(args)
+
+    def test_v11_junction_qc_rejects_ranked_cap_until_refill_qc_is_implemented(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self._write_inputs(root)
+            coordinate_inputs = self._write_coordinate_inputs(root, {"ENST_NC.1.p1": "ACDEFGHIKLMNP"})
+            tumor_sj = root / "tumor.SJ.out.tab"
+            normal_sj = root / "normal.SJ.out.tab"
+            tumor_sj.write_text("chr1\t119\t200\t1\t1\t1\t2\t0\t20\n")
+            normal_sj.write_text("chr1\t119\t200\t1\t1\t1\t0\t0\t20\n")
+            args = self._args(paths, root / "core_v11_ranked_junction")
+            args.policy_version = "cryptic_core_qc_v1.1"
+            args.orf_bed12 = str(coordinate_inputs["bed12"])
+            args.orf_bam = str(coordinate_inputs["bam"])
+            args.orf_cds_fasta = str(coordinate_inputs["cds"])
+            args.reference_genome_fasta = str(coordinate_inputs["ref"])
+            args.junction_qc_enabled = True
+            args.junction_policy_version = "junction_qc_v1.0"
+            args.star_pair_inputs = str(self._write_star_pair(root, tumor_sj, normal_sj))
+            args.primary_min_tumor_unique_reads = 2
+            args.junction_sensitivity_thresholds = "1,2,3,5"
+            args.candidate_selection_mode = "ranked_cap"
+            args.max_hla_i_peptides = 1
+            args.max_hla_ii_peptides = 1
+            with self.assertRaisesRegex(ValueError, "ranked_cap with junction_qc is disabled"):
+                build_core(args)
 
     def test_v11_reference_translation_mismatch_is_not_coordinate_evaluable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

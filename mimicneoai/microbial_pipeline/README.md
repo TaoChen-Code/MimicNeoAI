@@ -86,6 +86,27 @@ count write `stagewise_qc.tsv` and `run_manifest.json` with
 `scale_gate_skipped=true` and do not enter binding. Set the value to `0` only
 when intentionally materializing an oversized Core.
 
+For figure-scale analyses where full Core materialization is too large, use
+ranked pre-binding selection:
+
+```yaml
+candidate_selection:
+  mode: ranked_cap
+  max_hla_i_peptides: 400000
+  max_hla_ii_peptides: 400000
+```
+
+`all` remains the default and preserves the complete candidate space. In
+`ranked_cap` mode, microbial source groups are ranked before peptide tiling, the
+cap is applied to unique peptide sequences within each MHC class, and candidates
+outside the cap are recorded as `not_selected_due_to_analysis_cap` rather than
+negative binding evidence.
+
+Ranked parent support scans use a bounded process pool for large parent tables.
+The pipeline passes `args.thread` to this step and the script clamps it to at
+most 20 workers. Set `MIMICNEOAI_MICROBIAL_CORE_SCAN_WORKERS=1` to disable this
+inner parallelism when many samples are already running concurrently.
+
 ## Run
 
 ```bash
