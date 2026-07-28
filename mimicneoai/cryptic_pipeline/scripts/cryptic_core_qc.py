@@ -545,15 +545,30 @@ def rebuild_selected_parent_windows(
     peptide_id_by_key: dict[tuple[str, str], str],
     mhc_i_lengths: list[int],
     mhc_ii_lengths: list[int],
+    metadata_by_key: Optional[dict[tuple[str, str], dict[str, object]]] = None,
 ) -> list[dict[str, object]]:
     if not selected_keys:
         return []
+    metadata_by_key = metadata_by_key or {}
     rows: list[dict[str, object]] = []
     for parent_row in parent_core_rows:
         for row in iter_parent_candidate_rows(sample, parent_row, mhc_i_lengths, mhc_ii_lengths):
             key = (str(row["mhc_class"]), str(row["peptide"]))
             if key in selected_keys:
-                row["peptide_record_id"] = peptide_id_by_key.get(key, "")
+                metadata = metadata_by_key.get(key, {})
+                for field in [
+                    "peptide_record_id",
+                    "peptide_core_status",
+                    "peptide_qc_reasons",
+                    "human_reference_peptide_status",
+                    "normal_hla_presentation_status",
+                    "normal_translation_status",
+                    "external_normal_status",
+                    "prebinding_selection_origin",
+                ]:
+                    if field in metadata:
+                        row[field] = metadata[field]
+                row["peptide_record_id"] = peptide_id_by_key.get(key, row.get("peptide_record_id", ""))
                 rows.append(row)
     return rows
 
@@ -1128,6 +1143,16 @@ def build_ranked_candidate_rows(
         elif counts:
             rank_record["selection_status"] = "examined_no_selected_peptides"
 
+    selected_metadata_by_key = {
+        key: row
+        for class_rows in selected_by_class.values()
+        for key, row in class_rows.items()
+    }
+    deferred_metadata_by_key = {
+        (str(row["mhc_class"]), str(row["peptide"])): row
+        for row in deferred_peptide_rows
+    }
+
     selected_window_rows = rebuild_selected_parent_windows(
         args.sample,
         materialized_parent_rows,
@@ -1135,6 +1160,7 @@ def build_ranked_candidate_rows(
         peptide_id_by_key,
         mhc_i_lengths,
         mhc_ii_lengths,
+        selected_metadata_by_key,
     )
     deferred_window_rows = rebuild_selected_parent_windows(
         args.sample,
@@ -1143,6 +1169,7 @@ def build_ranked_candidate_rows(
         {},
         mhc_i_lengths,
         mhc_ii_lengths,
+        deferred_metadata_by_key,
     )
     unique_rows_by_key: dict[tuple[str, str], dict[str, object]] = {}
     support_counts: defaultdict[tuple[str, str], int] = defaultdict(int)

@@ -28,6 +28,20 @@ def run(cmd, shell=False):
         subprocess.check_call(cmd)
 
 
+def capture_command_output(cmd: list[str]) -> str:
+    try:
+        result = subprocess.run(
+            cmd,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+    except Exception as exc:
+        return f"unavailable: {exc}"
+    return (result.stdout or "").strip()
+
+
 REQUIRED_STAR_OUTPUT_SUFFIXES = (
     "Aligned.out.bam",
     "SJ.out.tab",
@@ -68,6 +82,16 @@ def file_record(path: Path) -> dict[str, object]:
     return record
 
 
+def star_index_record(genome_dir: str) -> dict[str, object]:
+    genome_path = Path(genome_dir).resolve()
+    required_names = ("Genome", "SA", "SAindex", "sjdbList.out.tab")
+    return {
+        "path": str(genome_path),
+        "exists": genome_path.exists(),
+        "files": {name: file_record(genome_path / name) for name in required_names},
+    }
+
+
 def alignment_signature(
     *,
     sample: str,
@@ -80,6 +104,7 @@ def alignment_signature(
     clean_r2: Path,
     genome_dir: str,
     star_bin: str,
+    star_version: str,
     threads: str,
     command: list[str],
 ) -> dict[str, object]:
@@ -97,8 +122,9 @@ def alignment_signature(
             "r1": file_record(clean_r1),
             "r2": file_record(clean_r2),
         },
-        "star_index": str(Path(genome_dir).resolve()),
+        "star_index": star_index_record(genome_dir),
         "star_bin": str(star_bin),
+        "star_version": str(star_version),
         "threads": int(threads),
         "star_parameters": command[1:],
     }
@@ -154,6 +180,7 @@ def write_manifest(
     clean_r2: Path,
     genome_dir: str,
     star_bin: str,
+    star_version: str = "",
     threads: str,
     star_dir: Path,
     command: list[str],
@@ -171,6 +198,7 @@ def write_manifest(
         clean_r2=clean_r2,
         genome_dir=genome_dir,
         star_bin=star_bin,
+        star_version=star_version,
         threads=threads,
         command=command,
     )
@@ -191,7 +219,9 @@ def write_manifest(
             "r2": file_record(clean_r2),
         },
         "star_index": str(genome_dir),
+        "star_index_record": star_index_record(genome_dir),
         "star_bin": str(star_bin),
+        "star_version": star_version,
         "threads": int(threads),
         "star_parameters": command[1:],
         "command": " ".join(shlex.quote(str(c)) for c in command),
@@ -262,6 +292,7 @@ def main():
         "--readFilesCommand", "zcat",
         "--readFilesIn", str(r1), str(r2),
     ]
+    star_version = capture_command_output([a.star_bin, "--version"])
 
     current_signature = alignment_signature(
         sample=a.sample,
@@ -274,6 +305,7 @@ def main():
         clean_r2=r2,
         genome_dir=a.genome_dir,
         star_bin=a.star_bin,
+        star_version=star_version,
         threads=str(a.threads),
         command=cmd_star,
     )
@@ -312,6 +344,7 @@ def main():
             star_dir=star_dir,
             command=cmd_star,
             status="completed",
+            star_version=star_version,
         )
         print("[DONE] STAR finished.")
         print(" BAM   :", outputs["Aligned.out.bam"])
@@ -330,6 +363,7 @@ def main():
             clean_r2=r2,
             genome_dir=a.genome_dir,
             star_bin=a.star_bin,
+            star_version=star_version,
             threads=str(a.threads),
             star_dir=star_dir,
             command=cmd_star,

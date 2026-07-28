@@ -118,6 +118,20 @@ class MatchedNormalAlignmentDispatchTest(unittest.TestCase):
         self.assertIn("CRYPTIC-T", star_commands[0])
         self.assertNotIn("CRYPTIC-N", star_commands[0])
 
+    def test_alignment_control_can_run_without_tumor_alignment(self) -> None:
+        self._touch_raw_fastqs("CRYPTIC-T", "CRYPTIC-N")
+        config = self._config(alignment=False, alignment_control=True)
+
+        with patch.object(cryptic, "_run_cmd") as run_cmd:
+            cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, self._paths(), MagicMock())
+
+        star_commands = [cmd for cmd in self._commands(run_cmd) if cmd[1].endswith("01-alignment.py")]
+        self.assertEqual(len(star_commands), 1)
+        self.assertIn("CRYPTIC-N", star_commands[0])
+        self.assertIn("control", star_commands[0])
+        self.assertNotIn("-s CRYPTIC-T", " ".join(star_commands[0]))
+        self.assertEqual(run_cmd.call_args_list[2].kwargs["display_name"], "Control STAR alignment")
+
     def test_single_sample_never_runs_control_star(self) -> None:
         self._touch_raw_fastqs("CRYPTIC-T")
         config = self._config(alignment_control=False)
@@ -180,6 +194,7 @@ class StarAlignmentCompletionTest(unittest.TestCase):
             clean_r2=clean_r2,
             genome_dir=str(tmpdir / "star-index"),
             star_bin="STAR",
+            star_version="STAR_2.5.3a",
             threads="2",
             command=cmd,
         )
@@ -232,6 +247,7 @@ class StarAlignmentCompletionTest(unittest.TestCase):
                 clean_r2=clean_r2,
                 genome_dir=str(tmpdir / "star-index"),
                 star_bin="STAR",
+                star_version="STAR_2.5.3a",
                 threads="2",
                 star_dir=star_dir,
                 command=cmd,
@@ -246,6 +262,11 @@ class StarAlignmentCompletionTest(unittest.TestCase):
             mismatch["threads"] = 4
             with self.assertRaisesRegex(RuntimeError, "signature does not match"):
                 alignment.existing_star_state(star_dir, sample, manifest, mismatch)
+
+            version_mismatch = dict(signature)
+            version_mismatch["star_version"] = "STAR_2.7.11b"
+            with self.assertRaisesRegex(RuntimeError, "signature does not match"):
+                alignment.existing_star_state(star_dir, sample, manifest, version_mismatch)
 
     def test_partial_output_fails_closed_instead_of_overwriting(self) -> None:
         alignment = load_alignment_module()

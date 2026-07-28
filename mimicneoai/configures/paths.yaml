@@ -109,6 +109,3 @@ database:
       COORDINATE_MANIFEST: "../database/ref/RNA/cryptic_external_normal/frozen_20260727_v1.1_coordinates/resource_manifest.json"
       SMORF_COORDINATES: "../database/ref/RNA/cryptic_external_normal/frozen_20260727_v1.1_coordinates/processed/normal_smorfs_coordinates.tsv.gz"
       SMORF_ORFCDS: "../database/ref/RNA/cryptic_external_normal/frozen_20260727_v1.1_coordinates/processed/normal_smorf_orfcds.tsv.gz"
-    RNA_VARIANT_EDITING_QC:
-      REDIPORTAL_PROCESSED_TABLE: ""
-      REDIPORTAL_RESOURCE_MANIFEST: ""

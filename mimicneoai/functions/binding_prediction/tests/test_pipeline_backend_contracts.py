@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,6 +24,33 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
         self.root = Path(self.tempdir.name)
+
+    def _sha256_file(self, path: Path) -> str:
+        h = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _materialize_fake_08c_manifest(self, command: list[object]) -> None:
+        if len(command) < 2 or not str(command[1]).endswith("cryptic_external_normal_qc.py"):
+            return
+        outdir = Path(str(command[command.index("-o") + 1]))
+        outdir.mkdir(parents=True, exist_ok=True)
+        fasta = outdir / "cryptic_tumor_restricted_primary_core.fasta"
+        fasta.write_text(">pep1\nACDEFGHI\n")
+        identity = {
+            "path": str(fasta),
+            "exists": True,
+            "size": fasta.stat().st_size,
+            "sha256": self._sha256_file(fasta),
+        }
+        (outdir / "run_manifest.json").write_text(json.dumps({
+            "run_status": "complete",
+            "binding_eligible": True,
+            "binding_input_mode": "peptide-core",
+            "final_binding_fasta_identity": identity,
+        }))
 
     def test_packaged_configs_set_expected_binding_defaults(self) -> None:
         mutation = yaml.safe_load((CONFIG_DIR / "mutation_derived_configure.yaml").read_text())
@@ -276,6 +305,7 @@ class PipelineBackendContractTest(unittest.TestCase):
             }
         )
         with patch.object(cryptic, "_run_cmd") as run_cmd:
+            run_cmd.side_effect = lambda _tool, _sample, command, **_kwargs: self._materialize_fake_08c_manifest(command)
             cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, paths, tool)
         self.assertEqual(run_cmd.call_count, 4)
         core_command = run_cmd.call_args_list[2].args[2]
@@ -310,6 +340,7 @@ class PipelineBackendContractTest(unittest.TestCase):
             "coordinate_matching_enabled": False,
         }
         with patch.object(cryptic, "_run_cmd") as run_cmd:
+            run_cmd.side_effect = lambda _tool, _sample, command, **_kwargs: self._materialize_fake_08c_manifest(command)
             cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, paths, tool)
         self.assertEqual(run_cmd.call_count, 5)
         external_command = run_cmd.call_args_list[3].args[2]
@@ -353,6 +384,7 @@ class PipelineBackendContractTest(unittest.TestCase):
             "sensitivity_alt_reads": "2,3,5",
         }
         with patch.object(cryptic, "_run_cmd") as run_cmd:
+            run_cmd.side_effect = lambda _tool, _sample, command, **_kwargs: self._materialize_fake_08c_manifest(command)
             cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, paths, tool)
         core_command = run_cmd.call_args_list[2].args[2]
         self.assertIn("--rna-variant-editing-qc-enabled", core_command)
@@ -389,6 +421,7 @@ class PipelineBackendContractTest(unittest.TestCase):
             "coordinate_matching_enabled": False,
         }
         with patch.object(cryptic, "_run_cmd") as run_cmd:
+            run_cmd.side_effect = lambda _tool, _sample, command, **_kwargs: self._materialize_fake_08c_manifest(command)
             cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, paths, tool)
         external_command = run_cmd.call_args_list[3].args[2]
         self.assertIn("/fallback/resource_manifest.json", external_command)

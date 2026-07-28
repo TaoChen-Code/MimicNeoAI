@@ -532,15 +532,64 @@ class CrypticCoreQCTest(unittest.TestCase):
             parent_map = pd.read_csv(outdir / "cryptic_peptide_parent_map.tsv", sep="\t")
             selected = parent_map[parent_map["peptide_record_id"].fillna("").astype(str).ne("")]
             self.assertEqual(selected[["mhc_class", "peptide"]].drop_duplicates().shape[0], 2)
+            self.assertTrue(
+                selected["human_reference_peptide_status"].eq("human_reference_peptide_not_detected").all()
+            )
             stage = pd.read_csv(outdir / "stagewise_qc.tsv", sep="\t").set_index("stage")["count"].to_dict()
-            self.assertGreater(stage["peptide_deferred_window_rows"], 0)
+            self.assertEqual(manifest["candidate_selection"]["materialization_policy"], "initial_cap_plus_ranked_parent_stream")
+            self.assertFalse(manifest["candidate_selection"]["evaluated_deferred_peptide_universe_complete"])
+            self.assertIn("unmaterialized_deferred_parent_records", manifest["candidate_selection"])
             self.assertEqual(
                 int(stage["peptide_excluded_window_rows"]),
                 int(parent_map["human_reference_peptide_status"].eq("human_reference_peptide_match").sum()),
             )
             deferred = pd.read_csv(outdir / "cryptic_peptide_deferred.tsv", sep="\t")
-            self.assertTrue(deferred["peptide_core_status"].eq("deferred").all())
+            if not deferred.empty:
+                self.assertTrue(deferred["peptide_core_status"].eq("deferred").all())
             self.assertNotIn("not_selected_due_to_analysis_cap", set(parent_map["peptide_qc_reasons"].dropna().astype(str)))
+
+    def test_ranked_cap_repeated_parent_map_is_bound_to_materialized_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent_count = 2000
+            annot_rows = []
+            orf_ids = []
+            fasta_path = root / "orf_filtered.fa"
+            with fasta_path.open("w") as fasta:
+                for idx in range(parent_count):
+                    transcript = f"TX_REPEAT_{idx}"
+                    parent_id = f"{transcript}.p1"
+                    annot_rows.append({
+                        "Name": transcript,
+                        "nc_class": "noncoding",
+                        "is_aberrant": True,
+                        "TPM_tumor": 20.0 - (idx * 0.0001),
+                        "TPM_ctrl": 0.0,
+                        "log2FC": 6.0,
+                    })
+                    orf_ids.append(parent_id)
+                    fasta.write(f">{parent_id}\nACDEFGHIKLMNPQRSTVWY\n")
+            annot_path = root / "sample.aberrant_noncoding.annot.csv"
+            pd.DataFrame(annot_rows).to_csv(annot_path, index=False)
+            orf_final_path = root / "orf_final.csv"
+            pd.DataFrame({"TranscriptID": orf_ids}).to_csv(orf_final_path, index=False)
+            human_path = root / "human.fa"
+            human_path.write_text(">HUMAN\nYYYYYYYYYYYYYYYYYYYY\n")
+            paths = {"annot": annot_path, "orf_final": orf_final_path, "fasta": fasta_path, "human": human_path}
+            outdir = root / "ranked_repeat"
+            args = self._args(paths, outdir)
+            args.candidate_selection_mode = "ranked_cap"
+            args.max_hla_i_peptides = 1
+            args.max_hla_ii_peptides = 1
+
+            manifest = build_core(args)
+
+            parent_map = pd.read_csv(outdir / "cryptic_peptide_parent_map.tsv", sep="\t")
+            self.assertLessEqual(len(parent_map), 4)
+            self.assertEqual(manifest["candidate_selection"]["selected_hla_i"], 1)
+            self.assertEqual(manifest["candidate_selection"]["selected_hla_ii"], 1)
+            self.assertLessEqual(manifest["candidate_selection"]["materialized_parent_records"], 2)
+            self.assertGreater(manifest["candidate_selection"]["unmaterialized_deferred_parent_records"], 1900)
 
     def test_human_reference_keeps_standard_windows_around_u(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -668,7 +717,7 @@ class CrypticCoreQCTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_core(args)
 
-    def test_v11_junction_qc_rejects_ranked_cap_until_refill_qc_is_implemented(self) -> None:
+    def test_v11_junction_qc_allows_ranked_cap_with_ranked_parent_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             paths = self._write_inputs(root)
@@ -691,8 +740,18 @@ class CrypticCoreQCTest(unittest.TestCase):
             args.candidate_selection_mode = "ranked_cap"
             args.max_hla_i_peptides = 1
             args.max_hla_ii_peptides = 1
-            with self.assertRaisesRegex(ValueError, "ranked_cap with junction_qc is disabled"):
-                build_core(args)
+            manifest = build_core(args)
+
+            self.assertEqual(manifest["run_status"], "complete")
+            self.assertFalse(manifest["candidate_selection"]["evaluated_deferred_peptide_universe_complete"])
+            self.assertEqual(manifest["candidate_selection"]["materialization_coverage"], "selected_and_boundary_candidates")
+            self.assertEqual(manifest["stage_counts"]["junction_qc_enabled"], 1)
+            parent_ranked = pd.read_csv(root / "core_v11_ranked_junction" / "cryptic_parent_ranked.tsv", sep="\t")
+            self.assertIn("ranking_digest", parent_ranked.columns)
+            sensitivity_header = (
+                root / "core_v11_ranked_junction" / "junction_threshold_sensitivity.tsv"
+            ).read_text().splitlines()[0].split("\t")
+            self.assertEqual(len(sensitivity_header), len(set(sensitivity_header)))
 
     def test_v11_reference_translation_mismatch_is_not_coordinate_evaluable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

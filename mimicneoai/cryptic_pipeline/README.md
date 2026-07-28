@@ -122,14 +122,18 @@ Notable subfolders:
   preserves excluded rows, and writes pre-tiled peptide-core FASTA files for
   HLA-I 8-11 aa and HLA-II 13-17 aa.
 - `candidate_selection.mode: all` keeps the complete Cryptic Core and is the
-  default. `ranked_cap` ranks parent ORFs before peptide tiling and caps unique
-  peptide sequences independently for HLA-I and HLA-II, for example:
-  `max_hla_i_peptides: 400000` and `max_hla_ii_peptides: 400000`. Cap-external
-  parents or peptides are recorded as `not_selected_due_to_analysis_cap`; this
-  is a compute-routing state, not binding-negative evidence.
-  `ranked_cap` currently fails closed when `junction_qc.enabled: true` because
-  deferred/refill candidates must first receive the same coordinate and junction
-  QC contract before this mode can be used for formal freezing.
+  default. `ranked_cap` first applies strict source/expression, coordinate,
+  reference-translation, junction, and human-reference QC at the parent/peptide
+  levels, then ranks parent ORFs and caps unique peptide sequences independently
+  for HLA-I and HLA-II, for example `max_hla_i_peptides: 400000` and
+  `max_hla_ii_peptides: 400000`. Cap-external parents or peptides are recorded
+  as `not_selected_due_to_analysis_cap` / deferred; this is a compute-routing
+  state, not binding-negative evidence or QC failure. Ranked mode keeps a
+  complete, deterministic ranked parent stream and materializes only the
+  selected/boundary peptide candidates in 08b. When 08c removes selected
+  candidates, it refills by continuing that ranked parent stream, applying the
+  same human-reference, coordinate, junction and external-normal evidence
+  checks to each refill peptide before it can enter the final peptide Core.
 - `junction_qc.enabled: true` enables production junction support QC for
   `cryptic_core_qc_v1.1`. It consumes the explicit STAR pair table produced by
   `freeze_star_provenance.py`; downstream code should read SJ paths from that
@@ -142,28 +146,17 @@ Notable subfolders:
   `cryptic_peptide_junction_evidence.tsv` covers retained Core peptide windows
   with stable peptide IDs; human-reference-excluded peptide windows remain in
   the QC/excluded tables and are not assigned peptide-level junction evidence.
-- `rna_variant_editing_qc.enabled: true` enables
-  `cryptic_rna_variant_editing_qc_v1.0` after coordinate/translation QC and
-  before junction QC. It uses the known-branch RNA VCF by default
-  (`02-known/04k.bcf_consensus/rna.flt.vcf.gz`) and validates the paired
-  `rna.variant_calling.manifest.json` before treating the VCF as formal input.
-  That manifest must bind the filtered VCF to the source BAM, GRCh38 FASTA,
-  merged exon BED, bcftools version, normalization policy, output hashes, and
-  MAPQ/BQ/QUAL/depth/VAF/ALT-read thresholds. Formal runs also require a frozen
-  REDIportal processed table plus strict resource manifest. Formal VCFs must be
-  normalized and duplicate-free at the exact genomic REF/ALT event level.
-  Legacy VCF provenance, legacy duplicate VCFs, and missing REDIportal
-  resources are accepted only with explicit exploratory switches; such runs
-  write `run_status=complete_exploratory`, `binding_eligible=false`, and cannot
-  be routed into binding. The QC computes VAF from FORMAT/AD, requires
-  FILTER=PASS, fixes the v1.0 thresholds at read MAPQ >=20, base quality >=20,
-  QUAL >=30, depth >=10, VAF >=0.05, ALT reads >=3, and variant INFO/MQ >=20,
-  and reports ALT-read sensitivity for 2, 3, and 5 reads. It
-  does not label events as WES-confirmed, somatic-confirmed, or discovery FDR
-  controlled. Reference-concordant parents pass directly; reference-mismatched
-  parents pass only when all required protein-changing RNA SNVs are supported
-  and do not exact-match the frozen editing resource. Synonymous CDS-only
-  differences are annotated but are not hard rescue requirements.
+- `rna_variant_editing_qc.enabled` remains `false` for the current strict main
+  analysis. Reference-translation mismatches and RNA-dependent parents are kept
+  in provisional/excluded sidecars and do not enter this round's strict primary
+  Core. The optional `cryptic_rna_variant_editing_qc_v1.0` code can validate a
+  normalized known-branch RNA VCF and AD-derived read evidence for exploratory
+  RNA-supported sequence reconstruction, but REDIportal is not a required
+  pipeline dependency in the main configuration and is not used to label events
+  as somatic, non-editing, or tumor-specific mutation. If this optional branch
+  is enabled without a formal editing resource/provenance contract, it writes
+  `run_status=complete_exploratory`, `binding_eligible=false`, and cannot be
+  routed into binding.
 - `others.cryptic_external_normal_qc` defaults to disabled in the generic
   template because the frozen resource package is project-specific. Formal
   project configs should enable it and provide `external_normal_resources`, or
@@ -195,6 +188,15 @@ Notable subfolders:
 - When `08c` is enabled, binding consumes
   `08c-external_normal_qc/cryptic_tumor_restricted_primary_core.fasta`.
   It does not fall back to `08b`, `06-aeSEPs`, or the ORF-filtered parent FASTA.
+  Binding is allowed only when the 08c manifest is formal complete,
+  `binding_eligible=true`, and the final FASTA size/SHA256 matches
+  `final_binding_fasta_identity`.
+- `08c-external_normal_qc/cryptic_final_peptide_parent_sidecar.tsv` is the
+  pre-binding downstream sidecar. It maps each retained unique peptide back to
+  all supporting parent windows and records expression, coordinate/reference,
+  junction, human-reference, external-normal, ranked-selection, and discovery
+  FDR-status fields. It intentionally contains MHC class only; HLA allele and
+  binding evidence are joined after step 09.
 - With `others.binding_prediction_backend: mimicneoai`, set
   `others.binding_prediction_preset: full` for one-stage multialgorithm
   prediction or `fast` for EL-rank Stage 1 routing before formal local binding

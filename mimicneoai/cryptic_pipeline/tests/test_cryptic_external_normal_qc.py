@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import tempfile
 import unittest
@@ -11,7 +12,12 @@ import pandas as pd
 
 from mimicneoai.cryptic_pipeline.scripts.cryptic_external_normal_qc import (
     build_external_normal_qc,
+    load_human_reference_matches as load_external_human_reference_matches,
     sha256_file,
+    validate_final_core_contract,
+)
+from mimicneoai.cryptic_pipeline.scripts.cryptic_core_qc import (
+    load_human_reference_matches as load_core_human_reference_matches,
 )
 from mimicneoai.cryptic_pipeline.scripts.cryptic_coordinate_utils import (
     GenomicBlock,
@@ -32,7 +38,18 @@ def write_tsv_gz(path: Path, rows: list[dict[str, object]], columns: list[str]) 
 
 
 class CrypticExternalNormalQCTest(unittest.TestCase):
-    core_columns = ["sample", "peptide_record_id", "mhc_class", "peptide_length", "peptide"]
+    core_columns = [
+        "sample",
+        "peptide_record_id",
+        "mhc_class",
+        "peptide_length",
+        "peptide",
+        "peptide_sequence_sha256",
+        "peptide_core_status",
+        "peptide_qc_reasons",
+        "human_reference_peptide_status",
+        "supporting_window_count",
+    ]
     parent_columns = [
         "sample",
         "peptide_record_id",
@@ -42,7 +59,30 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
         "peptide_start",
         "peptide_length",
         "peptide",
+        "peptide_sequence_sha256",
+        "peptide_core_status",
+        "peptide_qc_reasons",
+        "human_reference_peptide_status",
+        "supporting_window_count",
     ]
+
+    def _with_default_core_metadata(self, rows: list[dict[str, object]]) -> list[dict[str, object]]:
+        normalized = []
+        support_counts = {}
+        for row in rows:
+            key = (str(row.get("mhc_class", "")), str(row.get("peptide", "")))
+            support_counts[key] = support_counts.get(key, 0) + 1
+        for row in rows:
+            out = dict(row)
+            peptide = str(out.get("peptide", ""))
+            key = (str(out.get("mhc_class", "")), peptide)
+            out.setdefault("peptide_sequence_sha256", hashlib.sha256(peptide.encode()).hexdigest())
+            out.setdefault("peptide_core_status", "core")
+            out.setdefault("peptide_qc_reasons", "")
+            out.setdefault("human_reference_peptide_status", "human_reference_peptide_not_detected")
+            out.setdefault("supporting_window_count", support_counts[key])
+            normalized.append(out)
+        return normalized
 
     def default_core_rows(self) -> list[dict[str, object]]:
         return [
@@ -142,6 +182,16 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
                 {
                     "policy_version": policy_version,
                     "run_status": run_status,
+                    "binding_eligible": run_status == "complete",
+                    "candidate_selection_policy_version": "ranked_prebinding_selection_v1.0",
+                    "candidate_selection": {
+                        "mode": "all",
+                        "ranking_policy": "",
+                    },
+                    "input_signature": {
+                        "mhc_i_lengths": [8, 9, 10, 11],
+                        "mhc_ii_lengths": [13, 14, 15, 16, 17],
+                    },
                     "output_signature": output_signature,
                 },
                 indent=2,
@@ -159,6 +209,8 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
     ) -> dict[str, Path]:
         core_rows = self.default_core_rows() if core_rows is None else core_rows
         parent_rows = self.default_parent_rows(core_rows) if parent_rows is None else parent_rows
+        core_rows = self._with_default_core_metadata(core_rows)
+        parent_rows = self._with_default_core_metadata(parent_rows)
         core = root / "08b" / "cryptic_peptide_core.tsv"
         parent_map = root / "08b" / "cryptic_peptide_parent_map.tsv"
         manifest = root / "08b" / "run_manifest.json"
@@ -524,7 +576,14 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
             policy_version="cryptic_external_normal_qc_v1.0",
             cryptic_peptide_core=str(inputs["core"]),
             cryptic_peptide_parent_map=str(inputs["parent_map"]),
+            cryptic_peptide_deferred=str(inputs.get("deferred", "")),
+            cryptic_peptide_deferred_parent_map=str(inputs.get("deferred_parent_map", "")),
+            cryptic_parent_core=str(inputs.get("parent_core", "")),
+            cryptic_parent_ranked=str(inputs.get("parent_ranked", "")),
+            cryptic_parent_junction_summary=str(inputs.get("parent_junction_summary", "")),
+            cryptic_peptide_junction_evidence=str(inputs.get("peptide_junction_evidence", "")),
             upstream_manifest=str(inputs["manifest"]),
+            human_proteome_fasta=str(inputs.get("human_proteome", "")),
             cryptic_parent_coordinates=str(inputs.get("cryptic_parent_coordinates", "")),
             cryptic_parent_orfcds=str(inputs.get("cryptic_parent_orfcds", "")),
             cryptic_peptide_genomic_footprint=str(inputs.get("cryptic_peptide_genomic_footprint", "")),
@@ -539,6 +598,8 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
             normal_smorf_orfcds=str(resources.get("normal_smorf_orfcds", "")),
             allow_missing_external_normal_resources=False,
             coordinate_matching_enabled=False,
+            max_hla_i_peptides=0,
+            max_hla_ii_peptides=0,
         )
 
     def test_exact_sequence_and_class_matching(self) -> None:
@@ -557,6 +618,10 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
             self.assertEqual(manifest["stage_counts"]["normal_hla_ligand_exact_match_peptides"], 2)
             self.assertEqual(manifest["stage_counts"]["both_external_normal_evidence_peptides"], 1)
             self.assertEqual(manifest["stage_counts"]["external_normal_excluded_unique_peptides"], 3)
+            self.assertEqual(manifest["stage_counts"]["external_normal_excluded_unique_peptides_legacy_combined"], 3)
+            self.assertEqual(manifest["stage_counts"]["external_normal_exact_excluded_unique_peptides"], 3)
+            self.assertEqual(manifest["stage_counts"]["external_normal_exact_and_coordinate_frame_excluded_unique_peptides"], 0)
+            self.assertEqual(manifest["stage_counts"]["total_qc_excluded_unique_peptides"], 3)
             self.assertEqual(manifest["stage_counts"]["tumor_restricted_primary_core_unique_peptides"], 2)
 
             annotated = pd.read_csv(outdir / "cryptic_external_normal_annotated_core.tsv", sep="\t")
@@ -590,9 +655,991 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
                 .eq("not_evaluable_coordinates_not_materialized")
                 .all()
             )
+            sidecar = pd.read_csv(outdir / "cryptic_final_peptide_parent_sidecar.tsv", sep="\t")
+            self.assertEqual(set(sidecar["peptide_record_id"]), {"pep2", "pep5"})
+            self.assertEqual(len(sidecar[sidecar["peptide_record_id"].eq("pep5")]), 2)
+            self.assertFalse(sidecar[["parent_record_id", "external_normal_status"]].isna().any().any())
+            self.assertTrue(sidecar["human_reference_peptide_status"].eq("human_reference_peptide_not_detected").all())
+            self.assertEqual(manifest["binding_eligible"], True)
+            self.assertEqual(manifest["binding_input_mode"], "peptide-core")
+            self.assertEqual(manifest["final_binding_fasta_identity"]["sha256"], sha256_file(outdir / "cryptic_tumor_restricted_primary_core.fasta"))
 
             reused = build_external_normal_qc(self._args(inputs, resources, outdir))
             self.assertTrue(reused["reused"])
+
+    def test_external_normal_refills_from_deferred_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            core_rows = [
+                {
+                    "sample": "CRYPTIC-T",
+                    "peptide_record_id": "pep1",
+                    "mhc_class": "MHC-I",
+                    "peptide_length": 8,
+                    "peptide": "ACDEFGHI",
+                },
+                {
+                    "sample": "CRYPTIC-T",
+                    "peptide_record_id": "pep2",
+                    "mhc_class": "MHC-I",
+                    "peptide_length": 8,
+                    "peptide": "CDEFGHIK",
+                },
+            ]
+            inputs = self._write_08b_core(
+                root,
+                core_rows=core_rows,
+                parent_rows=self.default_parent_rows(core_rows)[: len(core_rows)],
+            )
+            deferred = root / "08b" / "cryptic_peptide_deferred.tsv"
+            write_tsv(
+                deferred,
+                [
+                    {
+                        "sample": "CRYPTIC-T",
+                        "peptide_record_id": "",
+                        "parent_record_id": "parent_deferred_1",
+                        "source_parent_id": "source_deferred_1",
+                        "mhc_class": "MHC-I",
+                        "peptide_start": 1,
+                        "peptide_length": 8,
+                        "peptide": "QRSTVWYA",
+                    },
+                    {
+                        "sample": "CRYPTIC-T",
+                        "peptide_record_id": "",
+                        "parent_record_id": "parent_deferred_2",
+                        "source_parent_id": "source_deferred_2",
+                        "mhc_class": "MHC-I",
+                        "peptide_start": 1,
+                        "peptide_length": 8,
+                        "peptide": "KLMNPQRS",
+                    },
+                ],
+                self.parent_columns,
+            )
+            inputs["deferred"] = deferred
+            resources = self._write_resources(root)
+            outdir = root / "08c_refill"
+            args = self._args(inputs, resources, outdir)
+            args.max_hla_i_peptides = 2
+            args.max_hla_ii_peptides = 1
+
+            manifest = build_external_normal_qc(args)
+
+            self.assertEqual(manifest["stage_counts"]["source_core_unique_peptides"], 2)
+            self.assertEqual(manifest["stage_counts"]["source_deferred_unique_peptides"], 2)
+            self.assertEqual(manifest["stage_counts"]["external_normal_refill_selected_unique_peptides"], 1)
+            retained = pd.read_csv(outdir / "cryptic_tumor_restricted_primary_core.tsv", sep="\t")
+            self.assertEqual(set(retained["peptide"]), {"CDEFGHIK", "QRSTVWYA"})
+            self.assertIn("deferred_refill", set(retained["prebinding_selection_origin"]))
+            refill_deferred = pd.read_csv(outdir / "cryptic_external_normal_refill_deferred.tsv", sep="\t")
+            self.assertTrue(refill_deferred.empty)
+
+    def test_v11_ranked_junction_refill_materializes_full_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            core_rows = [
+                {
+                    "sample": "CRYPTIC-T",
+                    "peptide_record_id": "pep1",
+                    "mhc_class": "MHC-I",
+                    "peptide_length": 8,
+                    "peptide": "ACDEFGHI",
+                }
+            ]
+            parent_rows = [
+                {
+                    "sample": "CRYPTIC-T",
+                    "peptide_record_id": "pep1",
+                    "parent_record_id": "parent_initial",
+                    "source_parent_id": "source_initial",
+                    "mhc_class": "MHC-I",
+                    "peptide_start": 1,
+                    "peptide_length": 8,
+                    "peptide": "ACDEFGHI",
+                },
+                {
+                    "sample": "CRYPTIC-T",
+                    "peptide_record_id": "",
+                    "parent_record_id": "parent_refill",
+                    "source_parent_id": "source_refill",
+                    "mhc_class": "MHC-I",
+                    "peptide_start": 1,
+                    "peptide_length": 8,
+                    "peptide": "QRSTVWYA",
+                },
+            ]
+            inputs = self._write_08b_core(
+                root,
+                core_rows=core_rows,
+                parent_rows=[parent_rows[0]],
+                policy_version="cryptic_core_qc_v1.1",
+            )
+            sidecars = self._write_v11_coordinate_sidecars(root, inputs, core_rows, parent_rows)
+            coords = pd.read_csv(sidecars["cryptic_parent_coordinates"], sep="\t", dtype=str)
+            coords["chromosome"] = "1"
+            coords["strand"] = "+"
+            coords["reference_genomic_translation_status"] = "pass"
+            coords.loc[
+                coords["parent_record_id"].eq("parent_refill"),
+                ["chromosome", "genomic_start0", "genomic_end0", "block_total_length"],
+            ] = ["2", "500", "536", "36"]
+            coords.loc[coords["parent_record_id"].eq("parent_refill"), "blocks_transcript_order"] = blocks_to_json(
+                [GenomicBlock("2", "+", 500, 536)]
+            )
+            coords.to_csv(sidecars["cryptic_parent_coordinates"], sep="\t", index=False)
+            orfcds = pd.read_csv(sidecars["cryptic_parent_orfcds"], sep="\t", dtype=str)
+            orfcds.loc[
+                orfcds["parent_record_id"].eq("parent_refill"),
+                ["chromosome", "start0", "end0", "block_length"],
+            ] = ["2", "500", "536", "36"]
+            orfcds.to_csv(sidecars["cryptic_parent_orfcds"], sep="\t", index=False)
+
+            parent_core = root / "08b" / "cryptic_parent_core.tsv"
+            parent_ranked = root / "08b" / "cryptic_parent_ranked.tsv"
+            deferred_parent_map = root / "08b" / "cryptic_peptide_deferred_parent_map.tsv"
+            parent_junction = root / "08b" / "cryptic_parent_junction_summary.tsv"
+            peptide_junction = root / "08b" / "cryptic_peptide_junction_evidence.tsv"
+            write_tsv(
+                parent_core,
+                [
+                    {
+                        "sample": "CRYPTIC-T",
+                        "parent_record_id": "parent_initial",
+                        "source_parent_id": "source_initial",
+                        "nc_class": "novel",
+                        "TPM_tumor": 20,
+                        "TPM_ctrl": 0,
+                        "log2FC": 8,
+                        "expression_qc_status": "pass",
+                        "parent_sequence": "ACDEFGHIKLMN",
+                        "parent_sequence_sha256": "sha_initial",
+                        "cryptic_discovery_fdr_status": "not_estimable_single_pair_rule_based_qc",
+                    },
+                    {
+                        "sample": "CRYPTIC-T",
+                        "parent_record_id": "parent_refill",
+                        "source_parent_id": "source_refill",
+                        "nc_class": "novel",
+                        "TPM_tumor": 10,
+                        "TPM_ctrl": 0,
+                        "log2FC": 7,
+                        "expression_qc_status": "pass",
+                        "parent_sequence": "QRSTVWYACDEF",
+                        "parent_sequence_sha256": "sha_refill",
+                        "cryptic_discovery_fdr_status": "not_estimable_single_pair_rule_based_qc",
+                    },
+                ],
+                [
+                    "sample", "parent_record_id", "source_parent_id", "nc_class", "TPM_tumor", "TPM_ctrl",
+                    "log2FC", "expression_qc_status", "parent_sequence", "parent_sequence_sha256",
+                    "cryptic_discovery_fdr_status",
+                ],
+            )
+            write_tsv(
+                parent_ranked,
+                [
+                    {"sample": "CRYPTIC-T", "parent_record_id": "parent_initial", "source_parent_id": "source_initial", "parent_rank": 1},
+                    {"sample": "CRYPTIC-T", "parent_record_id": "parent_refill", "source_parent_id": "source_refill", "parent_rank": 2},
+                ],
+                ["sample", "parent_record_id", "source_parent_id", "parent_rank"],
+            )
+            write_tsv(deferred_parent_map, [], self.parent_columns)
+            write_tsv(
+                parent_junction,
+                [
+                    {
+                        "sample": "CRYPTIC-T",
+                        "parent_record_id": "parent_initial",
+                        "primary_core_status": "primary_core_eligible",
+                        "junction_qc_status": "intronless_not_applicable",
+                        "junction_qc_reasons": "",
+                        "rna_variant_rescue_status": "not_evaluated",
+                        "required_junction_count": 0,
+                        "tumor_min_required_unique_reads": "",
+                        "normal_any_required_junction_unique_ge1": False,
+                        "normal_all_required_junctions_unique_ge1": False,
+                        "normal_any_required_junction_unique_ge2": False,
+                        "normal_all_required_junctions_unique_ge2": False,
+                    },
+                    {
+                        "sample": "CRYPTIC-T",
+                        "parent_record_id": "parent_refill",
+                        "primary_core_status": "primary_core_eligible",
+                        "junction_qc_status": "intronless_not_applicable",
+                        "junction_qc_reasons": "",
+                        "rna_variant_rescue_status": "not_evaluated",
+                        "required_junction_count": 0,
+                        "tumor_min_required_unique_reads": "",
+                        "normal_any_required_junction_unique_ge1": False,
+                        "normal_all_required_junctions_unique_ge1": False,
+                        "normal_any_required_junction_unique_ge2": False,
+                        "normal_all_required_junctions_unique_ge2": False,
+                    },
+                ],
+                [
+                    "sample", "parent_record_id", "primary_core_status", "junction_qc_status",
+                    "junction_qc_reasons", "rna_variant_rescue_status", "required_junction_count",
+                    "tumor_min_required_unique_reads", "normal_any_required_junction_unique_ge1",
+                    "normal_all_required_junctions_unique_ge1", "normal_any_required_junction_unique_ge2",
+                    "normal_all_required_junctions_unique_ge2",
+                ],
+            )
+            write_tsv(
+                peptide_junction,
+                [
+                    {
+                        "sample": "CRYPTIC-T",
+                        "peptide_record_id": "pep1",
+                        "parent_record_id": "parent_initial",
+                        "source_parent_id": "source_initial",
+                        "mhc_class": "MHC-I",
+                        "peptide": "ACDEFGHI",
+                        "peptide_start": 1,
+                        "peptide_length": 8,
+                        "peptide_crosses_junction": False,
+                        "crossed_required_junction_ids": "",
+                        "parent_primary_core_status": "primary_core_eligible",
+                        "parent_junction_qc_status": "intronless_not_applicable",
+                        "parent_required_junction_count": 0,
+                    }
+                ],
+                [
+                    "sample", "peptide_record_id", "parent_record_id", "source_parent_id", "mhc_class",
+                    "peptide", "peptide_start", "peptide_length", "peptide_crosses_junction",
+                    "crossed_required_junction_ids", "parent_primary_core_status",
+                    "parent_junction_qc_status", "parent_required_junction_count",
+                ],
+            )
+            human = root / "human.fa"
+            human.write_text(">HUMAN\nACDEFGHIKLMN\n")
+            inputs.update({
+                **sidecars,
+                "parent_core": parent_core,
+                "parent_ranked": parent_ranked,
+                "deferred_parent_map": deferred_parent_map,
+                "parent_junction_summary": parent_junction,
+                "peptide_junction_evidence": peptide_junction,
+                "human_proteome": human,
+            })
+            output_signature = {
+                path.name: {"path": str(path), "exists": True, "size": path.stat().st_size, "sha256": sha256_file(path)}
+                for path in [
+                    inputs["core"],
+                    inputs["parent_map"],
+                    sidecars["cryptic_parent_coordinates"],
+                    sidecars["cryptic_parent_orfcds"],
+                    sidecars["cryptic_peptide_genomic_footprint"],
+                    parent_core,
+                    parent_ranked,
+                    deferred_parent_map,
+                    parent_junction,
+                    peptide_junction,
+                ]
+            }
+            inputs["manifest"].write_text(
+                json.dumps(
+                    {
+                        "policy_version": "cryptic_core_qc_v1.1",
+                        "run_status": "complete",
+                        "binding_eligible": True,
+                        "candidate_selection_policy_version": "ranked_prebinding_selection_v1.0",
+                        "candidate_selection": {
+                            "mode": "ranked_cap",
+                            "max_hla_i_peptides": 1,
+                            "max_hla_ii_peptides": 1,
+                        },
+                        "human_reference_summary": {"status": "evaluated", "path": str(human)},
+                        "input_signature": {
+                            "mhc_i_lengths": [8],
+                            "mhc_ii_lengths": [13],
+                        },
+                        "output_signature": output_signature,
+                    },
+                    indent=2,
+                )
+            )
+            resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
+            outdir = root / "08c_v11_refill"
+            args = self._args(inputs, resources, outdir)
+            args.policy_version = "cryptic_external_normal_qc_v1.1"
+            args.coordinate_matching_enabled = True
+            args.max_hla_i_peptides = 1
+
+            manifest = build_external_normal_qc(args)
+
+            retained = pd.read_csv(outdir / "cryptic_tumor_restricted_primary_core.tsv", sep="\t")
+            retained = retained.fillna("")
+            self.assertEqual(set(retained["peptide"]), {"QRSTVWYA"})
+            self.assertEqual(manifest["stage_counts"]["external_normal_refill_selected_unique_peptides"], 1)
+            retained_row = retained.iloc[0].to_dict()
+            self.assertEqual(retained_row["peptide_core_status"], "core")
+            self.assertEqual(str(retained_row.get("peptide_qc_reasons", "")), "")
+            self.assertEqual(retained_row["peptide_sequence_sha256"], hashlib.sha256(b"QRSTVWYA").hexdigest())
+            self.assertEqual(retained_row["sample"], "CRYPTIC-T")
+            self.assertEqual(retained_row["parent_record_id"], "parent_refill")
+            self.assertEqual(retained_row["source_parent_id"], "source_refill")
+            self.assertEqual(int(retained_row["peptide_start"]), 1)
+            self.assertEqual(int(retained_row["peptide_length"]), 8)
+            self.assertEqual(retained_row["prebinding_selection_origin"], "deferred_refill")
+            self.assertEqual(retained_row["human_reference_peptide_status"], "human_reference_peptide_not_detected")
+            self.assertEqual(int(retained_row["supporting_window_count"]), 1)
+            self.assertTrue(manifest["final_cap_reached_hla_i"])
+            self.assertFalse(manifest["final_exhausted_before_cap_hla_i"])
+            refill_footprint = pd.read_csv(outdir / "cryptic_external_normal_refill_genomic_footprint.tsv", sep="\t")
+            refill_junction = pd.read_csv(outdir / "cryptic_external_normal_refill_junction_evidence.tsv", sep="\t")
+            self.assertFalse(refill_footprint.empty)
+            self.assertFalse(refill_junction.empty)
+            self.assertTrue(refill_footprint["candidate_coordinate_status"].eq("coordinate_evaluable").all())
+            sidecar = pd.read_csv(outdir / "cryptic_final_peptide_parent_sidecar.tsv", sep="\t")
+            refill_sidecar = sidecar[sidecar["selection_origin"].eq("deferred_refill")]
+            self.assertEqual(set(refill_sidecar["parent_record_id"]), {"parent_refill"})
+            self.assertEqual(set(refill_sidecar["human_reference_peptide_status"]), {"human_reference_peptide_not_detected"})
+            self.assertEqual(set(refill_sidecar["peptide_start"].astype(int)), {1})
+            self.assertFalse(
+                refill_sidecar[
+                    ["coordinate_mapping_status", "junction_qc_status", "peptide_crosses_junction"]
+                ].isna().any().any()
+            )
+            self.assertTrue(set(refill_footprint["peptide_length"].astype(int)).issubset({8, 13}))
+
+    def test_v11_ranked_initial_coordinate_match_from_second_parent_excludes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            peptide = "QRSTVWYA"
+            core_rows = [{
+                "sample": "CRYPTIC-T",
+                "peptide_record_id": "pep_shared",
+                "mhc_class": "MHC-I",
+                "peptide_length": 8,
+                "peptide": peptide,
+            }]
+            initial_parent = {
+                "sample": "CRYPTIC-T",
+                "peptide_record_id": "pep_shared",
+                "parent_record_id": "parent_a",
+                "source_parent_id": "source_a",
+                "mhc_class": "MHC-I",
+                "peptide_start": 1,
+                "peptide_length": 8,
+                "peptide": peptide,
+            }
+            second_parent = dict(initial_parent)
+            second_parent.update({
+                "peptide_record_id": "",
+                "parent_record_id": "parent_b",
+                "source_parent_id": "source_b",
+            })
+            inputs = self._write_08b_core(
+                root,
+                core_rows=core_rows,
+                parent_rows=[initial_parent],
+                policy_version="cryptic_core_qc_v1.1",
+            )
+            sidecars = self._write_v11_coordinate_sidecars(root, inputs, core_rows, [initial_parent, second_parent])
+            coords = pd.read_csv(sidecars["cryptic_parent_coordinates"], sep="\t", dtype=str)
+            coords["chromosome"] = "1"
+            coords["strand"] = "+"
+            coords["reference_genomic_translation_status"] = "pass"
+            coords.loc[coords["parent_record_id"].eq("parent_a"), ["chromosome", "genomic_start0", "genomic_end0", "block_total_length"]] = [
+                "2", "500", "536", "36",
+            ]
+            coords.loc[coords["parent_record_id"].eq("parent_a"), "blocks_transcript_order"] = blocks_to_json(
+                [GenomicBlock("2", "+", 500, 536)]
+            )
+            coords.loc[coords["parent_record_id"].eq("parent_b"), ["chromosome", "genomic_start0", "genomic_end0", "block_total_length"]] = [
+                "1", "100", "136", "36",
+            ]
+            coords.loc[coords["parent_record_id"].eq("parent_b"), "blocks_transcript_order"] = blocks_to_json(
+                [GenomicBlock("1", "+", 100, 136)]
+            )
+            coords.to_csv(sidecars["cryptic_parent_coordinates"], sep="\t", index=False)
+            orfcds = pd.read_csv(sidecars["cryptic_parent_orfcds"], sep="\t", dtype=str)
+            orfcds.loc[orfcds["parent_record_id"].eq("parent_a"), ["chromosome", "start0", "end0", "block_length"]] = [
+                "2", "500", "536", "36",
+            ]
+            orfcds.loc[orfcds["parent_record_id"].eq("parent_b"), ["chromosome", "start0", "end0", "block_length"]] = [
+                "1", "100", "136", "36",
+            ]
+            orfcds.to_csv(sidecars["cryptic_parent_orfcds"], sep="\t", index=False)
+
+            parent_core = root / "08b" / "cryptic_parent_core.tsv"
+            parent_ranked = root / "08b" / "cryptic_parent_ranked.tsv"
+            deferred_parent_map = root / "08b" / "cryptic_peptide_deferred_parent_map.tsv"
+            parent_junction = root / "08b" / "cryptic_parent_junction_summary.tsv"
+            peptide_junction = root / "08b" / "cryptic_peptide_junction_evidence.tsv"
+            parent_core_rows = []
+            for parent_id, source_id, rank in [("parent_a", "source_a", 1), ("parent_b", "source_b", 2)]:
+                parent_core_rows.append({
+                    "sample": "CRYPTIC-T",
+                    "parent_record_id": parent_id,
+                    "source_parent_id": source_id,
+                    "nc_class": "novel",
+                    "TPM_tumor": 20,
+                    "TPM_ctrl": 0,
+                    "log2FC": 8,
+                    "expression_qc_status": "pass",
+                    "parent_sequence": peptide + "CDEF",
+                    "parent_sequence_sha256": f"sha_{parent_id}",
+                    "cryptic_discovery_fdr_status": "not_estimable_single_pair_rule_based_qc",
+                })
+            write_tsv(parent_core, parent_core_rows, list(parent_core_rows[0]))
+            write_tsv(
+                parent_ranked,
+                [
+                    {"sample": "CRYPTIC-T", "parent_record_id": "parent_a", "source_parent_id": "source_a", "parent_rank": 1},
+                    {"sample": "CRYPTIC-T", "parent_record_id": "parent_b", "source_parent_id": "source_b", "parent_rank": 2},
+                ],
+                ["sample", "parent_record_id", "source_parent_id", "parent_rank"],
+            )
+            write_tsv(deferred_parent_map, [], self.parent_columns)
+            junction_rows = []
+            for parent_id in ["parent_a", "parent_b"]:
+                junction_rows.append({
+                    "sample": "CRYPTIC-T",
+                    "parent_record_id": parent_id,
+                    "primary_core_status": "primary_core_eligible",
+                    "junction_qc_status": "intronless_not_applicable",
+                    "junction_qc_reasons": "",
+                    "rna_variant_rescue_status": "reference_concordant",
+                    "required_junction_count": 0,
+                    "tumor_min_required_unique_reads": "",
+                    "normal_any_required_junction_unique_ge1": False,
+                    "normal_all_required_junctions_unique_ge1": False,
+                    "normal_any_required_junction_unique_ge2": False,
+                    "normal_all_required_junctions_unique_ge2": False,
+                })
+            write_tsv(
+                parent_junction,
+                junction_rows,
+                [
+                    "sample", "parent_record_id", "primary_core_status", "junction_qc_status",
+                    "junction_qc_reasons", "rna_variant_rescue_status", "required_junction_count",
+                    "tumor_min_required_unique_reads", "normal_any_required_junction_unique_ge1",
+                    "normal_all_required_junctions_unique_ge1", "normal_any_required_junction_unique_ge2",
+                    "normal_all_required_junctions_unique_ge2",
+                ],
+            )
+            write_tsv(
+                peptide_junction,
+                [{
+                    "sample": "CRYPTIC-T",
+                    "peptide_record_id": "pep_shared",
+                    "parent_record_id": "parent_a",
+                    "source_parent_id": "source_a",
+                    "mhc_class": "MHC-I",
+                    "peptide": peptide,
+                    "peptide_start": 1,
+                    "peptide_length": 8,
+                    "peptide_crosses_junction": False,
+                    "crossed_required_junction_ids": "",
+                    "parent_primary_core_status": "primary_core_eligible",
+                    "parent_junction_qc_status": "intronless_not_applicable",
+                    "parent_required_junction_count": 0,
+                }],
+                [
+                    "sample", "peptide_record_id", "parent_record_id", "source_parent_id", "mhc_class",
+                    "peptide", "peptide_start", "peptide_length", "peptide_crosses_junction",
+                    "crossed_required_junction_ids", "parent_primary_core_status",
+                    "parent_junction_qc_status", "parent_required_junction_count",
+                ],
+            )
+            human = root / "human.fa"
+            human.write_text(">HUMAN\nACDEFGHIKLMN\n")
+            inputs.update({
+                **sidecars,
+                "parent_core": parent_core,
+                "parent_ranked": parent_ranked,
+                "deferred_parent_map": deferred_parent_map,
+                "parent_junction_summary": parent_junction,
+                "peptide_junction_evidence": peptide_junction,
+                "human_proteome": human,
+            })
+            output_signature = {
+                path.name: {"path": str(path), "exists": True, "size": path.stat().st_size, "sha256": sha256_file(path)}
+                for path in [
+                    inputs["core"], inputs["parent_map"], sidecars["cryptic_parent_coordinates"],
+                    sidecars["cryptic_parent_orfcds"], sidecars["cryptic_peptide_genomic_footprint"],
+                    parent_core, parent_ranked, deferred_parent_map, parent_junction, peptide_junction,
+                ]
+            }
+            inputs["manifest"].write_text(
+                json.dumps(
+                    {
+                        "policy_version": "cryptic_core_qc_v1.1",
+                        "run_status": "complete",
+                        "binding_eligible": True,
+                        "candidate_selection_policy_version": "ranked_prebinding_selection_v1.0",
+                        "candidate_selection": {"mode": "ranked_cap", "max_hla_i_peptides": 1, "max_hla_ii_peptides": 1},
+                        "human_reference_summary": {"status": "evaluated", "path": str(human)},
+                        "input_signature": {"mhc_i_lengths": [8], "mhc_ii_lengths": [13]},
+                        "output_signature": output_signature,
+                    },
+                    indent=2,
+                )
+            )
+            resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
+            args = self._args(inputs, resources, root / "08c_second_parent_initial")
+            args.policy_version = "cryptic_external_normal_qc_v1.1"
+            args.coordinate_matching_enabled = True
+            args.max_hla_i_peptides = 1
+            args.max_hla_ii_peptides = 1
+
+            build_external_normal_qc(args)
+
+            completed = pd.read_csv(root / "08c_second_parent_initial" / "cryptic_external_normal_completed_parent_map.tsv", sep="\t")
+            excluded = pd.read_csv(root / "08c_second_parent_initial" / "cryptic_external_normal_excluded.tsv", sep="\t")
+            self.assertEqual(set(completed["parent_record_id"]), {"parent_a", "parent_b"})
+            self.assertIn("external_normal_coordinate_frame_excluded", set(excluded["external_normal_status"]))
+            self.assertIn(peptide, set(excluded["peptide"]))
+
+    def test_v11_ranked_refill_coordinate_match_from_second_parent_excludes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            peptide = "QRSTVWYA"
+            inputs = self._write_08b_core(root, core_rows=[], parent_rows=[], policy_version="cryptic_core_qc_v1.1")
+            sidecars = self._write_v11_coordinate_sidecars(root, inputs, [], [])
+            parent_core = root / "08b" / "cryptic_parent_core.tsv"
+            parent_ranked = root / "08b" / "cryptic_parent_ranked.tsv"
+            deferred_parent_map = root / "08b" / "cryptic_peptide_deferred_parent_map.tsv"
+            parent_junction = root / "08b" / "cryptic_parent_junction_summary.tsv"
+            peptide_junction = root / "08b" / "cryptic_peptide_junction_evidence.tsv"
+            parent_core_rows = []
+            for parent_id, source_id in [("parent_refill_a", "source_refill_a"), ("parent_refill_b", "source_refill_b")]:
+                parent_core_rows.append({
+                    "sample": "CRYPTIC-T",
+                    "parent_record_id": parent_id,
+                    "source_parent_id": source_id,
+                    "nc_class": "novel",
+                    "TPM_tumor": 20,
+                    "TPM_ctrl": 0,
+                    "log2FC": 8,
+                    "expression_qc_status": "pass",
+                    "parent_sequence": peptide + "CDEF",
+                    "parent_sequence_sha256": f"sha_{parent_id}",
+                    "cryptic_discovery_fdr_status": "not_estimable_single_pair_rule_based_qc",
+                })
+            write_tsv(parent_core, parent_core_rows, list(parent_core_rows[0]))
+            write_tsv(
+                parent_ranked,
+                [
+                    {"sample": "CRYPTIC-T", "parent_record_id": "parent_refill_a", "source_parent_id": "source_refill_a", "parent_rank": 1},
+                    {"sample": "CRYPTIC-T", "parent_record_id": "parent_refill_b", "source_parent_id": "source_refill_b", "parent_rank": 2},
+                ],
+                ["sample", "parent_record_id", "source_parent_id", "parent_rank"],
+            )
+            write_tsv(deferred_parent_map, [], self.parent_columns)
+            coord_rows = [
+                {
+                    "sample": "CRYPTIC-T",
+                    "parent_record_id": "parent_refill_a",
+                    "block_count": 1,
+                    "blocks_transcript_order": blocks_to_json([GenomicBlock("2", "+", 500, 536)]),
+                    "block_total_length": 36,
+                    "coordinate_mapping_status": "coordinate_evaluable",
+                    "reference_genomic_translation_status": "pass",
+                    "chromosome": "2",
+                    "strand": "+",
+                },
+                {
+                    "sample": "CRYPTIC-T",
+                    "parent_record_id": "parent_refill_b",
+                    "block_count": 1,
+                    "blocks_transcript_order": blocks_to_json([GenomicBlock("1", "+", 100, 136)]),
+                    "block_total_length": 36,
+                    "coordinate_mapping_status": "coordinate_evaluable",
+                    "reference_genomic_translation_status": "pass",
+                    "chromosome": "1",
+                    "strand": "+",
+                },
+            ]
+            pd.DataFrame(coord_rows).to_csv(sidecars["cryptic_parent_coordinates"], sep="\t", index=False)
+            pd.DataFrame([
+                {
+                    "sample": "CRYPTIC-T",
+                    "parent_record_id": "parent_refill_a",
+                    "transcript_block_order": 1,
+                    "chromosome": "2",
+                    "strand": "+",
+                    "start0": 500,
+                    "end0": 536,
+                    "block_length": 36,
+                    "derived_phase": 0,
+                    "phase_provenance": "synthetic",
+                    "coordinate_mapping_status": "coordinate_evaluable",
+                },
+                {
+                    "sample": "CRYPTIC-T",
+                    "parent_record_id": "parent_refill_b",
+                    "transcript_block_order": 1,
+                    "chromosome": "1",
+                    "strand": "+",
+                    "start0": 100,
+                    "end0": 136,
+                    "block_length": 36,
+                    "derived_phase": 0,
+                    "phase_provenance": "synthetic",
+                    "coordinate_mapping_status": "coordinate_evaluable",
+                },
+            ]).to_csv(sidecars["cryptic_parent_orfcds"], sep="\t", index=False)
+            write_tsv(sidecars["cryptic_peptide_genomic_footprint"], [], [
+                "sample", "peptide_record_id", "parent_record_id", "source_parent_id",
+                "mhc_class", "peptide", "peptide_start", "peptide_length",
+                "codon_blocks_transcript_order", "peptide_cds_start0", "peptide_cds_end0",
+                "candidate_coordinate_status", "reference_build",
+            ])
+            junction_rows = []
+            for parent_id in ["parent_refill_a", "parent_refill_b"]:
+                junction_rows.append({
+                    "sample": "CRYPTIC-T",
+                    "parent_record_id": parent_id,
+                    "primary_core_status": "primary_core_eligible",
+                    "junction_qc_status": "intronless_not_applicable",
+                    "junction_qc_reasons": "",
+                    "rna_variant_rescue_status": "reference_concordant",
+                    "required_junction_count": 0,
+                    "tumor_min_required_unique_reads": "",
+                    "normal_any_required_junction_unique_ge1": False,
+                    "normal_all_required_junctions_unique_ge1": False,
+                    "normal_any_required_junction_unique_ge2": False,
+                    "normal_all_required_junctions_unique_ge2": False,
+                })
+            write_tsv(
+                parent_junction,
+                junction_rows,
+                [
+                    "sample", "parent_record_id", "primary_core_status", "junction_qc_status",
+                    "junction_qc_reasons", "rna_variant_rescue_status", "required_junction_count",
+                    "tumor_min_required_unique_reads", "normal_any_required_junction_unique_ge1",
+                    "normal_all_required_junctions_unique_ge1", "normal_any_required_junction_unique_ge2",
+                    "normal_all_required_junctions_unique_ge2",
+                ],
+            )
+            write_tsv(peptide_junction, [], [
+                "sample", "peptide_record_id", "parent_record_id", "source_parent_id", "mhc_class",
+                "peptide", "peptide_start", "peptide_length", "peptide_crosses_junction",
+                "crossed_required_junction_ids", "parent_primary_core_status",
+                "parent_junction_qc_status", "parent_required_junction_count",
+            ])
+            human = root / "human.fa"
+            human.write_text(">HUMAN\nACDEFGHIKLMN\n")
+            output_signature = {
+                path.name: {"path": str(path), "exists": True, "size": path.stat().st_size, "sha256": sha256_file(path)}
+                for path in [
+                    inputs["core"], inputs["parent_map"], sidecars["cryptic_parent_coordinates"],
+                    sidecars["cryptic_parent_orfcds"], sidecars["cryptic_peptide_genomic_footprint"],
+                    parent_core, parent_ranked, deferred_parent_map, parent_junction, peptide_junction,
+                ]
+            }
+            inputs["manifest"].write_text(
+                json.dumps(
+                    {
+                        "policy_version": "cryptic_core_qc_v1.1",
+                        "run_status": "complete",
+                        "binding_eligible": True,
+                        "candidate_selection_policy_version": "ranked_prebinding_selection_v1.0",
+                        "candidate_selection": {"mode": "ranked_cap", "max_hla_i_peptides": 1, "max_hla_ii_peptides": 1},
+                        "human_reference_summary": {"status": "evaluated", "path": str(human)},
+                        "input_signature": {"mhc_i_lengths": [8], "mhc_ii_lengths": [13]},
+                        "output_signature": output_signature,
+                    },
+                    indent=2,
+                )
+            )
+            resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
+            inputs.update({
+                **sidecars,
+                "parent_core": parent_core,
+                "parent_ranked": parent_ranked,
+                "deferred_parent_map": deferred_parent_map,
+                "parent_junction_summary": parent_junction,
+                "peptide_junction_evidence": peptide_junction,
+                "human_proteome": human,
+            })
+            args = self._args(inputs, resources, root / "08c_second_parent_refill")
+            args.policy_version = "cryptic_external_normal_qc_v1.1"
+            args.coordinate_matching_enabled = True
+            args.max_hla_i_peptides = 1
+            args.max_hla_ii_peptides = 1
+
+            build_external_normal_qc(args)
+
+            refill_map = pd.read_csv(root / "08c_second_parent_refill" / "cryptic_external_normal_refill_parent_map.tsv", sep="\t")
+            excluded = pd.read_csv(root / "08c_second_parent_refill" / "cryptic_external_normal_excluded.tsv", sep="\t")
+            self.assertEqual(set(refill_map.loc[refill_map["peptide"].eq(peptide), "parent_record_id"]), {"parent_refill_a", "parent_refill_b"})
+            self.assertIn("external_normal_coordinate_frame_excluded", set(excluded["external_normal_status"]))
+            self.assertIn(peptide, set(excluded["peptide"]))
+
+    def test_human_reference_matching_does_not_cross_noncanonical_residues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            human = root / "human.fa"
+            human.write_text(">HUMAN\nACDUFGHIKLMNXQRSTVWYA\n")
+            candidates = {"ACDFGHIK", "LMNXQRST", "QRSTVWYA"}
+
+            external_matches, external_summary = load_external_human_reference_matches(human, candidates)
+            core_matches, core_summary = load_core_human_reference_matches(human, candidates)
+
+            self.assertEqual(external_matches, core_matches)
+            self.assertNotIn("ACDFGHIK", external_matches)
+            self.assertNotIn("LMNXQRST", external_matches)
+            self.assertIn("QRSTVWYA", external_matches)
+            self.assertEqual(external_summary["matched_peptides"], core_summary["matched_peptides"])
+
+    def test_v11_ranked_zero_candidate_complete_and_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = self._write_08b_core(root, core_rows=[], parent_rows=[], policy_version="cryptic_core_qc_v1.1")
+            sidecars = self._write_v11_coordinate_sidecars(root, inputs, [], [])
+            parent_core = root / "08b" / "cryptic_parent_core.tsv"
+            parent_ranked = root / "08b" / "cryptic_parent_ranked.tsv"
+            deferred_parent_map = root / "08b" / "cryptic_peptide_deferred_parent_map.tsv"
+            parent_junction = root / "08b" / "cryptic_parent_junction_summary.tsv"
+            peptide_junction = root / "08b" / "cryptic_peptide_junction_evidence.tsv"
+            write_tsv(parent_core, [], ["sample", "parent_record_id", "source_parent_id", "parent_sequence"])
+            write_tsv(parent_ranked, [], ["sample", "parent_record_id", "source_parent_id", "parent_rank"])
+            write_tsv(deferred_parent_map, [], self.parent_columns)
+            write_tsv(
+                parent_junction,
+                [],
+                [
+                    "sample", "parent_record_id", "primary_core_status", "junction_qc_status",
+                    "junction_qc_reasons", "rna_variant_rescue_status", "required_junction_count",
+                    "tumor_min_required_unique_reads", "normal_any_required_junction_unique_ge1",
+                    "normal_all_required_junctions_unique_ge1", "normal_any_required_junction_unique_ge2",
+                    "normal_all_required_junctions_unique_ge2",
+                ],
+            )
+            write_tsv(
+                peptide_junction,
+                [],
+                [
+                    "sample", "peptide_record_id", "parent_record_id", "source_parent_id", "mhc_class",
+                    "peptide", "peptide_start", "peptide_length", "peptide_crosses_junction",
+                    "crossed_required_junction_ids", "parent_primary_core_status",
+                    "parent_junction_qc_status", "parent_required_junction_count",
+                ],
+            )
+            human = root / "human.fa"
+            human.write_text(">HUMAN\nACDEFGHIKLMN\n")
+            output_signature = {
+                path.name: {"path": str(path), "exists": True, "size": path.stat().st_size, "sha256": sha256_file(path)}
+                for path in [
+                    inputs["core"],
+                    inputs["parent_map"],
+                    sidecars["cryptic_parent_coordinates"],
+                    sidecars["cryptic_parent_orfcds"],
+                    sidecars["cryptic_peptide_genomic_footprint"],
+                    parent_core,
+                    parent_ranked,
+                    deferred_parent_map,
+                    parent_junction,
+                    peptide_junction,
+                ]
+            }
+            inputs["manifest"].write_text(
+                json.dumps(
+                    {
+                        "policy_version": "cryptic_core_qc_v1.1",
+                        "run_status": "complete",
+                        "binding_eligible": True,
+                        "candidate_selection_policy_version": "ranked_prebinding_selection_v1.0",
+                        "candidate_selection": {
+                            "mode": "ranked_cap",
+                            "max_hla_i_peptides": 1,
+                            "max_hla_ii_peptides": 1,
+                        },
+                        "human_reference_summary": {"status": "evaluated", "path": str(human)},
+                        "input_signature": {
+                            "mhc_i_lengths": [8],
+                            "mhc_ii_lengths": [13],
+                        },
+                        "output_signature": output_signature,
+                    },
+                    indent=2,
+                )
+            )
+            resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
+            inputs.update({
+                **sidecars,
+                "parent_core": parent_core,
+                "parent_ranked": parent_ranked,
+                "deferred_parent_map": deferred_parent_map,
+                "parent_junction_summary": parent_junction,
+                "peptide_junction_evidence": peptide_junction,
+                "human_proteome": human,
+            })
+            args = self._args(inputs, resources, root / "08c_zero_ranked")
+            args.policy_version = "cryptic_external_normal_qc_v1.1"
+            args.coordinate_matching_enabled = True
+            args.allow_missing_external_normal_resources = False
+            args.external_normal_resource_manifest = str(resources["manifest"])
+            args.coordinate_resource_manifest = str(resources["coordinate_manifest"])
+            args.max_hla_i_peptides = 1
+            args.max_hla_ii_peptides = 1
+
+            manifest = build_external_normal_qc(args)
+            reused = build_external_normal_qc(args)
+
+            self.assertEqual(manifest["run_status"], "complete")
+            self.assertTrue(manifest["binding_eligible"])
+            self.assertEqual(manifest["final_unique_peptide_counts"]["total"], 0)
+            self.assertTrue(reused["reused"])
+
+    def test_v11_ranked_human_reference_refill_exclusion_is_not_deferred(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = self._write_08b_core(root, core_rows=[], parent_rows=[], policy_version="cryptic_core_qc_v1.1")
+            sidecars = self._write_v11_coordinate_sidecars(root, inputs, [], [])
+            parent_core = root / "08b" / "cryptic_parent_core.tsv"
+            parent_ranked = root / "08b" / "cryptic_parent_ranked.tsv"
+            deferred_parent_map = root / "08b" / "cryptic_peptide_deferred_parent_map.tsv"
+            parent_junction = root / "08b" / "cryptic_parent_junction_summary.tsv"
+            peptide_junction = root / "08b" / "cryptic_peptide_junction_evidence.tsv"
+            parent_sequence = "QRSTVWYA"
+            parent_core_row = {
+                "sample": "CRYPTIC-T",
+                "parent_record_id": "parent_refill_human",
+                "source_parent_id": "source_refill_human",
+                "parent_sequence": parent_sequence,
+                "parent_sequence_sha256": "sha_parent",
+                "nc_class": "noncoding",
+                "TPM_tumor": 10,
+                "TPM_ctrl": 0,
+                "log2FC": 5,
+                "expression_qc_status": "pass",
+                "cryptic_discovery_fdr_status": "not_estimable_single_pair_rule_based_qc",
+            }
+            write_tsv(parent_core, [parent_core_row], list(parent_core_row))
+            write_tsv(
+                parent_ranked,
+                [{"sample": "CRYPTIC-T", "parent_record_id": "parent_refill_human", "source_parent_id": "source_refill_human", "parent_rank": 1}],
+                ["sample", "parent_record_id", "source_parent_id", "parent_rank"],
+            )
+            write_tsv(deferred_parent_map, [], self.parent_columns)
+            coord_row = {
+                "sample": "CRYPTIC-T",
+                "parent_record_id": "parent_refill_human",
+                "block_count": 1,
+                "blocks_transcript_order": blocks_to_json([GenomicBlock("1", "+", 100, 124)]),
+                "block_total_length": 24,
+                "coordinate_mapping_status": "coordinate_evaluable",
+                "reference_genomic_translation_status": "pass",
+                "chromosome": "1",
+                "strand": "+",
+            }
+            pd.DataFrame([coord_row]).to_csv(sidecars["cryptic_parent_coordinates"], sep="\t", index=False)
+            pd.DataFrame([{
+                "sample": "CRYPTIC-T",
+                "parent_record_id": "parent_refill_human",
+                "transcript_block_order": 1,
+                "chromosome": "1",
+                "strand": "+",
+                "start0": 100,
+                "end0": 124,
+                "block_length": 24,
+                "derived_phase": 0,
+                "phase_provenance": "synthetic",
+                "coordinate_mapping_status": "coordinate_evaluable",
+            }]).to_csv(sidecars["cryptic_parent_orfcds"], sep="\t", index=False)
+            write_tsv(sidecars["cryptic_peptide_genomic_footprint"], [], [
+                "sample", "peptide_record_id", "parent_record_id", "source_parent_id",
+                "mhc_class", "peptide", "peptide_start", "peptide_length",
+                "codon_blocks_transcript_order", "peptide_cds_start0", "peptide_cds_end0",
+                "candidate_coordinate_status", "reference_build",
+            ])
+            write_tsv(
+                parent_junction,
+                [{
+                    "sample": "CRYPTIC-T",
+                    "parent_record_id": "parent_refill_human",
+                    "primary_core_status": "primary_core_eligible",
+                    "junction_qc_status": "intronless_not_applicable",
+                    "junction_qc_reasons": "",
+                    "rna_variant_rescue_status": "reference_concordant",
+                    "required_junction_count": 0,
+                    "tumor_min_required_unique_reads": "",
+                    "normal_any_required_junction_unique_ge1": False,
+                    "normal_all_required_junctions_unique_ge1": False,
+                    "normal_any_required_junction_unique_ge2": False,
+                    "normal_all_required_junctions_unique_ge2": False,
+                }],
+                [
+                    "sample", "parent_record_id", "primary_core_status", "junction_qc_status",
+                    "junction_qc_reasons", "rna_variant_rescue_status", "required_junction_count",
+                    "tumor_min_required_unique_reads", "normal_any_required_junction_unique_ge1",
+                    "normal_all_required_junctions_unique_ge1", "normal_any_required_junction_unique_ge2",
+                    "normal_all_required_junctions_unique_ge2",
+                ],
+            )
+            write_tsv(peptide_junction, [], [
+                "sample", "peptide_record_id", "parent_record_id", "source_parent_id", "mhc_class",
+                "peptide", "peptide_start", "peptide_length", "peptide_crosses_junction",
+                "crossed_required_junction_ids", "parent_primary_core_status",
+                "parent_junction_qc_status", "parent_required_junction_count",
+            ])
+            human = root / "human.fa"
+            human.write_text(">HUMAN\nQRSTVWYA\n")
+            output_signature = {
+                path.name: {"path": str(path), "exists": True, "size": path.stat().st_size, "sha256": sha256_file(path)}
+                for path in [
+                    inputs["core"],
+                    inputs["parent_map"],
+                    sidecars["cryptic_parent_coordinates"],
+                    sidecars["cryptic_parent_orfcds"],
+                    sidecars["cryptic_peptide_genomic_footprint"],
+                    parent_core,
+                    parent_ranked,
+                    deferred_parent_map,
+                    parent_junction,
+                    peptide_junction,
+                ]
+            }
+            inputs["manifest"].write_text(
+                json.dumps(
+                    {
+                        "policy_version": "cryptic_core_qc_v1.1",
+                        "run_status": "complete",
+                        "binding_eligible": True,
+                        "candidate_selection_policy_version": "ranked_prebinding_selection_v1.0",
+                        "candidate_selection": {"mode": "ranked_cap", "max_hla_i_peptides": 1, "max_hla_ii_peptides": 1},
+                        "human_reference_summary": {"status": "evaluated", "path": str(human)},
+                        "input_signature": {"mhc_i_lengths": [8], "mhc_ii_lengths": [13]},
+                        "output_signature": output_signature,
+                    },
+                    indent=2,
+                )
+            )
+            resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
+            inputs.update({
+                **sidecars,
+                "parent_core": parent_core,
+                "parent_ranked": parent_ranked,
+                "deferred_parent_map": deferred_parent_map,
+                "parent_junction_summary": parent_junction,
+                "peptide_junction_evidence": peptide_junction,
+                "human_proteome": human,
+            })
+            args = self._args(inputs, resources, root / "08c_human_refill")
+            args.policy_version = "cryptic_external_normal_qc_v1.1"
+            args.coordinate_matching_enabled = True
+            args.allow_missing_external_normal_resources = False
+            args.external_normal_resource_manifest = str(resources["manifest"])
+            args.coordinate_resource_manifest = str(resources["coordinate_manifest"])
+            args.max_hla_i_peptides = 1
+            args.max_hla_ii_peptides = 1
+
+            manifest = build_external_normal_qc(args)
+            excluded = pd.read_csv(root / "08c_human_refill" / "cryptic_external_normal_excluded.tsv", sep="\t")
+            deferred = pd.read_csv(root / "08c_human_refill" / "cryptic_external_normal_refill_deferred.tsv", sep="\t")
+
+            self.assertEqual(manifest["final_unique_peptide_counts"]["total"], 0)
+            self.assertTrue(deferred.empty)
+            self.assertIn("excluded_human_reference_match_before_external_normal_qc", set(excluded["external_normal_status"]))
+            self.assertEqual(manifest["stage_counts"]["human_reference_refill_excluded_unique_peptides"], 1)
+            self.assertEqual(manifest["stage_counts"]["total_qc_excluded_unique_peptides"], 1)
+            self.assertEqual(manifest["stage_counts"]["external_normal_deferred_after_qc_unique_peptides"], 0)
 
     def test_coordinate_classifier_synthetic_cases(self) -> None:
         ref_plus = [GenomicBlock("1", "+", 100, 124)]
@@ -680,9 +1727,12 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
             self.assertEqual(set(retained["peptide_record_id"]), {"pep_retained"})
             excluded = pd.read_csv(root / "08c_v11" / "cryptic_external_normal_excluded.tsv", sep="\t")
             reasons = excluded.set_index("peptide_record_id")["external_normal_qc_reasons"].to_dict()
+            statuses = excluded.set_index("peptide_record_id")["external_normal_status"].to_dict()
             self.assertIn("normal_smorf_coordinate_frame_concordant", reasons["pep_coord"])
             self.assertIn("normal_smorf_exact_peptide_match", reasons["pep_both"])
             self.assertIn("normal_smorf_coordinate_frame_concordant", reasons["pep_both"])
+            self.assertEqual(statuses["pep_coord"], "external_normal_coordinate_frame_excluded")
+            self.assertEqual(statuses["pep_both"], "external_normal_exact_and_coordinate_frame_excluded")
 
     def test_v11_coordinate_hash_mismatches_fail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -708,6 +1758,15 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
                 policy_version="cryptic_core_qc_v1.1",
             )
             sidecars = self._write_v11_coordinate_sidecars(root, inputs, core_rows, parent_rows)
+            coords = pd.read_csv(sidecars["cryptic_parent_coordinates"], sep="\t", dtype=str)
+            coords["chromosome"] = "2"
+            coords["blocks_transcript_order"] = blocks_to_json([GenomicBlock("2", "+", 500, 524)])
+            coords.to_csv(sidecars["cryptic_parent_coordinates"], sep="\t", index=False)
+            orfcds = pd.read_csv(sidecars["cryptic_parent_orfcds"], sep="\t", dtype=str)
+            orfcds["chromosome"] = "2"
+            orfcds["start0"] = "500"
+            orfcds["end0"] = "524"
+            orfcds.to_csv(sidecars["cryptic_parent_orfcds"], sep="\t", index=False)
             resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
             sidecars["cryptic_peptide_genomic_footprint"].write_text(
                 sidecars["cryptic_peptide_genomic_footprint"].read_text() + "\n"
@@ -715,7 +1774,7 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
             args = self._args({**inputs, **sidecars}, resources, root / "08c_v11_bad_sidecar")
             args.policy_version = "cryptic_external_normal_qc_v1.1"
             args.coordinate_matching_enabled = True
-            with self.assertRaisesRegex(ValueError, "output_signature mismatch"):
+            with self.assertRaisesRegex(ValueError, "output_signature"):
                 build_external_normal_qc(args)
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -773,6 +1832,53 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "disagrees with Core"):
                 build_external_normal_qc(args)
 
+    def test_v11_coordinate_footprint_keys_must_match_parent_map(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            core_rows = self.default_core_rows()[:1]
+            parent_rows = self.default_parent_rows(core_rows)[:1]
+            inputs = self._write_08b_core(
+                root,
+                core_rows=core_rows,
+                parent_rows=parent_rows,
+                policy_version="cryptic_core_qc_v1.1",
+            )
+            sidecars = self._write_v11_coordinate_sidecars(root, inputs, core_rows, parent_rows)
+            footprint = pd.read_csv(sidecars["cryptic_peptide_genomic_footprint"], sep="\t", dtype=str)
+            footprint.iloc[0:0].to_csv(sidecars["cryptic_peptide_genomic_footprint"], sep="\t", index=False)
+            self._refresh_v11_manifest_signature(inputs, sidecars)
+            resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
+            args = self._args({**inputs, **sidecars}, resources, root / "08c_v11_missing_footprint")
+            args.policy_version = "cryptic_external_normal_qc_v1.1"
+            args.coordinate_matching_enabled = True
+            with self.assertRaisesRegex(ValueError, "keys must exactly match"):
+                build_external_normal_qc(args)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            core_rows = self.default_core_rows()[:1]
+            parent_rows = self.default_parent_rows(core_rows)[:1]
+            inputs = self._write_08b_core(
+                root,
+                core_rows=core_rows,
+                parent_rows=parent_rows,
+                policy_version="cryptic_core_qc_v1.1",
+            )
+            sidecars = self._write_v11_coordinate_sidecars(root, inputs, core_rows, parent_rows)
+            footprint = pd.read_csv(sidecars["cryptic_peptide_genomic_footprint"], sep="\t", dtype=str)
+            pd.concat([footprint, footprint.iloc[[0]]], ignore_index=True).to_csv(
+                sidecars["cryptic_peptide_genomic_footprint"],
+                sep="\t",
+                index=False,
+            )
+            self._refresh_v11_manifest_signature(inputs, sidecars)
+            resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
+            args = self._args({**inputs, **sidecars}, resources, root / "08c_v11_duplicate_footprint")
+            args.policy_version = "cryptic_external_normal_qc_v1.1"
+            args.coordinate_matching_enabled = True
+            with self.assertRaisesRegex(ValueError, "duplicate coordinate footprint keys"):
+                build_external_normal_qc(args)
+
     def test_v11_empty_core_can_complete_and_resume(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -826,6 +1932,16 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "run_status=complete"):
                 build_external_normal_qc(self._args(inputs, resources, root / "incomplete"))
 
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inputs = self._write_08b_core(root)
+            saved = json.loads(inputs["manifest"].read_text())
+            saved["binding_eligible"] = False
+            inputs["manifest"].write_text(json.dumps(saved, indent=2))
+            resources = self._write_resources(root)
+            with self.assertRaisesRegex(ValueError, "binding_eligible=true"):
+                build_external_normal_qc(self._args(inputs, resources, root / "not_binding_eligible"))
+
     def test_upstream_output_hash_mismatch_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -833,8 +1949,97 @@ class CrypticExternalNormalQCTest(unittest.TestCase):
             resources = self._write_resources(root)
             inputs["core"].write_text(inputs["core"].read_text() + "CRYPTIC-T\tpepX\tMHC-I\t8\tACDEFGHI\n")
 
-            with self.assertRaisesRegex(ValueError, "output_signature mismatch"):
+            with self.assertRaisesRegex(ValueError, "output_signature"):
                 build_external_normal_qc(self._args(inputs, resources, root / "08c"))
+
+    def test_v11_final_core_bad_peptide_sha_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            core_rows = [
+                {
+                    "sample": "CRYPTIC-T",
+                    "peptide_record_id": "pep_bad_sha",
+                    "mhc_class": "MHC-I",
+                    "peptide_length": 8,
+                    "peptide": "QRSTVWYA",
+                    "peptide_sequence_sha256": "wrong",
+                }
+            ]
+            parent_rows = [
+                {
+                    "sample": "CRYPTIC-T",
+                    "peptide_record_id": "pep_bad_sha",
+                    "parent_record_id": "parent_bad_sha",
+                    "source_parent_id": "source_bad_sha",
+                    "mhc_class": "MHC-I",
+                    "peptide_start": 1,
+                    "peptide_length": 8,
+                    "peptide": "QRSTVWYA",
+                }
+            ]
+            inputs = self._write_08b_core(
+                root,
+                core_rows=core_rows,
+                parent_rows=parent_rows,
+                policy_version="cryptic_core_qc_v1.1",
+            )
+            sidecars = self._write_v11_coordinate_sidecars(root, inputs, core_rows, parent_rows)
+            coords = pd.read_csv(sidecars["cryptic_parent_coordinates"], sep="\t", dtype=str).fillna("")
+            coords["chromosome"] = "2"
+            coords["blocks_transcript_order"] = blocks_to_json([GenomicBlock("2", "+", 500, 524)])
+            coords.to_csv(sidecars["cryptic_parent_coordinates"], sep="\t", index=False)
+            orfcds = pd.read_csv(sidecars["cryptic_parent_orfcds"], sep="\t", dtype=str).fillna("")
+            orfcds["chromosome"] = "2"
+            orfcds["start0"] = "500"
+            orfcds["end0"] = "524"
+            orfcds.to_csv(sidecars["cryptic_parent_orfcds"], sep="\t", index=False)
+            footprint = pd.read_csv(sidecars["cryptic_peptide_genomic_footprint"], sep="\t", dtype=str).fillna("")
+            footprint["codon_blocks_transcript_order"] = blocks_to_json([GenomicBlock("2", "+", 500, 524)])
+            footprint.to_csv(sidecars["cryptic_peptide_genomic_footprint"], sep="\t", index=False)
+            self._refresh_v11_manifest_signature(inputs, sidecars)
+            resources = {**self._write_resources(root), **self._write_coordinate_resources(root)}
+            args = self._args({**inputs, **sidecars}, resources, root / "08c_bad_sha")
+            args.policy_version = "cryptic_external_normal_qc_v1.1"
+            args.coordinate_matching_enabled = True
+
+            with self.assertRaisesRegex(AssertionError, "peptide_sequence_sha256"):
+                build_external_normal_qc(args)
+
+    def test_final_sidecar_not_evaluated_human_reference_fails_closed(self) -> None:
+        retained = [{
+            "sample": "CRYPTIC-T",
+            "peptide_record_id": "pep1",
+            "parent_record_id": "parent1",
+            "mhc_class": "MHC-I",
+            "peptide": "QRSTVWYA",
+            "peptide_start": 1,
+            "peptide_length": 8,
+            "peptide_sequence_sha256": hashlib.sha256(b"QRSTVWYA").hexdigest(),
+            "peptide_core_status": "core",
+            "peptide_qc_reasons": "",
+            "human_reference_peptide_status": "human_reference_peptide_not_detected",
+        }]
+        sidecar = [{
+            **retained[0],
+            "human_reference_peptide_status": "not_evaluated",
+        }]
+        footprint = [{
+            **retained[0],
+        }]
+        junction = [{
+            **retained[0],
+        }]
+        with self.assertRaisesRegex(AssertionError, "human-reference"):
+            validate_final_core_contract(
+                retained,
+                sidecar,
+                footprint,
+                junction,
+                [8],
+                [13],
+                human_reference_evaluated=True,
+                formal_v11_ranked=True,
+            )
 
     def test_parent_map_orphan_and_core_missing_parent_fail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
