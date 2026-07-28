@@ -1,5 +1,6 @@
 # coding=utf-8
 import os
+import json
 import shlex
 import sys
 from datetime import datetime
@@ -78,6 +79,8 @@ def MicrobialPairedProteinCoreQC(tumor_sample, normal_sample, configure, paths, 
 
     output_path = configure['path']['output_dir'].rstrip("/") + "/"
     others = configure.get("others", {})
+    candidate_selection = configure.get("candidate_selection", {}) or {}
+    scan_workers = int(configure.get("args", {}).get("thread", 1))
     outdir = output_path + f"{tumor_sample}/{_paired_core_step_name(configure)}/"
     tumor_hits = _microbial_protein_hits_path(tumor_sample, configure)
     normal_hits = _microbial_protein_hits_path(normal_sample, configure)
@@ -107,7 +110,22 @@ def MicrobialPairedProteinCoreQC(tumor_sample, normal_sample, configure, paths, 
         str(float(others.get("blastx_max_evalue", 1e-5))),
         "--min-qcovs",
         str(float(others.get("blastx_min_query_coverage", 90))),
+        "--max-estimated-peptide-windows",
+        str(int(others.get("paired_core_max_estimated_peptide_windows", 20_000_000))),
+        "--candidate-selection-mode",
+        str(candidate_selection.get("mode", "all")),
+        "--scan-workers",
+        str(scan_workers),
     ]
+    if candidate_selection.get("max_hla_i_peptides") is not None:
+        cmd.extend(["--max-hla-i-peptides", str(int(candidate_selection.get("max_hla_i_peptides")))])
+    if candidate_selection.get("max_hla_ii_peptides") is not None:
+        cmd.extend(["--max-hla-ii-peptides", str(int(candidate_selection.get("max_hla_ii_peptides")))])
+    if candidate_selection.get("ranking_abundance_pseudocount") is not None:
+        cmd.extend([
+            "--ranking-abundance-pseudocount",
+            str(float(candidate_selection.get("ranking_abundance_pseudocount"))),
+        ])
     blacklist = _resolve_contaminant_blacklist(paths)
     allow_missing_blacklist = bool(others.get("allow_missing_blacklist", False))
     if blacklist:
@@ -123,20 +141,30 @@ def MicrobialPairedProteinCoreQC(tumor_sample, normal_sample, configure, paths, 
     if expected_blacklist_sha256:
         cmd.extend(["--blacklist-sha256", expected_blacklist_sha256])
     manifest_path = f"{outdir}run_manifest.json"
-    tool.judge_then_exec(
-        f"{tumor_sample},{normal_sample}",
+    tool.exec_cmd(
         " ".join(shlex.quote(item) for item in cmd),
-        manifest_path,
+        f"{tumor_sample},{normal_sample}",
         display_name="Paired microbial Core QC",
     )
 
     core_fasta = f"{outdir}microbial_peptide_core.fasta"
     if not os.path.exists(core_fasta):
+        manifest = {}
+        if os.path.exists(manifest_path):
+            with open(manifest_path, "r") as handle:
+                manifest = json.load(handle)
+        if manifest.get("scale_gate_skipped") or manifest.get("run_status") == "scale_gate_skipped":
+            return {
+                "outdir": outdir,
+                "core_fasta": "",
+                "scale_gate_skipped": True,
+                "manifest": manifest_path,
+            }
         raise FileNotFoundError(f"Paired microbial Core FASTA was not created: {core_fasta}")
-    return {"outdir": outdir, "core_fasta": core_fasta}
+    return {"outdir": outdir, "core_fasta": core_fasta, "scale_gate_skipped": False, "manifest": manifest_path}
 
 
-def MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_dir=None):
+def MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_dir=None, run_sample_id=None):
     """Run microbial immunogenicity scoring from an existing binding directory."""
     output_path = configure['path']['output_dir'] + "/"
     others = configure.get("others", {})
@@ -176,7 +204,7 @@ def MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_di
         cmd.extend(["--model-root", str(others.get("immunogenicity_model_root"))])
     tool.exec_cmd(
         " ".join(shlex.quote(item) for item in cmd),
-        sample,
+        run_sample_id or sample,
         pipline="microbial",
         display_name="MimicNeoAI microbial immunogenicity prediction",
     )
@@ -907,7 +935,15 @@ def MicrobialPeptidesIdentification(sample, configure, paths, tool):
 
 
 
-def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool, peptide_fa=None, input_mode="parent-fasta"):
+def MicrobialPeptidesBindingPrediction(
+    sample,
+    configure,
+    paths,
+    tool,
+    peptide_fa=None,
+    input_mode="parent-fasta",
+    run_sample_id=None,
+):
     """Run peptide-MHC binding prediction on BLASTX-derived peptides.
 
     Args:
@@ -983,7 +1019,7 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool, peptide_f
             cmd.extend(configured_predictor_cli_args(paths))
             tool.exec_cmd(
                 " ".join(shlex.quote(item) for item in cmd),
-                sample,
+                run_sample_id or sample,
                 pipline="microbial",
                 display_name="MimicNeoAI microbial binding prediction",
             )
@@ -991,6 +1027,12 @@ def MicrobialPeptidesBindingPrediction(sample, configure, paths, tool, peptide_f
             raise ValueError(f"Unsupported binding_prediction_backend: {backend}")
 
         if bool(configure.get("others", {}).get("run_immunogenicity_prediction", False)):
-            MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_dir)
+            MicrobialImmunogenicityPrediction(
+                sample,
+                configure,
+                tool,
+                binding_output_dir,
+                run_sample_id=run_sample_id,
+            )
     elif explicit_peptide_fa:
         raise FileNotFoundError(f"Explicit microbial binding FASTA not found: {peptide_fa}")

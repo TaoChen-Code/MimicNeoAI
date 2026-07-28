@@ -268,6 +268,11 @@ def _start_one_pair(
         try:
             if paired_core is None:
                 raise RuntimeError("Paired microbial Core QC did not return a Core FASTA for binding.")
+            if paired_core.get("scale_gate_skipped"):
+                raise RuntimeError(
+                    "Paired microbial Core QC was skipped by the scale gate; "
+                    "increase paired_core_max_estimated_peptide_windows or set it to 0 before binding."
+                )
             MicrobialPeptidesBindingPrediction(
                 tumor_sample,
                 configure,
@@ -275,13 +280,14 @@ def _start_one_pair(
                 tool,
                 peptide_fa=paired_core["core_fasta"],
                 input_mode="peptide-core",
+                run_sample_id=unit.label,
             )
         except Exception:
             tool.write_log(f"Paired binding prediction error:\n{traceback.format_exc()}", "error")
             raise
     elif bool(o.get("run_immunogenicity_prediction", False)):
         try:
-            MicrobialImmunogenicityPrediction(tumor_sample, configure, tool)
+            MicrobialImmunogenicityPrediction(tumor_sample, configure, tool, run_sample_id=unit.label)
         except Exception:
             tool.write_log(f"Immunogenicity prediction error:\n{traceback.format_exc()}", "error")
             raise

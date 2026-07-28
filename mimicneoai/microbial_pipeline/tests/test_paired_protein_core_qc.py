@@ -223,6 +223,44 @@ class PairedProteinCoreQCTest(unittest.TestCase):
                     blacklist_sha256="not_the_real_hash",
                 )
 
+    def test_scale_gate_writes_summary_without_materializing_core(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            tumor_hits = root / "tumor.tsv"
+            normal_hits = root / "normal.tsv"
+            blacklist = root / "blacklist.tsv"
+            outdir = root / "out"
+            self.write_blacklist(blacklist)
+            self.write_hits(
+                tumor_hits,
+                [hit_row(1, "T_BIG.1", "111", "ACDEFGHIKLMNPQRST")],
+            )
+            self.write_hits(
+                normal_hits,
+                [hit_row(1, "N_BIG.1", "111", "TVWYACDEFGHIKLMNP")],
+            )
+
+            manifest = build_pair_core(
+                tumor_protein_hits=tumor_hits,
+                normal_protein_hits=normal_hits,
+                outdir=outdir,
+                tumor_sample="T",
+                normal_sample="N",
+                blacklist=blacklist,
+                mhc_i_lengths=[8, 9],
+                mhc_ii_lengths=[13],
+                max_estimated_peptide_windows=1,
+            )
+
+            self.assertEqual(manifest["run_status"], "scale_gate_skipped")
+            self.assertTrue(manifest["scale_gate_skipped"])
+            self.assertIn("estimated_total_parent_peptide_windows", manifest["stagewise_counts"])
+            self.assertGreater(manifest["stagewise_counts"]["estimated_total_parent_peptide_windows"], 1)
+            self.assertTrue((outdir / "stagewise_qc.tsv").exists())
+            self.assertTrue((outdir / "run_manifest.json").exists())
+            self.assertFalse((outdir / "microbial_peptide_core.fasta").exists())
+            self.assertFalse((outdir / "microbial_peptide_core.tsv").exists())
+
     def test_pair_id_validation_is_strict(self) -> None:
         with self.assertRaisesRegex(ValueError, "different"):
             validate_pair_id("S,S", "S", "S")
