@@ -37,10 +37,32 @@ class PipelineBackendContractTest(unittest.TestCase):
         )
 
         cryptic = yaml.safe_load((CONFIG_DIR / "cryptic_configure.yaml").read_text())
-        self.assertEqual(cryptic["others"]["binding_prediction_backend"], "pvactools")
+        self.assertTrue(cryptic["others"]["cryptic_core_qc"])
+        self.assertFalse(cryptic["others"]["cryptic_external_normal_qc"])
+        self.assertFalse(cryptic["others"]["allow_missing_external_normal_resources"])
+        self.assertFalse(cryptic["others"]["alignment_control"])
+        self.assertEqual(cryptic["others"]["binding_prediction_backend"], "mimicneoai")
+        self.assertEqual(cryptic["others"]["binding_prediction_preset"], "fast")
+        self.assertEqual(cryptic["others"]["mhcI_lengths"], "8,9,10,11")
+        self.assertEqual(cryptic["others"]["mhcII_lengths"], "13,14,15,16,17")
+        self.assertFalse(cryptic["others"]["allow_missing_human_reference"])
         self.assertIn("binding_prediction_algorithms", cryptic["others"])
+        self.assertNotIn("NNalign", cryptic["others"]["binding_prediction_algorithms"])
         self.assertEqual(cryptic["others"]["binding_prediction_max_task_rows"], 5_000_000)
         self.assertFalse(cryptic["others"]["binding_prediction_force_large_samples"])
+        self.assertFalse(cryptic["rna_variant_editing_qc"]["enabled"])
+        self.assertEqual(
+            cryptic["rna_variant_editing_qc"]["policy_version"],
+            "cryptic_rna_variant_editing_qc_v1.0",
+        )
+        self.assertFalse(cryptic["rna_variant_editing_qc"]["allow_missing_rediportal_resource"])
+        self.assertFalse(cryptic["rna_variant_editing_qc"]["allow_legacy_rna_variant_vcf"])
+        self.assertFalse(cryptic["rna_variant_editing_qc"]["allow_legacy_duplicate_vcf"])
+        external_normal = cryptic["external_normal_resources"]
+        self.assertIn("manifest", external_normal)
+        self.assertIn("smorf_match_index", external_normal)
+        self.assertIn("hla_ligand_evidence", external_normal)
+        self.assertFalse(external_normal["coordinate_matching_enabled"])
 
         microbial = yaml.safe_load((CONFIG_DIR / "microbial_configure.yaml").read_text())
         self.assertEqual(microbial["others"]["binding_prediction_backend"], "mimicneoai")
@@ -63,6 +85,12 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.assertTrue(common_paths["APPTAINER_BIN"].endswith("/apptainer"))
         self.assertTrue(common_paths["BCFTOOLS_BIN"].endswith("/bcftools"))
         self.assertTrue(common_paths["TABIX_BIN"].endswith("/tabix"))
+        human_proteome = paths["database"]["common"]["HUMAN_PROTEOME"]
+        self.assertTrue(
+            human_proteome["CANONICAL_FASTA"].endswith(
+                "human_proteome/processed/uniprot_swissprot_human_reviewed_canonical_20260626.fasta"
+            )
+        )
         predictor_paths = paths["path"]["common"]["BINDING_PREDICTORS"]
         self.assertTrue(
             predictor_paths["MHCFLURRY_PREDICT_BIN"].endswith("mhcflurry-predict")
@@ -72,6 +100,17 @@ class PipelineBackendContractTest(unittest.TestCase):
         )
         self.assertTrue(
             predictor_paths["IEDB_MHCII_SCRIPT"].endswith("mhc_II_binding.py")
+        )
+        external_normal_paths = paths["database"]["cryptic"]["EXTERNAL_NORMAL_RESOURCES"]
+        self.assertTrue(
+            external_normal_paths["MANIFEST"].endswith(
+                "cryptic_external_normal/frozen_20260727/resource_manifest.json"
+            )
+        )
+        self.assertTrue(
+            external_normal_paths["HLA_LIGAND_EVIDENCE"].endswith(
+                "processed/normal_hla_ligand_evidence.tsv.gz"
+            )
         )
 
     def test_mutation_default_and_native_dispatch(self) -> None:
@@ -226,6 +265,142 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.assertIn("--netmhcpan-bin", native_command)
         self.assertIn("/tools/netMHCpan", native_command)
 
+        config = self.cryptic_config()
+        config["others"].update(
+            {
+                "cryptic_core_qc": True,
+                "binding_prediction_backend": "mimicneoai",
+                "binding_prediction_step_name": "09-hla_binding_pred_mimicneoai_core",
+                "binding_prediction_preset": "fast",
+                "allow_missing_human_reference": True,
+            }
+        )
+        with patch.object(cryptic, "_run_cmd") as run_cmd:
+            cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, paths, tool)
+        self.assertEqual(run_cmd.call_count, 4)
+        core_command = run_cmd.call_args_list[2].args[2]
+        self.assertTrue(core_command[1].endswith("cryptic_core_qc.py"))
+        self.assertIn("--matched-control-sample", core_command)
+        self.assertIn("CRYPTIC-N", core_command)
+        self.assertIn("--allow-missing-human-reference", core_command)
+        binding_command = run_cmd.call_args_list[3].args[2]
+        self.assertTrue(binding_command[1].endswith("07-hla_binding_pred_mimicneoai.py"))
+        self.assertIn("--input-mode", binding_command)
+        self.assertIn("peptide-core", binding_command)
+        self.assertTrue(any(str(value).endswith("/08b-cryptic_core_qc/cryptic_peptide_core.fasta") for value in binding_command))
+        self.assertFalse(any(str(value).endswith("CRYPTIC-T.aeSEPs.orf_filtered.pep") for value in binding_command))
+
+        config = self.cryptic_config()
+        config["others"].update(
+            {
+                "cryptic_core_qc": True,
+                "cryptic_external_normal_qc": True,
+                "binding_prediction_backend": "mimicneoai",
+                "binding_prediction_step_name": "09-hla_binding_pred_mimicneoai_external",
+                "binding_prediction_preset": "fast",
+                "allow_missing_human_reference": True,
+            }
+        )
+        config["external_normal_resources"] = {
+            "manifest": "/resources/resource_manifest.json",
+            "smorf_match_index": "/resources/processed/normal_smorf_peptide_match_index.tsv.gz",
+            "smorf_parent_map": "/resources/processed/normal_smorf_peptide_parent_map.tsv.gz",
+            "hla_ligand_match_index": "/resources/processed/normal_hla_peptide_match_index.tsv.gz",
+            "hla_ligand_evidence": "/resources/processed/normal_hla_ligand_evidence.tsv.gz",
+            "coordinate_matching_enabled": False,
+        }
+        with patch.object(cryptic, "_run_cmd") as run_cmd:
+            cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, paths, tool)
+        self.assertEqual(run_cmd.call_count, 5)
+        external_command = run_cmd.call_args_list[3].args[2]
+        self.assertTrue(external_command[1].endswith("cryptic_external_normal_qc.py"))
+        self.assertIn("--resource-manifest", external_command)
+        self.assertIn("/resources/resource_manifest.json", external_command)
+        binding_command = run_cmd.call_args_list[4].args[2]
+        self.assertTrue(binding_command[1].endswith("07-hla_binding_pred_mimicneoai.py"))
+        self.assertIn("--input-mode", binding_command)
+        self.assertIn("peptide-core", binding_command)
+        self.assertTrue(
+            any(
+                str(value).endswith(
+                    "/08c-external_normal_qc/cryptic_tumor_restricted_primary_core.fasta"
+                )
+                for value in binding_command
+            )
+        )
+        self.assertFalse(
+            any(str(value).endswith("/08b-cryptic_core_qc/cryptic_peptide_core.fasta") for value in binding_command)
+        )
+
+        config = self.cryptic_config()
+        config["others"].update(
+            {
+                "cryptic_core_qc": True,
+                "cryptic_core_qc_policy_version": "cryptic_core_qc_v1.1",
+                "hla_binding_pred": False,
+                "allow_missing_human_reference": True,
+            }
+        )
+        config["rna_variant_editing_qc"] = {
+            "enabled": True,
+            "policy_version": "cryptic_rna_variant_editing_qc_v1.0",
+            "min_read_mapping_quality": 20,
+            "min_base_quality": 20,
+            "min_variant_qual": 30,
+            "min_total_depth": 10,
+            "min_variant_allele_fraction": 0.05,
+            "primary_min_alt_reads": 3,
+            "sensitivity_alt_reads": "2,3,5",
+        }
+        with patch.object(cryptic, "_run_cmd") as run_cmd:
+            cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, paths, tool)
+        core_command = run_cmd.call_args_list[2].args[2]
+        self.assertIn("--rna-variant-editing-qc-enabled", core_command)
+        self.assertIn("--rna-variant-vcf", core_command)
+        self.assertTrue(
+            any(str(value).endswith("/02-known/04k.bcf_consensus/rna.flt.vcf.gz") for value in core_command)
+        )
+        self.assertIn("--rna-variant-calling-manifest", core_command)
+        self.assertTrue(
+            any(str(value).endswith("/02-known/04k.bcf_consensus/rna.variant_calling.manifest.json") for value in core_command)
+        )
+        self.assertIn("--rediportal-processed-table", core_command)
+        self.assertIn("/fallback/rediportal_processed.tsv", core_command)
+        self.assertIn("--rediportal-resource-manifest", core_command)
+        self.assertIn("/fallback/rediportal_manifest.json", core_command)
+        self.assertIn("--rna-variant-primary-min-alt-reads", core_command)
+        self.assertIn("3", core_command)
+
+        config = self.cryptic_config()
+        config["others"].update(
+            {
+                "cryptic_core_qc": True,
+                "cryptic_external_normal_qc": True,
+                "binding_prediction_backend": "mimicneoai",
+                "allow_missing_human_reference": True,
+            }
+        )
+        config["external_normal_resources"] = {
+            "manifest": "",
+            "smorf_match_index": "",
+            "smorf_parent_map": "",
+            "hla_ligand_match_index": "",
+            "hla_ligand_evidence": "",
+            "coordinate_matching_enabled": False,
+        }
+        with patch.object(cryptic, "_run_cmd") as run_cmd:
+            cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, paths, tool)
+        external_command = run_cmd.call_args_list[3].args[2]
+        self.assertIn("/fallback/resource_manifest.json", external_command)
+        self.assertIn("/fallback/normal_hla_ligand_evidence.tsv.gz", external_command)
+
+        config["others"]["allow_missing_external_normal_resources"] = True
+        with (
+            patch.object(cryptic, "_run_cmd"),
+            self.assertRaisesRegex(ValueError, "exploratory only"),
+        ):
+            cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, paths, tool)
+
     def test_microbial_default_and_native_dispatch(self) -> None:
         sample = "MICROBIAL-T"
         peptide_dir = self.root / sample / "06.MicrobialPeptidesIdentification"
@@ -300,6 +475,7 @@ class PipelineBackendContractTest(unittest.TestCase):
             "others": {
                 "QC": False,
                 "alignment": False,
+                "alignment_control": False,
                 "known": False,
                 "novel": False,
                 "salmon_quant": False,
@@ -330,6 +506,17 @@ class PipelineBackendContractTest(unittest.TestCase):
                         "REF_FA": "/ref/genome.fa",
                         "REF_GTF": "/ref/gencode.gtf",
                         "REF_LNC_GTF": "/ref/lnc.gtf",
+                    },
+                    "EXTERNAL_NORMAL_RESOURCES": {
+                        "MANIFEST": "/fallback/resource_manifest.json",
+                        "SMORF_MATCH_INDEX": "/fallback/normal_smorf_peptide_match_index.tsv.gz",
+                        "SMORF_PARENT_MAP": "/fallback/normal_smorf_peptide_parent_map.tsv.gz",
+                        "HLA_LIGAND_MATCH_INDEX": "/fallback/normal_hla_peptide_match_index.tsv.gz",
+                        "HLA_LIGAND_EVIDENCE": "/fallback/normal_hla_ligand_evidence.tsv.gz",
+                    },
+                    "RNA_VARIANT_EDITING_QC": {
+                        "REDIPORTAL_PROCESSED_TABLE": "/fallback/rediportal_processed.tsv",
+                        "REDIPORTAL_RESOURCE_MANIFEST": "/fallback/rediportal_manifest.json",
                     },
                 },
                 "common": {

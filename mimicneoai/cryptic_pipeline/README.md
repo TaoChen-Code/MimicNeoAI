@@ -9,7 +9,11 @@ Discover and prioritize sORF-encoded peptides from known and novel transcripts.
 4. Tumor/control quantification
 5. HLA typing
 6. Aberrantly expressed sORF peptide extraction
-7. Binding prediction
+7. ORF genome annotation and ORF-level filtering
+8. Cryptic Core QC
+9. Optional junction QC inside Cryptic Core v1.1
+10. External-normal exact sequence QC
+11. Binding prediction
 
 ## Installation
 
@@ -79,27 +83,118 @@ Pipeline outputs are written under:
 ├── 06-aeSEPs
 ├── 07-orf_genome_annotation
 ├── 08-orf_filter
-├── 09-hla_binding_pred
+├── 08b-cryptic_core_qc
+├── 08c-external_normal_qc
+├── 09-hla_binding_pred_mimicneoai
 ├── 10-immunogenicity_prediction_mimicneoai
 └── 023-shared
 ```
 
 Notable subfolders:
 - `04-salmon_quant/salmon_index`, `salmon_quant`, `salmon_quant_control`
+- `01-star/star-provenance-freeze`: optional frozen STAR provenance for
+  paired junction QC. The directory name is stable; the policy version is
+  recorded inside the manifests.
 - `07-orf_genome_annotation`: maps selected ORF/CDS records back to the reference genome
 - `08-orf_filter`: writes the ORF-filtered aeSEP FASTA used by binding prediction
+- `08b-cryptic_core_qc`: materializes the strict pre-binding Cryptic Core
+  with parent sidecars, HLA-I/HLA-II peptide-core FASTA files, stagewise counts,
+  and an input/config manifest.
+- `08c-external_normal_qc`: applies frozen external-normal resources. Policy
+  `cryptic_external_normal_qc_v1.0` uses exact peptide sequence plus HLA class.
+  Policy `cryptic_external_normal_qc_v1.1` keeps those exact-match rules and
+  adds normal smORF coordinate/frame evidence. It keeps the complete source-Core
+  landscape and writes the tumor-restricted primary Core FASTA used by
+  downstream binding.
 - `09-hla_binding_pred/<tumor_sample>/pvacbind` for the pVACbind backend, or
   `09-hla_binding_pred_mimicneoai/<tumor_sample>/` for the MimicNeoAI backend
 
 ## Notes
 
 - Tumor/control samples should be provided as `Tumor,Control` in `samples`.
-- The pipeline is resumable; existing non-empty outputs are skipped.
+- The pipeline is resumable when manifest, input, code, configuration, and
+  output signatures match. Empty Core FASTA files are valid for zero-candidate
+  samples and can be reused through the manifest.
 - `others.orf_genome_annotation` and `others.orf_filter` default to enabled;
   binding prediction uses the ORF-filtered aeSEP FASTA when `orf_filter` is enabled.
-- `others.binding_prediction_backend` defaults to `pvactools`. The optional
-  `mimicneoai` backend estimates task scale before materializing the task table;
+- `others.cryptic_core_qc` defaults to enabled in the template. It accepts only
+  `novel` and `noncoding` aeSEP sources, requires ORF-filtered parent records,
+  preserves excluded rows, and writes pre-tiled peptide-core FASTA files for
+  HLA-I 8-11 aa and HLA-II 13-17 aa.
+- `candidate_selection.mode: all` keeps the complete Cryptic Core and is the
+  default. `ranked_cap` ranks parent ORFs before peptide tiling and caps unique
+  peptide sequences independently for HLA-I and HLA-II, for example:
+  `max_hla_i_peptides: 400000` and `max_hla_ii_peptides: 400000`. Cap-external
+  parents or peptides are recorded as `not_selected_due_to_analysis_cap`; this
+  is a compute-routing state, not binding-negative evidence.
+  `ranked_cap` currently fails closed when `junction_qc.enabled: true` because
+  deferred/refill candidates must first receive the same coordinate and junction
+  QC contract before this mode can be used for formal freezing.
+- `junction_qc.enabled: true` enables production junction support QC for
+  `cryptic_core_qc_v1.1`. It consumes the explicit STAR pair table produced by
+  `freeze_star_provenance.py`; downstream code should read SJ paths from that
+  table rather than infer unprefixed filenames. The primary policy is
+  `junction_qc_v1.0`, requiring all required parent junctions to have tumor
+  unique split reads >=2. It also records threshold sensitivity for 1, 2, 3,
+  and 5 reads. Intronless parents are retained as not applicable. Matched-normal
+  junctions are annotation-only and are reported as unique-read threshold
+  fields, not as full-chain support.
+  `cryptic_peptide_junction_evidence.tsv` covers retained Core peptide windows
+  with stable peptide IDs; human-reference-excluded peptide windows remain in
+  the QC/excluded tables and are not assigned peptide-level junction evidence.
+- `rna_variant_editing_qc.enabled: true` enables
+  `cryptic_rna_variant_editing_qc_v1.0` after coordinate/translation QC and
+  before junction QC. It uses the known-branch RNA VCF by default
+  (`02-known/04k.bcf_consensus/rna.flt.vcf.gz`) and validates the paired
+  `rna.variant_calling.manifest.json` before treating the VCF as formal input.
+  That manifest must bind the filtered VCF to the source BAM, GRCh38 FASTA,
+  merged exon BED, bcftools version, normalization policy, output hashes, and
+  MAPQ/BQ/QUAL/depth/VAF/ALT-read thresholds. Formal runs also require a frozen
+  REDIportal processed table plus strict resource manifest. Formal VCFs must be
+  normalized and duplicate-free at the exact genomic REF/ALT event level.
+  Legacy VCF provenance, legacy duplicate VCFs, and missing REDIportal
+  resources are accepted only with explicit exploratory switches; such runs
+  write `run_status=complete_exploratory`, `binding_eligible=false`, and cannot
+  be routed into binding. The QC computes VAF from FORMAT/AD, requires
+  FILTER=PASS, fixes the v1.0 thresholds at read MAPQ >=20, base quality >=20,
+  QUAL >=30, depth >=10, VAF >=0.05, ALT reads >=3, and variant INFO/MQ >=20,
+  and reports ALT-read sensitivity for 2, 3, and 5 reads. It
+  does not label events as WES-confirmed, somatic-confirmed, or discovery FDR
+  controlled. Reference-concordant parents pass directly; reference-mismatched
+  parents pass only when all required protein-changing RNA SNVs are supported
+  and do not exact-match the frozen editing resource. Synonymous CDS-only
+  differences are annotated but are not hard rescue requirements.
+- `others.cryptic_external_normal_qc` defaults to disabled in the generic
+  template because the frozen resource package is project-specific. Formal
+  project configs should enable it and provide `external_normal_resources`, or
+  rely on populated `paths.yaml` resource entries. Missing or hash-mismatched
+  resources fail closed. `allow_missing_external_normal_resources: true` is
+  exploratory only and cannot be routed into binding.
+- External-normal QC v1.1 only uses coordinate/frame evidence when the candidate
+  parent has exactly one primary ORF-genome alignment in the complete
+  `orf2genome.bam`, no secondary/supplementary ambiguity, MAPQ above the
+  configured threshold, canonical GRCh38 contig coordinates, consistent
+  CDS/block length, and strand-aware genomic translation from the configured
+  GRCh38 FASTA reproduces the parent peptide. Reference translation mismatch is
+  recorded as RNA-variant-aware not evaluable, not as normal evidence.
+- In v1.1, a unique peptide is removed from the strict primary Core only when at
+  least one trusted candidate parent is
+  `normal_smorf_coordinate_frame_concordant`. Partial overlap, frame-discordant
+  overlap, incompatible junction chains, low MAPQ, secondary/supplementary
+  alignments, noncanonical contigs, and reference-translation mismatch are
+  annotated as not evaluable or non-excluding coordinate evidence.
+- `external_normal_status` distinguishes exact-match exclusions,
+  coordinate/frame exclusions, and peptides with both evidence types; use
+  `external_normal_qc_reasons` for the specific resource-level reason.
+- `others.binding_prediction_backend` defaults to `mimicneoai` in the template.
+  The local backend estimates task scale before materializing the task table;
   see the [native binding backend documentation](../functions/binding_prediction/README.md).
+- For legacy pVACtools reruns, disable `others.cryptic_core_qc` or explicitly
+  provide a parent FASTA. The strict peptide-core output is routed only to the
+  MimicNeoAI backend to avoid accidental second-pass peptide tiling.
+- When `08c` is enabled, binding consumes
+  `08c-external_normal_qc/cryptic_tumor_restricted_primary_core.fasta`.
+  It does not fall back to `08b`, `06-aeSEPs`, or the ORF-filtered parent FASTA.
 - With `others.binding_prediction_backend: mimicneoai`, set
   `others.binding_prediction_preset: full` for one-stage multialgorithm
   prediction or `fast` for EL-rank Stage 1 routing before formal local binding

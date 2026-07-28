@@ -12,6 +12,8 @@ It mirrors the original run.sh flow:
 06  Extract aberrantly expressed sORF peptides (aeSEPs)
 07  ORF genome annotation
 08  ORF-level filtering
+08b Cryptic Core QC
+08c External-normal exact sequence QC
 09  HLA binding prediction (pvacbind/IEDB or MimicNeoAI backend)
 
 This module:
@@ -50,6 +52,8 @@ STEP_NAME = {
     "aeseps": "06-aeSEPs",
     "orf_genome_annotation": "07-orf_genome_annotation",
     "orf_filter": "08-orf_filter",
+    "cryptic_core": "08b-cryptic_core_qc",
+    "external_normal": "08c-external_normal_qc",
     "pvacbind": "09-hla_binding_pred",
     "mimicneoai_binding": "09-hla_binding_pred_mimicneoai",
     "immunogenicity": "10-immunogenicity_prediction_mimicneoai",
@@ -107,6 +111,27 @@ def _resolve_tumor_control(sample: str, ctrl_from_cfg: str | None) -> Tuple[str,
     return sample.strip(), (ctrl_from_cfg.strip() if ctrl_from_cfg else None)
 
 
+def _external_normal_resource_value(
+    configure: Dict[str, Any],
+    paths: Dict[str, Any],
+    config_key: str,
+    paths_key: str,
+) -> str:
+    config_resources = configure.get("external_normal_resources", {}) or {}
+    if not isinstance(config_resources, dict):
+        raise ValueError("external_normal_resources must be a mapping")
+    configured = str(config_resources.get(config_key, "") or "").strip()
+    if configured:
+        return configured
+    return str(
+        paths.get("database", {})
+        .get("cryptic", {})
+        .get("EXTERNAL_NORMAL_RESOURCES", {})
+        .get(paths_key, "")
+        or ""
+    ).strip()
+
+
 # ---------------------- One-sample pipeline ----------------------
 def _run_one_sample(
     sample: str,
@@ -136,6 +161,7 @@ def _run_one_sample(
         # Feature switches
         do_qc = bool(others.get("QC", True))
         do_align = bool(others.get("alignment", True))
+        do_align_ctrl = bool(others.get("alignment_control", False))
         do_known = bool(others.get("known", True))
         do_novel = bool(others.get("novel", True))
         do_quant = bool(others.get("salmon_quant", True))
@@ -144,7 +170,10 @@ def _run_one_sample(
         do_aeseps = bool(others.get("extract_aeseps", True))
         do_orf_annotation = bool(others.get("orf_genome_annotation", True))
         do_orf_filter = bool(others.get("orf_filter", True))
+        do_cryptic_core = bool(others.get("cryptic_core_qc", False))
+        do_external_normal = bool(others.get("cryptic_external_normal_qc", False))
         do_pvacbind = bool(others.get("hla_binding_pred", True))
+        allow_missing_external_normal = bool(others.get("allow_missing_external_normal_resources", False))
 
         # Tumor/control resolution
         tumor_sample, ctrl_sample = _resolve_tumor_control(sample, None)
@@ -180,6 +209,8 @@ def _run_one_sample(
         DIR06 = os.path.join(OPT, STEP_NAME["aeseps"])
         DIR07_ORF = os.path.join(OPT, STEP_NAME["orf_genome_annotation"])
         DIR08_ORF = os.path.join(OPT, STEP_NAME["orf_filter"])
+        DIR08B_CORE = os.path.join(OPT, STEP_NAME["cryptic_core"])
+        DIR08C_EXTERNAL = os.path.join(OPT, STEP_NAME["external_normal"])
         DIR07 = os.path.join(OPT, STEP_NAME["pvacbind"])
         SHARED = os.path.join(OPT, "023-shared")
 
@@ -194,6 +225,21 @@ def _run_one_sample(
         if ctrl_sample:
             RAW_CTRL_R1 = f"{ipt_root}/{ctrl_sample}/{ctrl_sample}.R1.fq.gz"
             RAW_CTRL_R2 = f"{ipt_root}/{ctrl_sample}/{ctrl_sample}.R2.fq.gz"
+
+        if do_align_ctrl:
+            if not ctrl_sample:
+                raise ValueError("alignment_control requires paired sample format: Tumor,Normal")
+            if ctrl_sample == tumor_sample:
+                raise ValueError("alignment_control requires distinct tumor and control sample IDs")
+            missing_ctrl_fastqs = [
+                path for path in (RAW_CTRL_R1, RAW_CTRL_R2)
+                if not path or not os.path.isfile(path)
+            ]
+            if missing_ctrl_fastqs:
+                raise FileNotFoundError(
+                    "alignment_control requires existing control FASTQ input(s): "
+                    + ", ".join(missing_ctrl_fastqs)
+                )
 
         # Derived files
         QC_R1 = os.path.join(DIR00, f"{tumor_sample}.R1.QC.fq.gz")
@@ -213,6 +259,19 @@ def _run_one_sample(
         ABERRANT_TABLE = os.path.join(DIR06, f"{tumor_sample}.aberrant_noncoding.annot.csv")
         HLA_FINAL_TXT = os.path.join(DIR05, tumor_sample, "result", f"{tumor_sample}_final.result.txt")
         ORF_FILTERED_AESEPs_PEP = os.path.join(DIR08_ORF, f"{tumor_sample}.aeSEPs.orf_filtered.pep")
+        ORF_FINAL_TABLE = os.path.join(DIR08_ORF, "orf_final.csv")
+        CRYPTIC_CORE_TSV = os.path.join(DIR08B_CORE, "cryptic_peptide_core.tsv")
+        CRYPTIC_CORE_PARENT_MAP = os.path.join(DIR08B_CORE, "cryptic_peptide_parent_map.tsv")
+        CRYPTIC_DEFERRED_PEPTIDE = os.path.join(DIR08B_CORE, "cryptic_peptide_deferred.tsv")
+        CRYPTIC_CORE_MANIFEST = os.path.join(DIR08B_CORE, "run_manifest.json")
+        CRYPTIC_CORE_FASTA = os.path.join(DIR08B_CORE, "cryptic_peptide_core.fasta")
+        CRYPTIC_PARENT_COORDINATES = os.path.join(DIR08B_CORE, "cryptic_parent_coordinates.tsv")
+        CRYPTIC_PARENT_ORFCDS = os.path.join(DIR08B_CORE, "cryptic_parent_orfcds.tsv")
+        CRYPTIC_PEPTIDE_FOOTPRINT = os.path.join(DIR08B_CORE, "cryptic_peptide_genomic_footprint.tsv")
+        CRYPTIC_PRIMARY_CORE_FASTA = os.path.join(DIR08C_EXTERNAL, "cryptic_tumor_restricted_primary_core.fasta")
+        ORF_BED12 = os.path.join(DIR07_ORF, "orf.noUnmap.noSup.bed12")
+        ORF_BAM = os.path.join(DIR07_ORF, "orf2genome.bam")
+        ORF_CDS_FASTA = os.path.join(DIR07_ORF, f"{tumor_sample}.SEPs.cds.fa")
 
         # Minimum requirements for aeSEPs (can be overridden in YAML)
         min_tpm_tumor = float(others.get("min_tpm_tumor", 5.0))
@@ -249,7 +308,26 @@ def _run_one_sample(
                 "--genome-dir", STAR_GENOME_DIR,
                 "--out-root", DIR01,
                 "-p", str(n_align),
+                "--alignment-role", "tumor",
+                "--tumor-sample", tumor_sample,
+                "--raw-fq1", RAW_R1,
+                "--raw-fq2", RAW_R2,
             ], display_name="STAR alignment")
+
+        if do_align_ctrl:
+            _run_cmd(tool, sample, [
+                sys.executable, _script_path("01-alignment.py"),
+                "-s", ctrl_sample,
+                "--clean-dir", DIR00,
+                "--genome-dir", STAR_GENOME_DIR,
+                "--out-root", DIR01,
+                "-p", str(n_align),
+                "--alignment-role", "control",
+                "--tumor-sample", tumor_sample,
+                "--control-sample", ctrl_sample,
+                "--raw-fq1", RAW_CTRL_R1,
+                "--raw-fq2", RAW_CTRL_R2,
+            ], display_name="Control STAR alignment")
 
         # Use produced BAM if available (to pass into step 02)
         IN_BAM = os.path.join(DIR01, tumor_sample, f"{tumor_sample}.star", f"{tumor_sample}Aligned.out.bam")
@@ -367,6 +445,7 @@ def _run_one_sample(
             ], display_name="ORF genome annotation")
 
         binding_pep_fasta = AESEPs_PEP
+        binding_input_mode = "parent-fasta"
         if do_orf_filter:
             _run_cmd(tool, sample, [
                 sys.executable, _script_path("08-orf_filter.py"),
@@ -377,6 +456,224 @@ def _run_one_sample(
             ], display_name="ORF annotation filtering")
             binding_pep_fasta = ORF_FILTERED_AESEPs_PEP
 
+        if do_cryptic_core:
+            if not do_orf_filter:
+                raise ValueError("cryptic_core_qc requires orf_filter to be enabled")
+            candidate_selection = configure.get("candidate_selection", {}) or {}
+            cryptic_core_policy_version = str(
+                others.get("cryptic_core_qc_policy_version", "cryptic_core_qc_v1.0")
+            ).strip()
+            human_proteome_fasta = str(others.get("human_reference_proteome_fasta", "") or "").strip()
+            if not human_proteome_fasta:
+                human_proteome_fasta = str(
+                    paths.get("database", {})
+                    .get("common", {})
+                    .get("HUMAN_PROTEOME", {})
+                    .get("CANONICAL_FASTA", "")
+                    or ""
+                ).strip()
+            cmd = [
+                sys.executable, _script_path("cryptic_core_qc.py"),
+                "-s", tumor_sample,
+                "--policy-version", cryptic_core_policy_version,
+                "--matched-control-sample", ctrl_sample or "",
+                "--ae-seps-fasta", AESEPs_PEP,
+                "--aeseps-annotation", ABERRANT_TABLE,
+                "--orf-filtered-fasta", ORF_FILTERED_AESEPs_PEP,
+                "--orf-final", ORF_FINAL_TABLE,
+                "-o", DIR08B_CORE,
+                "--reference-genome-fasta", REF_GENOME,
+                "--reference-gtf", REF_GTF,
+                "--reference-lnc-gtf", REF_LNC_GTF,
+                "--reference-build", str(others.get("reference_build", "GRCh38")),
+                "--strandedness", strandedness,
+                "--min-tpm-tumor", str(min_tpm_tumor),
+                "--max-tpm-ctrl", str(max_tpm_ctrl),
+                "--min-log2fc", str(min_log2fc),
+                "--mhc-i-lengths", str(others.get("mhcI_lengths", "8,9,10,11")),
+                "--mhc-ii-lengths", str(others.get("mhcII_lengths", "13,14,15,16,17")),
+                "--candidate-selection-mode", str(candidate_selection.get("mode", "all")),
+            ]
+            if candidate_selection.get("max_hla_i_peptides") is not None:
+                cmd.extend(["--max-hla-i-peptides", str(int(candidate_selection.get("max_hla_i_peptides")))])
+            if candidate_selection.get("max_hla_ii_peptides") is not None:
+                cmd.extend(["--max-hla-ii-peptides", str(int(candidate_selection.get("max_hla_ii_peptides")))])
+            if human_proteome_fasta:
+                cmd.extend(["--human-proteome-fasta", human_proteome_fasta])
+            if bool(others.get("allow_missing_human_reference", False)):
+                cmd.append("--allow-missing-human-reference")
+            if cryptic_core_policy_version == "cryptic_core_qc_v1.1":
+                cmd.extend([
+                    "--orf-bed12", ORF_BED12,
+                    "--orf-bam", ORF_BAM,
+                    "--orf-cds-fasta", ORF_CDS_FASTA,
+                    "--coordinate-min-mapq", str(int(others.get("coordinate_min_mapq", 20))),
+                ])
+            junction_qc = configure.get("junction_qc", {}) or {}
+            if not isinstance(junction_qc, dict):
+                raise ValueError("junction_qc must be a mapping")
+            if bool(junction_qc.get("enabled", False)):
+                cmd.extend([
+                    "--junction-qc-enabled",
+                    "--junction-policy-version", str(junction_qc.get("policy_version", "junction_qc_v1.0")),
+                    "--star-pair-inputs", str(junction_qc.get("star_pair_inputs", "")),
+                    "--primary-min-tumor-unique-reads",
+                    str(int(junction_qc.get("primary_min_tumor_unique_reads", 2))),
+                    "--junction-sensitivity-thresholds",
+                    str(junction_qc.get("sensitivity_thresholds", "1,2,3,5")),
+                ])
+            rna_variant_qc = configure.get("rna_variant_editing_qc", {}) or {}
+            if not isinstance(rna_variant_qc, dict):
+                raise ValueError("rna_variant_editing_qc must be a mapping")
+            if bool(rna_variant_qc.get("enabled", False)):
+                rna_variant_vcf = str(rna_variant_qc.get("rna_variant_vcf", "") or "").strip()
+                if not rna_variant_vcf:
+                    rna_variant_vcf = os.path.join(DIR02_KNOWN, "04k.bcf_consensus", "rna.flt.vcf.gz")
+                rna_variant_calling_manifest = str(rna_variant_qc.get("rna_variant_calling_manifest", "") or "").strip()
+                if not rna_variant_calling_manifest:
+                    rna_variant_calling_manifest = os.path.join(
+                        os.path.dirname(rna_variant_vcf),
+                        "rna.variant_calling.manifest.json",
+                    )
+                rediportal_table = str(rna_variant_qc.get("rediportal_processed_table", "") or "").strip()
+                if not rediportal_table:
+                    rediportal_table = str(
+                        paths.get("database", {})
+                        .get("cryptic", {})
+                        .get("RNA_VARIANT_EDITING_QC", {})
+                        .get("REDIPORTAL_PROCESSED_TABLE", "")
+                        or ""
+                    ).strip()
+                rediportal_manifest = str(rna_variant_qc.get("rediportal_resource_manifest", "") or "").strip()
+                if not rediportal_manifest:
+                    rediportal_manifest = str(
+                        paths.get("database", {})
+                        .get("cryptic", {})
+                        .get("RNA_VARIANT_EDITING_QC", {})
+                        .get("REDIPORTAL_RESOURCE_MANIFEST", "")
+                        or ""
+                    ).strip()
+                allow_missing_rediportal = bool(rna_variant_qc.get("allow_missing_rediportal_resource", False))
+                allow_legacy_rna_variant_vcf = bool(rna_variant_qc.get("allow_legacy_rna_variant_vcf", False))
+                allow_legacy_duplicate_vcf = bool(rna_variant_qc.get("allow_legacy_duplicate_vcf", False))
+                if do_pvacbind and allow_missing_rediportal:
+                    raise ValueError(
+                        "allow_missing_rediportal_resource is exploratory only; "
+                        "disable hla_binding_pred or provide a formal REDIportal resource"
+                    )
+                if do_pvacbind and allow_legacy_rna_variant_vcf:
+                    raise ValueError(
+                        "allow_legacy_rna_variant_vcf is exploratory only; "
+                        "disable hla_binding_pred or provide a formal RNA variant calling manifest"
+                    )
+                if do_pvacbind and allow_legacy_duplicate_vcf:
+                    raise ValueError(
+                        "allow_legacy_duplicate_vcf is exploratory only; "
+                        "disable hla_binding_pred or provide a normalized duplicate-free RNA VCF"
+                    )
+                cmd.extend([
+                    "--rna-variant-editing-qc-enabled",
+                    "--rna-variant-qc-policy-version",
+                    str(rna_variant_qc.get("policy_version", "cryptic_rna_variant_editing_qc_v1.0")),
+                    "--rna-variant-vcf",
+                    rna_variant_vcf,
+                    "--rna-variant-calling-manifest",
+                    rna_variant_calling_manifest,
+                    "--rna-variant-min-mapping-quality",
+                    str(float(rna_variant_qc.get("min_read_mapping_quality", 20))),
+                    "--rna-variant-min-base-quality",
+                    str(float(rna_variant_qc.get("min_base_quality", 20))),
+                    "--rna-variant-min-variant-qual",
+                    str(float(rna_variant_qc.get("min_variant_qual", 30))),
+                    "--rna-variant-min-total-depth",
+                    str(int(rna_variant_qc.get("min_total_depth", 10))),
+                    "--rna-variant-min-variant-allele-fraction",
+                    str(float(rna_variant_qc.get("min_variant_allele_fraction", 0.05))),
+                    "--rna-variant-primary-min-alt-reads",
+                    str(int(rna_variant_qc.get("primary_min_alt_reads", 3))),
+                    "--rna-variant-sensitivity-alt-reads",
+                    str(rna_variant_qc.get("sensitivity_alt_reads", "2,3,5")),
+                ])
+                if rediportal_table:
+                    cmd.extend(["--rediportal-processed-table", rediportal_table])
+                if rediportal_manifest:
+                    cmd.extend(["--rediportal-resource-manifest", rediportal_manifest])
+                if allow_missing_rediportal:
+                    cmd.append("--allow-missing-rediportal-resource")
+                if allow_legacy_rna_variant_vcf:
+                    cmd.append("--allow-legacy-rna-variant-vcf")
+                if allow_legacy_duplicate_vcf:
+                    cmd.append("--allow-legacy-duplicate-vcf")
+            _run_cmd(tool, sample, cmd, display_name="Cryptic Core QC")
+            binding_pep_fasta = CRYPTIC_CORE_FASTA
+            binding_input_mode = "peptide-core"
+
+        if do_external_normal:
+            if not do_cryptic_core:
+                raise ValueError("cryptic_external_normal_qc requires cryptic_core_qc to be enabled")
+            if allow_missing_external_normal and do_pvacbind:
+                raise ValueError(
+                    "allow_missing_external_normal_resources is exploratory only; "
+                    "disable hla_binding_pred or provide formal external-normal resources"
+                )
+            external_resources = configure.get("external_normal_resources", {}) or {}
+            if not isinstance(external_resources, dict):
+                raise ValueError("external_normal_resources must be a mapping")
+            external_policy_version = str(
+                external_resources.get("policy_version", "cryptic_external_normal_qc_v1.0")
+            ).strip()
+            cmd = [
+                sys.executable, _script_path("cryptic_external_normal_qc.py"),
+                "-s", tumor_sample,
+                "--policy-version", external_policy_version,
+                "--cryptic-peptide-core", CRYPTIC_CORE_TSV,
+                "--cryptic-peptide-parent-map", CRYPTIC_CORE_PARENT_MAP,
+                "--upstream-manifest", CRYPTIC_CORE_MANIFEST,
+                "-o", DIR08C_EXTERNAL,
+                "--resource-manifest", _external_normal_resource_value(configure, paths, "manifest", "MANIFEST"),
+                "--smorf-match-index", _external_normal_resource_value(
+                    configure, paths, "smorf_match_index", "SMORF_MATCH_INDEX"
+                ),
+                "--smorf-parent-map", _external_normal_resource_value(
+                    configure, paths, "smorf_parent_map", "SMORF_PARENT_MAP"
+                ),
+                "--hla-ligand-match-index", _external_normal_resource_value(
+                    configure, paths, "hla_ligand_match_index", "HLA_LIGAND_MATCH_INDEX"
+                ),
+                "--hla-ligand-evidence", _external_normal_resource_value(
+                    configure, paths, "hla_ligand_evidence", "HLA_LIGAND_EVIDENCE"
+                ),
+            ]
+            candidate_selection = configure.get("candidate_selection", {}) or {}
+            if str(candidate_selection.get("mode", "all")).strip().lower() == "ranked_cap":
+                cmd.extend([
+                    "--cryptic-peptide-deferred", CRYPTIC_DEFERRED_PEPTIDE,
+                    "--max-hla-i-peptides", str(int(candidate_selection.get("max_hla_i_peptides"))),
+                    "--max-hla-ii-peptides", str(int(candidate_selection.get("max_hla_ii_peptides"))),
+                ])
+            if allow_missing_external_normal:
+                cmd.append("--allow-missing-external-normal-resources")
+            if bool(external_resources.get("coordinate_matching_enabled", False)):
+                cmd.append("--coordinate-matching-enabled")
+            if external_policy_version == "cryptic_external_normal_qc_v1.1":
+                cmd.extend([
+                    "--cryptic-parent-coordinates", CRYPTIC_PARENT_COORDINATES,
+                    "--cryptic-parent-orfcds", CRYPTIC_PARENT_ORFCDS,
+                    "--cryptic-peptide-genomic-footprint", CRYPTIC_PEPTIDE_FOOTPRINT,
+                    "--coordinate-resource-manifest", _external_normal_resource_value(
+                        configure, paths, "coordinate_manifest", "COORDINATE_MANIFEST"
+                    ),
+                    "--normal-smorf-coordinates", _external_normal_resource_value(
+                        configure, paths, "smorf_coordinates", "SMORF_COORDINATES"
+                    ),
+                    "--normal-smorf-orfcds", _external_normal_resource_value(
+                        configure, paths, "smorf_orfcds", "SMORF_ORFCDS"
+                    ),
+                ])
+            _run_cmd(tool, sample, cmd, display_name="External normal resource QC")
+            binding_pep_fasta = CRYPTIC_PRIMARY_CORE_FASTA
+            binding_input_mode = "peptide-core"
+
         # ---------- 09 HLA binding prediction ----------
         binding_output_dir = ""
         if do_pvacbind:
@@ -384,6 +681,10 @@ def _run_one_sample(
             e1_lengths = others.get("mhcI_lengths", "8,9,10")
             e2_lengths = others.get("mhcII_lengths", "15")
             if backend == "pvactools":
+                if binding_input_mode == "peptide-core":
+                    raise ValueError(
+                        "cryptic_core_qc peptide-core input requires binding_prediction_backend: mimicneoai"
+                    )
                 algos = others.get(
                     "algo",
                     "BigMHC_EL BigMHC_IM DeepImmuno MHCflurry MHCflurryEL MHCnuggetsI "
@@ -422,6 +723,7 @@ def _run_one_sample(
                     sys.executable, _script_path("07-hla_binding_pred_mimicneoai.py"),
                     "-s", tumor_sample,
                     "--pep-fasta", binding_pep_fasta,
+                    "--input-mode", binding_input_mode,
                     "--hla-file", HLA_FINAL_TXT,
                     "-o", outdir_mimicneoai,
                     "-t", str(int(others.get("binding_prediction_workers", n_pvacbind))),
