@@ -3,9 +3,8 @@
 
 This stage consumes aeSEP parent ORFs after ORF-genome filtering and writes
 pre-tiled HLA-I/HLA-II peptide Core FASTA files. In v1.1 it can apply
-coordinate/translation QC and junction_qc_v1.0 before peptide generation.
-RNA editing and external atlas checks remain explicit not-evaluated fields
-until those resources are configured.
+coordinate/translation QC, cryptic_rna_variant_editing_qc_v1.0, and
+junction_qc_v1.0 before peptide generation when those resources are configured.
 """
 
 from __future__ import annotations
@@ -79,12 +78,89 @@ POLICY_VERSION_V11 = "cryptic_core_qc_v1.1"
 POLICY_VERSION = POLICY_VERSION_V1
 COORDINATE_UTILS_PATH = Path(__file__).with_name("cryptic_coordinate_utils.py")
 JUNCTION_QC_PATH = Path(__file__).with_name("cryptic_junction_qc.py")
+RNA_VARIANT_QC_PATH = Path(__file__).with_name("cryptic_rna_variant_editing_qc.py")
+RNA_VARIANT_POLICY_VERSION = "cryptic_rna_variant_editing_qc_v1.0"
+RNA_VARIANT_MIN_MAPPING_QUALITY = 20.0
+RNA_VARIANT_MIN_TOTAL_DEPTH = 10
+MIN_VARIANT_ALLELE_FRACTION = 0.05
+MIN_VARIANT_QUAL = 30.0
+RNA_VARIANT_PRIMARY_MIN_ALT_READS = 3
+RNA_VARIANT_SENSITIVITY_ALT_READS = (2, 3, 5)
+RNA_VARIANT_EVENT_FIELDS: list[str] = []
+RNA_VARIANT_PARENT_SUMMARY_FIELDS: list[str] = []
+RNA_VARIANT_PEPTIDE_EVIDENCE_FIELDS: list[str] = []
+_RNA_VARIANT_QC_LOADED = False
 CANONICAL_AA = set("ACDEFGHIKLMNPQRSTVWY")
 ACCEPTED_SOURCE_CLASSES = {"novel", "noncoding"}
 CANDIDATE_SELECTION_POLICY_VERSION = "ranked_prebinding_selection_v1.0"
 CRYPTIC_RANKING_POLICY = "cryptic_parent_expression_v1.0"
 ALL_MODE = "all"
 RANKED_CAP_MODE = "ranked_cap"
+
+
+def _missing_rna_variant_qc(*_args, **_kwargs):
+    raise RuntimeError(
+        "cryptic_rna_variant_editing_qc is required only when rna_variant_editing_qc is enabled"
+    )
+
+
+annotate_peptide_rna_variant_evidence = _missing_rna_variant_qc
+evaluate_parent_rna_variants = _missing_rna_variant_qc
+load_rediportal_events = _missing_rna_variant_qc
+load_vcf_events = _missing_rna_variant_qc
+validate_rna_variant_calling_manifest = _missing_rna_variant_qc
+validate_rna_variant_policy = _missing_rna_variant_qc
+
+
+def ensure_rna_variant_qc_loaded() -> None:
+    global _RNA_VARIANT_QC_LOADED
+    global RNA_VARIANT_EVENT_FIELDS
+    global RNA_VARIANT_PARENT_SUMMARY_FIELDS
+    global RNA_VARIANT_PEPTIDE_EVIDENCE_FIELDS
+    global RNA_VARIANT_POLICY_VERSION
+    global RNA_VARIANT_MIN_MAPPING_QUALITY
+    global RNA_VARIANT_MIN_TOTAL_DEPTH
+    global MIN_VARIANT_ALLELE_FRACTION
+    global MIN_VARIANT_QUAL
+    global RNA_VARIANT_PRIMARY_MIN_ALT_READS
+    global RNA_VARIANT_SENSITIVITY_ALT_READS
+    global annotate_peptide_rna_variant_evidence
+    global evaluate_parent_rna_variants
+    global load_rediportal_events
+    global load_vcf_events
+    global validate_rna_variant_calling_manifest
+    global validate_rna_variant_policy
+
+    if _RNA_VARIANT_QC_LOADED:
+        return
+    try:
+        from mimicneoai.cryptic_pipeline.scripts import cryptic_rna_variant_editing_qc as module
+    except ImportError:  # pragma: no cover - direct script execution fallback
+        try:
+            import cryptic_rna_variant_editing_qc as module  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                "cryptic_rna_variant_editing_qc is not available; disable rna_variant_editing_qc "
+                "or include the helper module in this code version"
+            ) from exc
+
+    RNA_VARIANT_EVENT_FIELDS = list(module.EVENT_FIELDS)
+    RNA_VARIANT_PARENT_SUMMARY_FIELDS = list(module.PARENT_SUMMARY_FIELDS)
+    RNA_VARIANT_PEPTIDE_EVIDENCE_FIELDS = list(module.PEPTIDE_EVIDENCE_FIELDS)
+    RNA_VARIANT_POLICY_VERSION = str(module.POLICY_VERSION)
+    RNA_VARIANT_MIN_MAPPING_QUALITY = float(module.MIN_MAPPING_QUALITY)
+    RNA_VARIANT_MIN_TOTAL_DEPTH = int(module.MIN_TOTAL_DEPTH)
+    MIN_VARIANT_ALLELE_FRACTION = float(module.MIN_VARIANT_ALLELE_FRACTION)
+    MIN_VARIANT_QUAL = float(module.MIN_VARIANT_QUAL)
+    RNA_VARIANT_PRIMARY_MIN_ALT_READS = int(module.PRIMARY_MIN_ALT_READS)
+    RNA_VARIANT_SENSITIVITY_ALT_READS = tuple(module.SENSITIVITY_ALT_READS)
+    annotate_peptide_rna_variant_evidence = module.annotate_peptide_rna_variant_evidence
+    evaluate_parent_rna_variants = module.evaluate_parent_rna_variants
+    load_rediportal_events = module.load_rediportal_events
+    load_vcf_events = module.load_vcf_events
+    validate_rna_variant_calling_manifest = module.validate_rna_variant_calling_manifest
+    validate_rna_variant_policy = module.validate_policy
+    _RNA_VARIANT_QC_LOADED = True
 
 
 def ts() -> str:
@@ -277,6 +353,9 @@ def write_peptide_core_fasta(rows: list[dict[str, object]], path: Path) -> None:
 
 
 def write_tsv(rows: list[dict[str, object]], path: Path, fieldnames: list[str]) -> None:
+    if len(set(fieldnames)) != len(fieldnames):
+        duplicates = sorted({field for field in fieldnames if fieldnames.count(field) > 1})
+        raise ValueError(f"TSV field list contains duplicate columns for {path.name}: {duplicates}")
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, delimiter="\t", fieldnames=fieldnames, extrasaction="ignore")
@@ -467,12 +546,14 @@ def rebuild_selected_parent_windows(
     mhc_i_lengths: list[int],
     mhc_ii_lengths: list[int],
 ) -> list[dict[str, object]]:
+    if not selected_keys:
+        return []
     rows: list[dict[str, object]] = []
     for parent_row in parent_core_rows:
         for row in iter_parent_candidate_rows(sample, parent_row, mhc_i_lengths, mhc_ii_lengths):
             key = (str(row["mhc_class"]), str(row["peptide"]))
             if key in selected_keys:
-                row["peptide_record_id"] = peptide_id_by_key[key]
+                row["peptide_record_id"] = peptide_id_by_key.get(key, "")
                 rows.append(row)
     return rows
 
@@ -512,11 +593,45 @@ def summarize_alignment_loci(alignments: list[dict[str, object]]) -> str:
     return ";".join(values)
 
 
+def record_rna_variant_evaluation(
+    context: dict[str, object],
+    parent_id: str,
+    evaluation: dict[str, object],
+) -> None:
+    evaluated = context.setdefault("evaluated_parent_ids", set())
+    if not isinstance(evaluated, set):
+        raise TypeError("rna_variant_context evaluated_parent_ids must be a set")
+    if parent_id in evaluated:
+        return
+    evaluated.add(parent_id)
+    parent_summary = evaluation["parent_summary"]  # type: ignore[index]
+    event_rows = evaluation["event_rows"]  # type: ignore[index]
+    variant_positions = evaluation["variant_aa_positions"]  # type: ignore[index]
+    threshold_parent_pass = evaluation["threshold_parent_pass"]  # type: ignore[index]
+    parent_summary_rows = context.setdefault("parent_summary_rows", [])
+    all_event_rows = context.setdefault("event_rows", [])
+    variant_by_parent = context.setdefault("variant_aa_positions_by_parent", {})
+    threshold_pass_counts = context.setdefault("threshold_parent_pass_counts", defaultdict(int))
+    if not isinstance(parent_summary_rows, list) or not isinstance(all_event_rows, list):
+        raise TypeError("rna_variant_context rows must be lists")
+    if not isinstance(variant_by_parent, dict):
+        raise TypeError("rna_variant_context variant_aa_positions_by_parent must be a dict")
+    if not isinstance(threshold_pass_counts, defaultdict):
+        raise TypeError("rna_variant_context threshold_parent_pass_counts must be a defaultdict")
+    parent_summary_rows.append(parent_summary)
+    all_event_rows.extend(event_rows)
+    variant_by_parent[parent_id] = variant_positions
+    for threshold, passed in dict(threshold_parent_pass).items():
+        if passed:
+            threshold_pass_counts[int(threshold)] += 1
+
+
 def build_coordinate_sidecars(
     args: argparse.Namespace,
     parent_core_rows: list[dict[str, object]],
     peptide_parent_rows: list[dict[str, object]],
     policy_version: str,
+    rna_variant_context: Optional[dict[str, object]] = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], dict[str, object]]:
     if not is_v11(policy_version):
         return [], [], [], {"status": "not_evaluated_policy_v1.0"}
@@ -610,11 +725,62 @@ def build_coordinate_sidecars(
                 reference_translated = translate_cds(reference_cds_seq)
                 if reference_translated == parent_sequence:
                     reference_translation_status = "pass"
+                    if rna_variant_context is not None:
+                        rna_eval = evaluate_parent_rna_variants(
+                            sample=args.sample,
+                            parent_record_id=parent_id,
+                            tx_blocks=tx_blocks,
+                            strand=strand,
+                            reference_cds_seq=reference_cds_seq,
+                            candidate_cds_seq=input_cds_seq,
+                            candidate_parent_sequence=parent_sequence,
+                            vcf_events=rna_variant_context["vcf_events"],  # type: ignore[arg-type,index]
+                            rediportal_events=rna_variant_context["rediportal_events"],  # type: ignore[arg-type,index]
+                            rediportal_evaluation_status=str(rna_variant_context["rediportal_evaluation_status"]),
+                            primary_min_alt_reads=int(rna_variant_context["primary_min_alt_reads"]),
+                            sensitivity_alt_reads=tuple(rna_variant_context["sensitivity_alt_reads"]),  # type: ignore[arg-type,index]
+                            min_variant_qual=float(rna_variant_context["min_variant_qual"]),
+                            min_total_depth=int(rna_variant_context["min_total_depth"]),
+                            min_variant_allele_fraction=float(rna_variant_context["min_variant_allele_fraction"]),
+                            min_mapping_quality=float(rna_variant_context["min_mapping_quality"]),
+                        )
+                        record_rna_variant_evaluation(rna_variant_context, parent_id, rna_eval)
+                        rna_variant_coordinate_status = "reference_concordant"
                 else:
-                    status = "not_evaluable_candidate_coordinate_qc" if status == "coordinate_evaluable" else status
-                    reasons.append("reference_translation_mismatch")
-                    reference_translation_status = "reference_translation_mismatch"
-                    rna_variant_coordinate_status = "RNA_variant_aware_not_evaluated"
+                    if rna_variant_context is None:
+                        status = "not_evaluable_candidate_coordinate_qc" if status == "coordinate_evaluable" else status
+                        reasons.append("reference_translation_mismatch")
+                        reference_translation_status = "reference_translation_mismatch"
+                        rna_variant_coordinate_status = "RNA_variant_aware_not_evaluated"
+                    else:
+                        rna_eval = evaluate_parent_rna_variants(
+                            sample=args.sample,
+                            parent_record_id=parent_id,
+                            tx_blocks=tx_blocks,
+                            strand=strand,
+                            reference_cds_seq=reference_cds_seq,
+                            candidate_cds_seq=input_cds_seq,
+                            candidate_parent_sequence=parent_sequence,
+                            vcf_events=rna_variant_context["vcf_events"],  # type: ignore[arg-type,index]
+                            rediportal_events=rna_variant_context["rediportal_events"],  # type: ignore[arg-type,index]
+                            rediportal_evaluation_status=str(rna_variant_context["rediportal_evaluation_status"]),
+                            primary_min_alt_reads=int(rna_variant_context["primary_min_alt_reads"]),
+                            sensitivity_alt_reads=tuple(rna_variant_context["sensitivity_alt_reads"]),  # type: ignore[arg-type,index]
+                            min_variant_qual=float(rna_variant_context["min_variant_qual"]),
+                            min_total_depth=int(rna_variant_context["min_total_depth"]),
+                            min_variant_allele_fraction=float(rna_variant_context["min_variant_allele_fraction"]),
+                            min_mapping_quality=float(rna_variant_context["min_mapping_quality"]),
+                        )
+                        record_rna_variant_evaluation(rna_variant_context, parent_id, rna_eval)
+                        parent_summary = rna_eval["parent_summary"]
+                        rescue_status = str(parent_summary.get("rna_variant_rescue_status", ""))
+                        rna_variant_coordinate_status = rescue_status
+                        if rescue_status == "rna_variant_rescued":
+                            reference_translation_status = "rna_variant_rescued"
+                        else:
+                            status = "not_evaluable_candidate_coordinate_qc" if status == "coordinate_evaluable" else status
+                            reasons.append(rescue_status or "reference_translation_mismatch")
+                            reference_translation_status = "reference_translation_mismatch"
             terminal_stop = (
                 len(input_cds_seq) >= 3
                 and len(input_cds_seq) % 3 == 0
@@ -724,6 +890,10 @@ def build_coordinate_sidecars(
         "parent_reference_translation_pass": sum(
             1 for row in parent_coordinates if row["reference_genomic_translation_status"] == "pass"
         ),
+        "parent_reference_translation_rna_variant_rescued": sum(
+            1 for row in parent_coordinates
+            if row["reference_genomic_translation_status"] == "rna_variant_rescued"
+        ),
         "parent_reference_translation_mismatch": sum(
             1 for row in parent_coordinates
             if row["reference_genomic_translation_status"] == "reference_translation_mismatch"
@@ -768,6 +938,7 @@ def build_ranked_candidate_rows(
     list[dict[str, object]],
     list[dict[str, object]],
     list[dict[str, object]],
+    list[dict[str, object]],
     dict[str, object],
     dict[str, object],
 ]:
@@ -775,6 +946,7 @@ def build_ranked_candidate_rows(
     caps = {"MHC-I": int(max_hla_i_peptides), "MHC-II": int(max_hla_ii_peptides)}
     selected_by_class: dict[str, dict[tuple[str, str], dict[str, object]]] = {"MHC-I": {}, "MHC-II": {}}
     selected_keys: set[tuple[str, str]] = set()
+    deferred_keys: set[tuple[str, str]] = set()
     peptide_id_by_key: dict[tuple[str, str], str] = {}
     excluded_peptide_rows: list[dict[str, object]] = []
     deferred_peptide_rows: list[dict[str, object]] = []
@@ -787,6 +959,9 @@ def build_ranked_candidate_rows(
     pending_rows_by_key: dict[tuple[str, str], dict[str, object]] = {}
     parent_rank_by_id: dict[str, dict[str, object]] = {}
     parent_status_counts: defaultdict[str, defaultdict[str, int]] = defaultdict(lambda: defaultdict(int))
+    unmaterialized_deferred_parent_count = 0
+    materialized_parent_rows: list[dict[str, object]] = []
+    materialized_parent_ids: set[str] = set()
 
     def caps_full() -> bool:
         return all(len(selected_by_class[mhc_class]) >= cap for mhc_class, cap in caps.items())
@@ -869,6 +1044,7 @@ def build_ranked_candidate_rows(
                     else "not_evaluated"
                 )
                 deferred_peptide_rows.append(row)
+                deferred_keys.add(key)
                 if not boundary_parent:
                     boundary_parent = str(row["parent_record_id"])
             else:
@@ -890,23 +1066,37 @@ def build_ranked_candidate_rows(
             "parent_record_id": parent_id,
             "source_parent_id": parent_row.get("source_parent_id", ""),
             "parent_rank": rank,
+            "TPM_tumor": parent_row.get("TPM_tumor", ""),
+            "TPM_ctrl": parent_row.get("TPM_ctrl", ""),
+            "log2FC": parent_row.get("log2FC", ""),
+            "nc_class": parent_row.get("nc_class", ""),
+            "parent_sequence_length": len(str(parent_row.get("parent_sequence", ""))),
+            "ranking_policy": CRYPTIC_RANKING_POLICY,
+            "ranking_digest": stable_selection_digest(args.sample, parent_id),
             "selection_status": "not_evaluated",
             "selection_reason": "",
         }
         parent_rank_by_id[parent_id] = parent_rank_record
         parent_rank_rows.append(parent_rank_record)
+
         if caps_full():
-            parent_rank_record["selection_status"] = "not_selected_due_to_analysis_cap"
-            parent_rank_record["selection_reason"] = "not_selected_due_to_analysis_cap"
+            parent_rank_record["selection_status"] = "unmaterialized_deferred_parent"
+            parent_rank_record["selection_reason"] = "cap_reached_before_parent_tiling"
             deferred_parent_rows.append(dict(parent_rank_record))
+            unmaterialized_deferred_parent_count += 1
             continue
+
+        if parent_id not in materialized_parent_ids:
+            materialized_parent_rows.append(parent_row)
+            materialized_parent_ids.add(parent_id)
 
         queued = 0
         for row in iter_parent_candidate_rows(args.sample, parent_row, mhc_i_lengths, mhc_ii_lengths):
+            mhc_class = str(row["mhc_class"])
+            if len(selected_by_class[mhc_class]) + pending_count(mhc_class) >= caps[mhc_class]:
+                continue
             key = (str(row["mhc_class"]), str(row["peptide"]))
             if key in examined_keys:
-                continue
-            if len(selected_by_class[key[0]]) >= caps[key[0]]:
                 continue
             row["_parent_rank"] = rank
             pending_rows_by_key[key] = row
@@ -918,8 +1108,6 @@ def build_ranked_candidate_rows(
             parent_rank_record["selection_status"] = "examined_for_selection"
         if should_flush():
             flush_pending()
-        if caps_full():
-            continue
 
     flush_pending()
 
@@ -942,9 +1130,17 @@ def build_ranked_candidate_rows(
 
     selected_window_rows = rebuild_selected_parent_windows(
         args.sample,
-        parent_core_rows,
+        materialized_parent_rows,
         selected_keys,
         peptide_id_by_key,
+        mhc_i_lengths,
+        mhc_ii_lengths,
+    )
+    deferred_window_rows = rebuild_selected_parent_windows(
+        args.sample,
+        materialized_parent_rows,
+        deferred_keys,
+        {},
         mhc_i_lengths,
         mhc_ii_lengths,
     )
@@ -971,6 +1167,9 @@ def build_ranked_candidate_rows(
     for row in deferred_peptide_rows:
         row["peptide_record_id"] = ""
         row["supporting_window_count"] = ""
+    for row in deferred_window_rows:
+        row["peptide_record_id"] = ""
+        row["supporting_window_count"] = ""
 
     human_reference_summary = {
         "status": "evaluated" if human_proteome else "not_evaluated",
@@ -989,13 +1188,21 @@ def build_ranked_candidate_rows(
         "max_hla_i_peptides": max_hla_i_peptides,
         "max_hla_ii_peptides": max_hla_ii_peptides,
         "examined_candidate_peptides": len(examined_keys),
+        "materialization_policy": "initial_cap_plus_ranked_parent_stream",
+        "materialization_coverage": "selected_and_boundary_candidates",
+        "evaluated_deferred_peptide_universe_complete": False,
+        "materialized_parent_records": len(materialized_parent_rows),
+        "unmaterialized_deferred_parent_records": unmaterialized_deferred_parent_count,
         "selected_hla_i": len(selected_by_class["MHC-I"]),
         "selected_hla_ii": len(selected_by_class["MHC-II"]),
         "cap_reached_hla_i": len(selected_by_class["MHC-I"]) >= caps["MHC-I"],
         "cap_reached_hla_ii": len(selected_by_class["MHC-II"]) >= caps["MHC-II"],
+        "exhausted_before_cap_hla_i": len(selected_by_class["MHC-I"]) < caps["MHC-I"],
+        "exhausted_before_cap_hla_ii": len(selected_by_class["MHC-II"]) < caps["MHC-II"],
         "boundary_parent_record_id": boundary_parent,
         "deferred_parent_records": len(deferred_parent_rows),
         "deferred_peptide_window_rows": len(deferred_peptide_rows),
+        "deferred_peptide_parent_map_rows": len(deferred_window_rows),
     }
     return (
         selected_window_rows,
@@ -1005,6 +1212,7 @@ def build_ranked_candidate_rows(
         parent_rank_rows,
         evidence_rows,
         deferred_parent_rows,
+        deferred_window_rows,
         human_reference_summary,
         selection_summary,
     )
@@ -1033,10 +1241,6 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
     junction_qc_enabled = bool(getattr(args, "junction_qc_enabled", False))
     if junction_qc_enabled and not is_v11(policy_version):
         raise ValueError("junction_qc requires cryptic_core_qc_v1.1 coordinate sidecars")
-    if junction_qc_enabled and candidate_selection_mode == RANKED_CAP_MODE:
-        raise ValueError(
-            "ranked_cap with junction_qc is disabled until deferred candidates receive full coordinate/junction QC"
-        )
     junction_policy_version = str(getattr(args, "junction_policy_version", JUNCTION_POLICY_VERSION))
     if junction_qc_enabled and junction_policy_version != JUNCTION_POLICY_VERSION:
         raise ValueError(f"Unsupported junction QC policy version: {junction_policy_version}")
@@ -1052,6 +1256,109 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
             raise ValueError("junction_qc requires --star-pair-inputs")
         star_pair_validation = validate_star_pair_contract(Path(args.star_pair_inputs), args.sample)
 
+    rna_variant_qc_enabled = bool(getattr(args, "rna_variant_editing_qc_enabled", False))
+    if rna_variant_qc_enabled:
+        ensure_rna_variant_qc_loaded()
+    rna_variant_policy_version = str(getattr(args, "rna_variant_qc_policy_version", RNA_VARIANT_POLICY_VERSION))
+    rna_variant_sensitivity_alt_reads = parse_int_list(
+        str(getattr(args, "rna_variant_sensitivity_alt_reads", "2,3,5"))
+    )
+    if rna_variant_qc_enabled and not is_v11(policy_version):
+        raise ValueError("rna_variant_editing_qc requires cryptic_core_qc_v1.1 coordinate sidecars")
+    rna_variant_context: dict[str, object] | None = None
+    rna_variant_vcf_summary: dict[str, object] = {"status": "not_evaluated"}
+    rna_variant_calling_manifest_summary: dict[str, object] = {"status": "not_evaluated"}
+    rediportal_summary: dict[str, object] = {"status": "not_evaluated"}
+    if rna_variant_qc_enabled:
+        if float(getattr(args, "rna_variant_min_base_quality", 20.0)) != 20.0:
+            raise ValueError(f"{RNA_VARIANT_POLICY_VERSION} requires min_base_quality=20")
+        validate_rna_variant_policy(
+            policy_version=rna_variant_policy_version,
+            primary_min_alt_reads=int(getattr(args, "rna_variant_primary_min_alt_reads", RNA_VARIANT_PRIMARY_MIN_ALT_READS)),
+            sensitivity_alt_reads=tuple(rna_variant_sensitivity_alt_reads),
+            min_variant_qual=float(getattr(args, "rna_variant_min_variant_qual", MIN_VARIANT_QUAL)),
+            min_total_depth=int(getattr(args, "rna_variant_min_total_depth", RNA_VARIANT_MIN_TOTAL_DEPTH)),
+            min_variant_allele_fraction=float(
+                getattr(args, "rna_variant_min_variant_allele_fraction", MIN_VARIANT_ALLELE_FRACTION)
+            ),
+            min_mapping_quality=float(getattr(args, "rna_variant_min_mapping_quality", RNA_VARIANT_MIN_MAPPING_QUALITY)),
+        )
+        if not str(getattr(args, "rna_variant_vcf", "")).strip():
+            raise ValueError("rna_variant_editing_qc requires --rna-variant-vcf")
+        allow_legacy_rna_variant_vcf = bool(getattr(args, "allow_legacy_rna_variant_vcf", False))
+        calling_manifest_arg = str(getattr(args, "rna_variant_calling_manifest", "")).strip()
+        calling_manifest_path = Path(calling_manifest_arg) if calling_manifest_arg else Path(args.rna_variant_vcf).parent / "rna.variant_calling.manifest.json"
+        if calling_manifest_path.exists():
+            rna_variant_calling_manifest_summary = validate_rna_variant_calling_manifest(
+                calling_manifest_path,
+                vcf_path=Path(args.rna_variant_vcf),
+                expected_sample=args.sample,
+            )
+        elif allow_legacy_rna_variant_vcf:
+            rna_variant_calling_manifest_summary = {
+                "status": "not_evaluated_legacy_vcf_allowed",
+                "manifest_path": str(calling_manifest_path),
+            }
+        else:
+            raise FileNotFoundError(
+                "Formal RNA variant/editing QC requires rna.variant_calling.manifest.json. "
+                "Use --allow-legacy-rna-variant-vcf only for exploratory runs."
+            )
+        allow_legacy_duplicate_vcf = bool(getattr(args, "allow_legacy_duplicate_vcf", False))
+        vcf_events, rna_variant_vcf_summary = load_vcf_events(
+            Path(args.rna_variant_vcf),
+            expected_sample=args.sample,
+            require_mq=True,
+            allow_legacy_duplicate_vcf=allow_legacy_duplicate_vcf,
+        )
+        if str(getattr(args, "rediportal_processed_table", "")).strip():
+            if not str(getattr(args, "rediportal_resource_manifest", "")).strip():
+                raise FileNotFoundError(
+                    "Formal RNA variant/editing QC requires --rediportal-resource-manifest "
+                    "with processed table size/SHA/build provenance."
+                )
+            rediportal_manifest = Path(args.rediportal_resource_manifest)
+            rediportal_events, rediportal_summary = load_rediportal_events(
+                Path(args.rediportal_processed_table),
+                rediportal_manifest,
+            )
+        elif bool(getattr(args, "allow_missing_rediportal_resource", False)):
+            rediportal_events = set()
+            rediportal_summary = {
+                "status": "not_evaluated_missing_resource_allowed",
+                "path": "",
+                "records": 0,
+            }
+        else:
+            raise FileNotFoundError(
+                "REDIportal processed table is required for formal RNA variant/editing QC. "
+                "Use --allow-missing-rediportal-resource only for exploratory runs."
+            )
+        rna_variant_context = {
+            "vcf_events": vcf_events,
+            "rediportal_events": rediportal_events,
+            "rediportal_evaluation_status": str(rediportal_summary.get("status", "not_evaluated")),
+            "vcf_summary": rna_variant_vcf_summary,
+            "calling_manifest_summary": rna_variant_calling_manifest_summary,
+            "rediportal_summary": rediportal_summary,
+            "policy_version": rna_variant_policy_version,
+            "allow_legacy_rna_variant_vcf": allow_legacy_rna_variant_vcf,
+            "allow_legacy_duplicate_vcf": allow_legacy_duplicate_vcf,
+            "primary_min_alt_reads": int(getattr(args, "rna_variant_primary_min_alt_reads", RNA_VARIANT_PRIMARY_MIN_ALT_READS)),
+            "sensitivity_alt_reads": tuple(rna_variant_sensitivity_alt_reads),
+            "min_variant_qual": float(getattr(args, "rna_variant_min_variant_qual", MIN_VARIANT_QUAL)),
+            "min_total_depth": int(getattr(args, "rna_variant_min_total_depth", RNA_VARIANT_MIN_TOTAL_DEPTH)),
+            "min_variant_allele_fraction": float(
+                getattr(args, "rna_variant_min_variant_allele_fraction", MIN_VARIANT_ALLELE_FRACTION)
+            ),
+            "min_mapping_quality": float(getattr(args, "rna_variant_min_mapping_quality", RNA_VARIANT_MIN_MAPPING_QUALITY)),
+            "evaluated_parent_ids": set(),
+            "event_rows": [],
+            "parent_summary_rows": [],
+            "variant_aa_positions_by_parent": {},
+            "threshold_parent_pass_counts": defaultdict(int),
+        }
+
     input_paths = {
         "aeseps_fasta": file_identity(Path(args.ae_seps_fasta)),
         "aeseps_annotation": file_identity(Path(args.aeseps_annotation)),
@@ -1066,6 +1373,17 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
     if junction_qc_enabled:
         input_paths["star_pair_inputs"] = file_identity(Path(args.star_pair_inputs))
         input_paths["junction_qc_script"] = file_identity(JUNCTION_QC_PATH)
+    if rna_variant_qc_enabled:
+        input_paths["rna_variant_vcf"] = file_identity(Path(args.rna_variant_vcf))
+        input_paths["rna_variant_qc_script"] = file_identity(RNA_VARIANT_QC_PATH)
+        calling_manifest_path_for_signature = str(getattr(args, "rna_variant_calling_manifest", "")).strip()
+        if not calling_manifest_path_for_signature:
+            calling_manifest_path_for_signature = str(Path(args.rna_variant_vcf).parent / "rna.variant_calling.manifest.json")
+        input_paths["rna_variant_calling_manifest"] = file_identity(Path(calling_manifest_path_for_signature))
+        if str(getattr(args, "rediportal_processed_table", "")).strip():
+            input_paths["rediportal_processed_table"] = file_identity(Path(args.rediportal_processed_table))
+        if str(getattr(args, "rediportal_resource_manifest", "")).strip():
+            input_paths["rediportal_resource_manifest"] = file_identity(Path(args.rediportal_resource_manifest))
     human_proteome = Path(args.human_proteome_fasta) if args.human_proteome_fasta else None
     if human_proteome:
         input_paths["human_reference_proteome_fasta"] = file_identity(human_proteome)
@@ -1119,9 +1437,45 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
                 if key != "row"
             } if junction_qc_enabled else {},
         },
+        "rna_variant_editing_qc": {
+            "enabled": rna_variant_qc_enabled,
+            "policy_version": rna_variant_policy_version if rna_variant_qc_enabled else "",
+            "rna_variant_qc_sha256": sha256_file(RNA_VARIANT_QC_PATH) if rna_variant_qc_enabled else "",
+            "min_read_mapping_quality": int(getattr(args, "rna_variant_min_mapping_quality", RNA_VARIANT_MIN_MAPPING_QUALITY)),
+            "min_base_quality": 20 if rna_variant_qc_enabled else "",
+            "min_variant_qual": float(getattr(args, "rna_variant_min_variant_qual", MIN_VARIANT_QUAL)),
+            "min_total_depth": int(getattr(args, "rna_variant_min_total_depth", RNA_VARIANT_MIN_TOTAL_DEPTH)),
+            "min_variant_allele_fraction": float(
+                getattr(args, "rna_variant_min_variant_allele_fraction", MIN_VARIANT_ALLELE_FRACTION)
+            ),
+            "primary_min_alt_reads": int(getattr(args, "rna_variant_primary_min_alt_reads", RNA_VARIANT_PRIMARY_MIN_ALT_READS)),
+            "sensitivity_alt_reads": rna_variant_sensitivity_alt_reads if rna_variant_qc_enabled else [],
+            "known_editing_policy": "exclude" if rna_variant_qc_enabled else "",
+            "complex_variant_policy": "not_evaluable" if rna_variant_qc_enabled else "",
+            "allow_missing_rediportal_resource": bool(getattr(args, "allow_missing_rediportal_resource", False)),
+            "allow_legacy_rna_variant_vcf": bool(getattr(args, "allow_legacy_rna_variant_vcf", False)),
+            "allow_legacy_duplicate_vcf": bool(getattr(args, "allow_legacy_duplicate_vcf", False)),
+            "vcf_summary": rna_variant_vcf_summary if rna_variant_qc_enabled else {},
+            "calling_manifest_summary": rna_variant_calling_manifest_summary if rna_variant_qc_enabled else {},
+            "rediportal_summary": rediportal_summary if rna_variant_qc_enabled else {},
+        },
         "reference_build": str(args.reference_build or "GRCh38"),
         "input_paths": input_paths,
     }
+    exploratory_reasons: list[str] = []
+    if bool(args.allow_missing_human_reference):
+        exploratory_reasons.append("missing_human_reference_allowed")
+    if rna_variant_qc_enabled:
+        if str(rediportal_summary.get("status", "")) != "evaluated":
+            exploratory_reasons.append("rediportal_not_evaluated")
+        if str(rna_variant_calling_manifest_summary.get("status", "")) != "validated":
+            exploratory_reasons.append("legacy_rna_variant_calling_manifest_not_validated")
+        if bool(getattr(args, "allow_legacy_rna_variant_vcf", False)):
+            exploratory_reasons.append("legacy_rna_variant_vcf_allowed")
+        if bool(getattr(args, "allow_legacy_duplicate_vcf", False)):
+            exploratory_reasons.append("legacy_duplicate_vcf_allowed")
+    run_status = "complete_exploratory" if exploratory_reasons else "complete"
+    binding_eligible = not exploratory_reasons
 
     manifest_path = outdir / "run_manifest.json"
     required_outputs = [
@@ -1145,6 +1499,7 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
             outdir / "cryptic_peptide_selection_evidence.tsv",
             outdir / "cryptic_deferred_parent.tsv",
             outdir / "cryptic_peptide_deferred.tsv",
+            outdir / "cryptic_peptide_deferred_parent_map.tsv",
         ])
     if is_v11(policy_version):
         required_outputs.extend([
@@ -1160,6 +1515,16 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
             outdir / "junction_threshold_sensitivity.tsv",
             outdir / "junction_qc_stagewise.tsv",
             outdir / "junction_qc.manifest.json",
+        ])
+    if rna_variant_qc_enabled:
+        required_outputs.extend([
+            outdir / "cryptic_rna_variant_events.tsv",
+            outdir / "cryptic_parent_rna_variant_summary.tsv",
+            outdir / "cryptic_peptide_rna_variant_evidence.tsv",
+            outdir / "cryptic_rna_editing_excluded.tsv",
+            outdir / "rna_variant_threshold_sensitivity.tsv",
+            outdir / "rna_variant_qc_stagewise.tsv",
+            outdir / "rna_variant_qc.manifest.json",
         ])
     if manifest_path.exists():
         old = read_json(manifest_path)
@@ -1260,7 +1625,7 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         if parent_status == "core":
             parent_core_rows.append(parent_row)
             parent_fasta_rows.append((record_id, sequence))
-            if candidate_selection_mode == ALL_MODE and not junction_qc_enabled:
+            if candidate_selection_mode == ALL_MODE and not junction_qc_enabled and not rna_variant_qc_enabled:
                 candidate_peptide_rows.extend(
                     iter_parent_candidate_rows(args.sample, parent_row, mhc_i_lengths, mhc_ii_lengths)
                 )
@@ -1271,13 +1636,60 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
     phase_a_parent_orfcds_rows: list[dict[str, object]] = []
     phase_a_coordinate_summary: dict[str, object] = {"status": "not_evaluated"}
     junction_result: dict[str, object] | None = None
-    if junction_qc_enabled:
+    if junction_qc_enabled or rna_variant_qc_enabled:
         (
             phase_a_parent_coordinate_rows,
             phase_a_parent_orfcds_rows,
             _phase_a_peptide_footprints,
             phase_a_coordinate_summary,
-        ) = build_coordinate_sidecars(args, parent_core_rows, [], policy_version)
+        ) = build_coordinate_sidecars(args, parent_core_rows, [], policy_version, rna_variant_context)
+
+    if rna_variant_qc_enabled and rna_variant_context is not None:
+        summaries = {
+            str(row.get("parent_record_id", "")): row
+            for row in rna_variant_context.get("parent_summary_rows", [])  # type: ignore[union-attr]
+        }
+        filtered_core_rows: list[dict[str, object]] = []
+        filtered_fasta_rows: list[tuple[str, str]] = []
+        for row in parent_core_rows:
+            parent_id = str(row["parent_record_id"])
+            summary = summaries.get(parent_id, {})
+            rescue_status = str(summary.get("rna_variant_rescue_status", "rna_variant_not_evaluated"))
+            eligibility = str(summary.get("primary_core_eligibility", "provisional_coordinate_not_evaluable"))
+            row["rna_variant_status"] = rescue_status
+            row["rna_variant_rescue_status"] = rescue_status
+            if rescue_status == "reference_concordant":
+                row["rna_editing_qc_status"] = "not_applicable_reference_concordant"
+            elif str(rediportal_summary.get("status", "")) == "evaluated":
+                row["rna_editing_qc_status"] = (
+                    "known_rna_editing_excluded"
+                    if int(summary.get("known_editing_count", 0))
+                    else "no_known_editing_required_variant"
+                )
+            else:
+                row["rna_editing_qc_status"] = str(rediportal_summary.get("status", "editing_resource_not_evaluated"))
+            if eligibility == "primary_core_eligible":
+                filtered_core_rows.append(row)
+                filtered_fasta_rows.append((parent_id, str(row["parent_sequence"])))
+            else:
+                row["primary_core_status"] = eligibility
+                row["parent_qc_status"] = eligibility
+                reasons = [str(row.get("parent_qc_reasons", "")), rescue_status]
+                row["parent_qc_reasons"] = ";".join(token for token in reasons if token)
+                row["primary_core_reasons"] = rescue_status
+                parent_excluded_rows.append(row)
+        parent_core_rows = filtered_core_rows
+        parent_fasta_rows = filtered_fasta_rows
+
+        if candidate_selection_mode == ALL_MODE and not junction_qc_enabled:
+            candidate_peptide_rows = build_all_candidate_rows(
+                args.sample,
+                parent_core_rows,
+                mhc_i_lengths,
+                mhc_ii_lengths,
+            )
+
+    if junction_qc_enabled:
         if star_pair_validation is None:
             raise ValueError("Internal error: junction_qc star pair validation was not initialized")
         star_pair = star_pair_validation["row"]  # type: ignore[index]
@@ -1326,6 +1738,7 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
     peptide_selection_evidence_rows: list[dict[str, object]] = []
     deferred_parent_rows: list[dict[str, object]] = []
     deferred_peptide_rows: list[dict[str, object]] = []
+    deferred_peptide_parent_map_rows: list[dict[str, object]] = []
     selection_summary: dict[str, object] = {
         "mode": candidate_selection_mode,
         "ranking_policy": CRYPTIC_RANKING_POLICY if candidate_selection_mode == RANKED_CAP_MODE else "",
@@ -1342,6 +1755,7 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
             parent_rank_rows,
             peptide_selection_evidence_rows,
             deferred_parent_rows,
+            deferred_peptide_parent_map_rows,
             human_reference_summary,
             ranked_selection_summary,
         ) = build_ranked_candidate_rows(
@@ -1401,8 +1815,9 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         parent_core_rows,
         core_peptide_rows,
         policy_version,
+        rna_variant_context,
     )
-    if junction_qc_enabled:
+    if junction_qc_enabled or rna_variant_qc_enabled:
         parent_coordinate_rows = phase_a_parent_coordinate_rows
         parent_orfcds_rows = phase_a_parent_orfcds_rows
         coordinate_summary = {
@@ -1412,6 +1827,7 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
                 1 for row in peptide_footprint_rows if row["candidate_coordinate_status"] == "coordinate_evaluable"
             ),
         }
+    if junction_qc_enabled:
         peptide_junction_rows = annotate_peptide_junctions(
             sample=args.sample,
             peptide_parent_rows=core_peptide_rows,
@@ -1455,7 +1871,8 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
     if candidate_selection_mode == RANKED_CAP_MODE:
         parent_rank_fields = [
             "sample", "parent_record_id", "source_parent_id", "parent_rank",
-            "selection_status", "selection_reason",
+            "TPM_tumor", "TPM_ctrl", "log2FC", "nc_class", "parent_sequence_length",
+            "ranking_policy", "ranking_digest", "selection_status", "selection_reason",
         ]
         peptide_selection_fields = [
             "sample", "parent_record_id", "source_parent_id", "parent_rank",
@@ -1466,6 +1883,7 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         write_tsv(peptide_selection_evidence_rows, outdir / "cryptic_peptide_selection_evidence.tsv", peptide_selection_fields)
         write_tsv(deferred_parent_rows, outdir / "cryptic_deferred_parent.tsv", parent_rank_fields)
         write_tsv(deferred_peptide_rows, outdir / "cryptic_peptide_deferred.tsv", peptide_fields)
+        write_tsv(deferred_peptide_parent_map_rows, outdir / "cryptic_peptide_deferred_parent_map.tsv", peptide_fields)
     if is_v11(policy_version):
         parent_coordinate_fields = [
             "sample", "parent_record_id", "chromosome", "strand", "genomic_start0", "genomic_end0",
@@ -1564,6 +1982,163 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
             },
         )
 
+    rna_variant_stage_counts: list[dict[str, object]] = []
+    rna_variant_summary_payload: dict[str, object] = {"enabled": rna_variant_qc_enabled}
+    if rna_variant_qc_enabled and rna_variant_context is not None:
+        rna_event_rows = list(rna_variant_context.get("event_rows", []))  # type: ignore[arg-type]
+        rna_parent_summary_rows = list(rna_variant_context.get("parent_summary_rows", []))  # type: ignore[arg-type]
+        rna_parent_summary_by_id = {
+            str(row.get("parent_record_id", "")): row
+            for row in rna_parent_summary_rows
+        }
+        rna_variant_aa_positions = rna_variant_context.get("variant_aa_positions_by_parent", {})
+        if not isinstance(rna_variant_aa_positions, dict):
+            raise TypeError("rna_variant_context variant_aa_positions_by_parent must be a dict")
+        peptide_rna_variant_rows = annotate_peptide_rna_variant_evidence(
+            core_peptide_rows,
+            rna_parent_summary_by_id,
+            rna_variant_aa_positions,  # type: ignore[arg-type]
+        )
+        editing_excluded_rows = [
+            row for row in rna_event_rows
+            if str(row.get("rediportal_status", "")) == "known_rna_editing"
+        ]
+        threshold_pass_counts = rna_variant_context.get("threshold_parent_pass_counts", defaultdict(int))
+        if not isinstance(threshold_pass_counts, defaultdict):
+            threshold_pass_counts = defaultdict(int)
+        reference_concordant_count = sum(
+            1 for row in rna_parent_summary_rows
+            if str(row.get("rna_variant_rescue_status", "")) == "reference_concordant"
+        )
+        variant_required_count = sum(
+            1 for row in rna_parent_summary_rows
+            if int(row.get("required_variant_count", 0)) > 0
+        )
+        sensitivity_rows = []
+        for threshold in rna_variant_sensitivity_alt_reads:
+            variant_supported = int(threshold_pass_counts[int(threshold)])
+            sensitivity_rows.append({
+                "sample": args.sample,
+                "threshold_alt_reads": int(threshold),
+                "evaluated_parent_records": len(rna_parent_summary_rows),
+                "reference_concordant_parents": reference_concordant_count,
+                "variant_required_parents": variant_required_count,
+                "variant_supported_parents": variant_supported,
+                "primary_core_eligible_parents": reference_concordant_count + variant_supported,
+                "known_editing_parents": sum(1 for row in rna_parent_summary_rows if int(row.get("known_editing_count", 0)) > 0),
+                "editing_not_evaluated_parents": sum(
+                    1 for row in rna_parent_summary_rows if int(row.get("editing_not_evaluated_count", 0)) > 0
+                ),
+                "insufficient_support_parents": sum(
+                    1 for row in rna_parent_summary_rows if int(row.get("insufficient_support_count", 0)) > 0
+                ),
+                "complex_variant_parents": sum(1 for row in rna_parent_summary_rows if int(row.get("complex_variant_count", 0)) > 0),
+            })
+        parent_status_counts = defaultdict(int)
+        for row in rna_parent_summary_rows:
+            parent_status_counts[str(row.get("rna_variant_rescue_status", ""))] += 1
+        rna_variant_stage_counts = [
+            {"stage": "rna_variant_qc_enabled", "count": 1},
+            {"stage": "rna_vcf_events_loaded", "count": int(rna_variant_vcf_summary.get("events", 0))},
+            {"stage": "rediportal_records_loaded", "count": int(rediportal_summary.get("records", 0))},
+            {"stage": "rna_variant_event_rows", "count": len(rna_event_rows)},
+            {"stage": "rna_variant_parent_summary_rows", "count": len(rna_parent_summary_rows)},
+            {"stage": "rna_variant_peptide_evidence_rows", "count": len(peptide_rna_variant_rows)},
+            {"stage": "rna_editing_excluded_events", "count": len(editing_excluded_rows)},
+        ] + [
+            {"stage": f"parent_rna_variant_status_{status}", "count": count}
+            for status, count in sorted(parent_status_counts.items())
+        ]
+        write_tsv(rna_event_rows, outdir / "cryptic_rna_variant_events.tsv", RNA_VARIANT_EVENT_FIELDS)
+        write_tsv(
+            rna_parent_summary_rows,
+            outdir / "cryptic_parent_rna_variant_summary.tsv",
+            RNA_VARIANT_PARENT_SUMMARY_FIELDS,
+        )
+        write_tsv(
+            peptide_rna_variant_rows,
+            outdir / "cryptic_peptide_rna_variant_evidence.tsv",
+            RNA_VARIANT_PEPTIDE_EVIDENCE_FIELDS,
+        )
+        write_tsv(editing_excluded_rows, outdir / "cryptic_rna_editing_excluded.tsv", RNA_VARIANT_EVENT_FIELDS)
+        write_tsv(
+            sensitivity_rows,
+            outdir / "rna_variant_threshold_sensitivity.tsv",
+            [
+                "sample", "threshold_alt_reads", "evaluated_parent_records",
+                "reference_concordant_parents", "variant_required_parents",
+                "variant_supported_parents", "primary_core_eligible_parents",
+                "known_editing_parents", "editing_not_evaluated_parents", "insufficient_support_parents",
+                "complex_variant_parents",
+            ],
+        )
+        write_tsv(rna_variant_stage_counts, outdir / "rna_variant_qc_stagewise.tsv", ["stage", "count"])
+        rna_variant_outputs = [
+            outdir / "cryptic_rna_variant_events.tsv",
+            outdir / "cryptic_parent_rna_variant_summary.tsv",
+            outdir / "cryptic_peptide_rna_variant_evidence.tsv",
+            outdir / "cryptic_rna_editing_excluded.tsv",
+            outdir / "rna_variant_threshold_sensitivity.tsv",
+            outdir / "rna_variant_qc_stagewise.tsv",
+        ]
+        rna_variant_summary_payload = {
+            "enabled": True,
+            "policy_version": RNA_VARIANT_POLICY_VERSION,
+            "run_status": "complete_exploratory" if any(
+                reason in {
+                    "rediportal_not_evaluated",
+                    "legacy_rna_variant_calling_manifest_not_validated",
+                    "legacy_rna_variant_vcf_allowed",
+                    "legacy_duplicate_vcf_allowed",
+                }
+                for reason in exploratory_reasons
+            ) else "complete",
+            "exploratory_reasons": [
+                reason
+                for reason in exploratory_reasons
+                if reason in {
+                    "rediportal_not_evaluated",
+                    "legacy_rna_variant_calling_manifest_not_validated",
+                    "legacy_rna_variant_vcf_allowed",
+                    "legacy_duplicate_vcf_allowed",
+                }
+            ],
+            "binding_eligible": not any(
+                reason in {
+                    "rediportal_not_evaluated",
+                    "legacy_rna_variant_calling_manifest_not_validated",
+                    "legacy_rna_variant_vcf_allowed",
+                    "legacy_duplicate_vcf_allowed",
+                }
+                for reason in exploratory_reasons
+            ),
+            "sample": args.sample,
+            "vcf_summary": rna_variant_vcf_summary,
+            "calling_manifest_summary": rna_variant_calling_manifest_summary,
+            "rediportal_summary": rediportal_summary,
+            "thresholds": signature["rna_variant_editing_qc"],
+            "stage_counts": {row["stage"]: row["count"] for row in rna_variant_stage_counts},
+            "input_signature": {
+                "rna_variant_editing_qc": signature["rna_variant_editing_qc"],
+                "input_paths": {
+                    key: value
+                    for key, value in input_paths.items()
+                    if key in {
+                        "rna_variant_vcf",
+                        "rna_variant_calling_manifest",
+                        "rediportal_processed_table",
+                        "rna_variant_qc_script",
+                        "coordinate_utils",
+                    }
+                    or key == "rediportal_resource_manifest"
+                },
+            },
+            "output_signature": output_signature(rna_variant_outputs),
+        }
+        write_json(outdir / "rna_variant_qc.manifest.json", rna_variant_summary_payload)
+    else:
+        rna_variant_stage_counts = [{"stage": "rna_variant_qc_enabled", "count": 0}]
+
     stage_counts = [
         {"stage": "orf_filtered_parent_records", "count": len(parent_rows)},
         {"stage": "parent_core_records", "count": len(parent_core_rows)},
@@ -1605,6 +2180,22 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
                 "stage": "ranked_deferred_parent_records",
                 "count": int(selection_summary.get("deferred_parent_records", 0)),
             },
+            {
+                "stage": "ranked_deferred_peptide_parent_map_rows",
+                "count": int(selection_summary.get("deferred_peptide_parent_map_rows", 0)),
+            },
+            {
+                "stage": "ranked_materialization_complete",
+                "count": 1 if selection_summary.get("materialization_coverage") == "complete" else 0,
+            },
+            {
+                "stage": "ranked_exhausted_before_cap_hla_i",
+                "count": 1 if selection_summary.get("exhausted_before_cap_hla_i") else 0,
+            },
+            {
+                "stage": "ranked_exhausted_before_cap_hla_ii",
+                "count": 1 if selection_summary.get("exhausted_before_cap_hla_ii") else 0,
+            },
         ])
     if junction_qc_enabled and junction_result is not None:
         junction_counts = junction_result["stage_counts"]  # type: ignore[index]
@@ -1633,6 +2224,7 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         ])
     else:
         stage_counts.append({"stage": "junction_qc_enabled", "count": 0})
+    stage_counts.extend(rna_variant_stage_counts)
     if is_v11(policy_version):
         stage_counts.extend([
             {
@@ -1646,6 +2238,10 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
             {
                 "stage": "candidate_parents_reference_translation_pass",
                 "count": int(coordinate_summary.get("parent_reference_translation_pass", 0)),
+            },
+            {
+                "stage": "candidate_parents_reference_translation_rna_variant_rescued",
+                "count": int(coordinate_summary.get("parent_reference_translation_rna_variant_rescued", 0)),
             },
             {
                 "stage": "candidate_parents_reference_translation_mismatch",
@@ -1667,7 +2263,9 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         "sample": args.sample,
         "matched_control_sample": args.matched_control_sample,
         "policy_version": policy_version,
-        "run_status": "complete",
+        "run_status": run_status,
+        "exploratory_reasons": exploratory_reasons,
+        "binding_eligible": binding_eligible,
         "started_at": ts(),
         "finished_at": ts(),
         "code_commit": git_commit(),
@@ -1691,6 +2289,7 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
                 if key != "row"
             } if junction_qc_enabled else {},
         },
+        "rna_variant_editing_qc": rna_variant_summary_payload,
         "outputs": {path.name: str(path) for path in required_outputs},
         "output_signature": outputs_hash,
         "stage_counts": {row["stage"]: row["count"] for row in stage_counts},
@@ -1750,6 +2349,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--star-pair-inputs", default="")
     parser.add_argument("--primary-min-tumor-unique-reads", type=int, default=2)
     parser.add_argument("--junction-sensitivity-thresholds", default="1,2,3,5")
+    parser.add_argument("--rna-variant-editing-qc-enabled", action="store_true")
+    parser.add_argument("--rna-variant-qc-policy-version", default=RNA_VARIANT_POLICY_VERSION)
+    parser.add_argument("--rna-variant-vcf", default="")
+    parser.add_argument("--rna-variant-calling-manifest", default="")
+    parser.add_argument("--rediportal-processed-table", default="")
+    parser.add_argument("--rediportal-resource-manifest", default="")
+    parser.add_argument(
+        "--allow-missing-rediportal-resource",
+        action="store_true",
+        help="Allow exploratory RNA variant QC without a frozen REDIportal processed table.",
+    )
+    parser.add_argument(
+        "--allow-legacy-duplicate-vcf",
+        action="store_true",
+        help="Allow exploratory RNA variant QC on legacy VCFs with duplicate exact events.",
+    )
+    parser.add_argument(
+        "--allow-legacy-rna-variant-vcf",
+        action="store_true",
+        help="Allow exploratory RNA variant QC when formal rna.variant_calling.manifest.json is unavailable.",
+    )
+    parser.add_argument("--rna-variant-min-mapping-quality", type=float, default=RNA_VARIANT_MIN_MAPPING_QUALITY)
+    parser.add_argument("--rna-variant-min-base-quality", type=float, default=20.0)
+    parser.add_argument("--rna-variant-min-variant-qual", type=float, default=MIN_VARIANT_QUAL)
+    parser.add_argument("--rna-variant-min-total-depth", type=int, default=RNA_VARIANT_MIN_TOTAL_DEPTH)
+    parser.add_argument("--rna-variant-min-variant-allele-fraction", type=float, default=MIN_VARIANT_ALLELE_FRACTION)
+    parser.add_argument("--rna-variant-primary-min-alt-reads", type=int, default=RNA_VARIANT_PRIMARY_MIN_ALT_READS)
+    parser.add_argument("--rna-variant-sensitivity-alt-reads", default="2,3,5")
     return parser
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,6 +24,33 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
         self.root = Path(self.tempdir.name)
+
+    def _sha256_file(self, path: Path) -> str:
+        h = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _materialize_fake_08c_manifest(self, command: list[object]) -> None:
+        if len(command) < 2 or not str(command[1]).endswith("cryptic_external_normal_qc.py"):
+            return
+        outdir = Path(str(command[command.index("-o") + 1]))
+        outdir.mkdir(parents=True, exist_ok=True)
+        fasta = outdir / "cryptic_tumor_restricted_primary_core.fasta"
+        fasta.write_text(">pep1\nACDEFGHI\n")
+        identity = {
+            "path": str(fasta),
+            "exists": True,
+            "size": fasta.stat().st_size,
+            "sha256": self._sha256_file(fasta),
+        }
+        (outdir / "run_manifest.json").write_text(json.dumps({
+            "run_status": "complete",
+            "binding_eligible": True,
+            "binding_input_mode": "peptide-core",
+            "final_binding_fasta_identity": identity,
+        }))
 
     def test_packaged_configs_set_expected_binding_defaults(self) -> None:
         mutation = yaml.safe_load((CONFIG_DIR / "mutation_derived_configure.yaml").read_text())
@@ -50,6 +79,14 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.assertNotIn("NNalign", cryptic["others"]["binding_prediction_algorithms"])
         self.assertEqual(cryptic["others"]["binding_prediction_max_task_rows"], 5_000_000)
         self.assertFalse(cryptic["others"]["binding_prediction_force_large_samples"])
+        self.assertFalse(cryptic["rna_variant_editing_qc"]["enabled"])
+        self.assertEqual(
+            cryptic["rna_variant_editing_qc"]["policy_version"],
+            "cryptic_rna_variant_editing_qc_v1.0",
+        )
+        self.assertFalse(cryptic["rna_variant_editing_qc"]["allow_missing_rediportal_resource"])
+        self.assertFalse(cryptic["rna_variant_editing_qc"]["allow_legacy_rna_variant_vcf"])
+        self.assertFalse(cryptic["rna_variant_editing_qc"]["allow_legacy_duplicate_vcf"])
         external_normal = cryptic["external_normal_resources"]
         self.assertIn("manifest", external_normal)
         self.assertIn("smorf_match_index", external_normal)
@@ -268,6 +305,7 @@ class PipelineBackendContractTest(unittest.TestCase):
             }
         )
         with patch.object(cryptic, "_run_cmd") as run_cmd:
+            run_cmd.side_effect = lambda _tool, _sample, command, **_kwargs: self._materialize_fake_08c_manifest(command)
             cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, paths, tool)
         self.assertEqual(run_cmd.call_count, 4)
         core_command = run_cmd.call_args_list[2].args[2]
@@ -302,6 +340,7 @@ class PipelineBackendContractTest(unittest.TestCase):
             "coordinate_matching_enabled": False,
         }
         with patch.object(cryptic, "_run_cmd") as run_cmd:
+            run_cmd.side_effect = lambda _tool, _sample, command, **_kwargs: self._materialize_fake_08c_manifest(command)
             cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, paths, tool)
         self.assertEqual(run_cmd.call_count, 5)
         external_command = run_cmd.call_args_list[3].args[2]
@@ -328,6 +367,46 @@ class PipelineBackendContractTest(unittest.TestCase):
         config["others"].update(
             {
                 "cryptic_core_qc": True,
+                "cryptic_core_qc_policy_version": "cryptic_core_qc_v1.1",
+                "hla_binding_pred": False,
+                "allow_missing_human_reference": True,
+            }
+        )
+        config["rna_variant_editing_qc"] = {
+            "enabled": True,
+            "policy_version": "cryptic_rna_variant_editing_qc_v1.0",
+            "min_read_mapping_quality": 20,
+            "min_base_quality": 20,
+            "min_variant_qual": 30,
+            "min_total_depth": 10,
+            "min_variant_allele_fraction": 0.05,
+            "primary_min_alt_reads": 3,
+            "sensitivity_alt_reads": "2,3,5",
+        }
+        with patch.object(cryptic, "_run_cmd") as run_cmd:
+            run_cmd.side_effect = lambda _tool, _sample, command, **_kwargs: self._materialize_fake_08c_manifest(command)
+            cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, paths, tool)
+        core_command = run_cmd.call_args_list[2].args[2]
+        self.assertIn("--rna-variant-editing-qc-enabled", core_command)
+        self.assertIn("--rna-variant-vcf", core_command)
+        self.assertTrue(
+            any(str(value).endswith("/02-known/04k.bcf_consensus/rna.flt.vcf.gz") for value in core_command)
+        )
+        self.assertIn("--rna-variant-calling-manifest", core_command)
+        self.assertTrue(
+            any(str(value).endswith("/02-known/04k.bcf_consensus/rna.variant_calling.manifest.json") for value in core_command)
+        )
+        self.assertIn("--rediportal-processed-table", core_command)
+        self.assertIn("/fallback/rediportal_processed.tsv", core_command)
+        self.assertIn("--rediportal-resource-manifest", core_command)
+        self.assertIn("/fallback/rediportal_manifest.json", core_command)
+        self.assertIn("--rna-variant-primary-min-alt-reads", core_command)
+        self.assertIn("3", core_command)
+
+        config = self.cryptic_config()
+        config["others"].update(
+            {
+                "cryptic_core_qc": True,
                 "cryptic_external_normal_qc": True,
                 "binding_prediction_backend": "mimicneoai",
                 "allow_missing_human_reference": True,
@@ -342,6 +421,7 @@ class PipelineBackendContractTest(unittest.TestCase):
             "coordinate_matching_enabled": False,
         }
         with patch.object(cryptic, "_run_cmd") as run_cmd:
+            run_cmd.side_effect = lambda _tool, _sample, command, **_kwargs: self._materialize_fake_08c_manifest(command)
             cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, paths, tool)
         external_command = run_cmd.call_args_list[3].args[2]
         self.assertIn("/fallback/resource_manifest.json", external_command)
@@ -466,6 +546,10 @@ class PipelineBackendContractTest(unittest.TestCase):
                         "SMORF_PARENT_MAP": "/fallback/normal_smorf_peptide_parent_map.tsv.gz",
                         "HLA_LIGAND_MATCH_INDEX": "/fallback/normal_hla_peptide_match_index.tsv.gz",
                         "HLA_LIGAND_EVIDENCE": "/fallback/normal_hla_ligand_evidence.tsv.gz",
+                    },
+                    "RNA_VARIANT_EDITING_QC": {
+                        "REDIPORTAL_PROCESSED_TABLE": "/fallback/rediportal_processed.tsv",
+                        "REDIPORTAL_RESOURCE_MANIFEST": "/fallback/rediportal_manifest.json",
                     },
                 },
                 "common": {

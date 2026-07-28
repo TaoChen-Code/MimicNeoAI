@@ -25,6 +25,8 @@ This module:
 
 from __future__ import annotations
 import os
+import json
+import hashlib
 from pathlib import Path
 import yaml
 import argparse
@@ -38,6 +40,38 @@ from importlib.resources import files
 from mimicneoai.functions.binding_prediction import configured_predictor_cli_args
 from mimicneoai.functions.immunogenicity_runner import resolve_immunogenicity_python_bin
 from mimicneoai.functions.pipline_tools import raise_for_failed_samples, tools
+
+
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_peptide_core_binding_manifest(manifest_path: str, fasta_path: str) -> None:
+    if not os.path.isfile(manifest_path):
+        raise FileNotFoundError(f"peptide-core binding requires 08c manifest: {manifest_path}")
+    if not os.path.isfile(fasta_path):
+        raise FileNotFoundError(f"peptide-core binding FASTA does not exist: {fasta_path}")
+    with open(manifest_path) as handle:
+        manifest = json.load(handle)
+    if manifest.get("run_status") != "complete":
+        raise ValueError(f"08c manifest must have run_status=complete: {manifest_path}")
+    if manifest.get("binding_eligible") is not True:
+        raise ValueError(f"08c manifest must have binding_eligible=true before binding: {manifest_path}")
+    if manifest.get("binding_input_mode") != "peptide-core":
+        raise ValueError(f"08c manifest must have binding_input_mode=peptide-core: {manifest_path}")
+    identity = manifest.get("final_binding_fasta_identity", {})
+    if not isinstance(identity, dict):
+        raise ValueError(f"08c manifest missing final_binding_fasta_identity: {manifest_path}")
+    if os.path.abspath(str(identity.get("path", ""))) != os.path.abspath(fasta_path):
+        raise ValueError("08c final FASTA path does not match binding input")
+    if int(identity.get("size", -1)) != os.path.getsize(fasta_path):
+        raise ValueError("08c final FASTA size does not match manifest")
+    if str(identity.get("sha256", "")) != _sha256_file(fasta_path):
+        raise ValueError("08c final FASTA SHA256 does not match manifest")
 
 
 # ---------------------- Constants ----------------------
@@ -263,12 +297,18 @@ def _run_one_sample(
         CRYPTIC_CORE_TSV = os.path.join(DIR08B_CORE, "cryptic_peptide_core.tsv")
         CRYPTIC_CORE_PARENT_MAP = os.path.join(DIR08B_CORE, "cryptic_peptide_parent_map.tsv")
         CRYPTIC_DEFERRED_PEPTIDE = os.path.join(DIR08B_CORE, "cryptic_peptide_deferred.tsv")
+        CRYPTIC_DEFERRED_PARENT_MAP = os.path.join(DIR08B_CORE, "cryptic_peptide_deferred_parent_map.tsv")
+        CRYPTIC_PARENT_CORE_TSV = os.path.join(DIR08B_CORE, "cryptic_parent_core.tsv")
+        CRYPTIC_PARENT_RANKED = os.path.join(DIR08B_CORE, "cryptic_parent_ranked.tsv")
         CRYPTIC_CORE_MANIFEST = os.path.join(DIR08B_CORE, "run_manifest.json")
         CRYPTIC_CORE_FASTA = os.path.join(DIR08B_CORE, "cryptic_peptide_core.fasta")
         CRYPTIC_PARENT_COORDINATES = os.path.join(DIR08B_CORE, "cryptic_parent_coordinates.tsv")
         CRYPTIC_PARENT_ORFCDS = os.path.join(DIR08B_CORE, "cryptic_parent_orfcds.tsv")
         CRYPTIC_PEPTIDE_FOOTPRINT = os.path.join(DIR08B_CORE, "cryptic_peptide_genomic_footprint.tsv")
+        CRYPTIC_PARENT_JUNCTION_SUMMARY = os.path.join(DIR08B_CORE, "cryptic_parent_junction_summary.tsv")
+        CRYPTIC_PEPTIDE_JUNCTION_EVIDENCE = os.path.join(DIR08B_CORE, "cryptic_peptide_junction_evidence.tsv")
         CRYPTIC_PRIMARY_CORE_FASTA = os.path.join(DIR08C_EXTERNAL, "cryptic_tumor_restricted_primary_core.fasta")
+        CRYPTIC_EXTERNAL_MANIFEST = os.path.join(DIR08C_EXTERNAL, "run_manifest.json")
         ORF_BED12 = os.path.join(DIR07_ORF, "orf.noUnmap.noSup.bed12")
         ORF_BAM = os.path.join(DIR07_ORF, "orf2genome.bam")
         ORF_CDS_FASTA = os.path.join(DIR07_ORF, f"{tumor_sample}.SEPs.cds.fa")
@@ -446,6 +486,7 @@ def _run_one_sample(
 
         binding_pep_fasta = AESEPs_PEP
         binding_input_mode = "parent-fasta"
+        human_proteome_fasta = ""
         if do_orf_filter:
             _run_cmd(tool, sample, [
                 sys.executable, _script_path("08-orf_filter.py"),
@@ -522,6 +563,88 @@ def _run_one_sample(
                     "--junction-sensitivity-thresholds",
                     str(junction_qc.get("sensitivity_thresholds", "1,2,3,5")),
                 ])
+            rna_variant_qc = configure.get("rna_variant_editing_qc", {}) or {}
+            if not isinstance(rna_variant_qc, dict):
+                raise ValueError("rna_variant_editing_qc must be a mapping")
+            if bool(rna_variant_qc.get("enabled", False)):
+                rna_variant_vcf = str(rna_variant_qc.get("rna_variant_vcf", "") or "").strip()
+                if not rna_variant_vcf:
+                    rna_variant_vcf = os.path.join(DIR02_KNOWN, "04k.bcf_consensus", "rna.flt.vcf.gz")
+                rna_variant_calling_manifest = str(rna_variant_qc.get("rna_variant_calling_manifest", "") or "").strip()
+                if not rna_variant_calling_manifest:
+                    rna_variant_calling_manifest = os.path.join(
+                        os.path.dirname(rna_variant_vcf),
+                        "rna.variant_calling.manifest.json",
+                    )
+                rediportal_table = str(rna_variant_qc.get("rediportal_processed_table", "") or "").strip()
+                if not rediportal_table:
+                    rediportal_table = str(
+                        paths.get("database", {})
+                        .get("cryptic", {})
+                        .get("RNA_VARIANT_EDITING_QC", {})
+                        .get("REDIPORTAL_PROCESSED_TABLE", "")
+                        or ""
+                    ).strip()
+                rediportal_manifest = str(rna_variant_qc.get("rediportal_resource_manifest", "") or "").strip()
+                if not rediportal_manifest:
+                    rediportal_manifest = str(
+                        paths.get("database", {})
+                        .get("cryptic", {})
+                        .get("RNA_VARIANT_EDITING_QC", {})
+                        .get("REDIPORTAL_RESOURCE_MANIFEST", "")
+                        or ""
+                    ).strip()
+                allow_missing_rediportal = bool(rna_variant_qc.get("allow_missing_rediportal_resource", False))
+                allow_legacy_rna_variant_vcf = bool(rna_variant_qc.get("allow_legacy_rna_variant_vcf", False))
+                allow_legacy_duplicate_vcf = bool(rna_variant_qc.get("allow_legacy_duplicate_vcf", False))
+                if do_pvacbind and allow_missing_rediportal:
+                    raise ValueError(
+                        "allow_missing_rediportal_resource is exploratory only; "
+                        "disable hla_binding_pred or provide a formal REDIportal resource"
+                    )
+                if do_pvacbind and allow_legacy_rna_variant_vcf:
+                    raise ValueError(
+                        "allow_legacy_rna_variant_vcf is exploratory only; "
+                        "disable hla_binding_pred or provide a formal RNA variant calling manifest"
+                    )
+                if do_pvacbind and allow_legacy_duplicate_vcf:
+                    raise ValueError(
+                        "allow_legacy_duplicate_vcf is exploratory only; "
+                        "disable hla_binding_pred or provide a normalized duplicate-free RNA VCF"
+                    )
+                cmd.extend([
+                    "--rna-variant-editing-qc-enabled",
+                    "--rna-variant-qc-policy-version",
+                    str(rna_variant_qc.get("policy_version", "cryptic_rna_variant_editing_qc_v1.0")),
+                    "--rna-variant-vcf",
+                    rna_variant_vcf,
+                    "--rna-variant-calling-manifest",
+                    rna_variant_calling_manifest,
+                    "--rna-variant-min-mapping-quality",
+                    str(float(rna_variant_qc.get("min_read_mapping_quality", 20))),
+                    "--rna-variant-min-base-quality",
+                    str(float(rna_variant_qc.get("min_base_quality", 20))),
+                    "--rna-variant-min-variant-qual",
+                    str(float(rna_variant_qc.get("min_variant_qual", 30))),
+                    "--rna-variant-min-total-depth",
+                    str(int(rna_variant_qc.get("min_total_depth", 10))),
+                    "--rna-variant-min-variant-allele-fraction",
+                    str(float(rna_variant_qc.get("min_variant_allele_fraction", 0.05))),
+                    "--rna-variant-primary-min-alt-reads",
+                    str(int(rna_variant_qc.get("primary_min_alt_reads", 3))),
+                    "--rna-variant-sensitivity-alt-reads",
+                    str(rna_variant_qc.get("sensitivity_alt_reads", "2,3,5")),
+                ])
+                if rediportal_table:
+                    cmd.extend(["--rediportal-processed-table", rediportal_table])
+                if rediportal_manifest:
+                    cmd.extend(["--rediportal-resource-manifest", rediportal_manifest])
+                if allow_missing_rediportal:
+                    cmd.append("--allow-missing-rediportal-resource")
+                if allow_legacy_rna_variant_vcf:
+                    cmd.append("--allow-legacy-rna-variant-vcf")
+                if allow_legacy_duplicate_vcf:
+                    cmd.append("--allow-legacy-duplicate-vcf")
             _run_cmd(tool, sample, cmd, display_name="Cryptic Core QC")
             binding_pep_fasta = CRYPTIC_CORE_FASTA
             binding_input_mode = "peptide-core"
@@ -546,7 +669,9 @@ def _run_one_sample(
                 "--policy-version", external_policy_version,
                 "--cryptic-peptide-core", CRYPTIC_CORE_TSV,
                 "--cryptic-peptide-parent-map", CRYPTIC_CORE_PARENT_MAP,
+                "--cryptic-parent-core", CRYPTIC_PARENT_CORE_TSV,
                 "--upstream-manifest", CRYPTIC_CORE_MANIFEST,
+                "--human-proteome-fasta", human_proteome_fasta,
                 "-o", DIR08C_EXTERNAL,
                 "--resource-manifest", _external_normal_resource_value(configure, paths, "manifest", "MANIFEST"),
                 "--smorf-match-index", _external_normal_resource_value(
@@ -566,6 +691,8 @@ def _run_one_sample(
             if str(candidate_selection.get("mode", "all")).strip().lower() == "ranked_cap":
                 cmd.extend([
                     "--cryptic-peptide-deferred", CRYPTIC_DEFERRED_PEPTIDE,
+                    "--cryptic-peptide-deferred-parent-map", CRYPTIC_DEFERRED_PARENT_MAP,
+                    "--cryptic-parent-ranked", CRYPTIC_PARENT_RANKED,
                     "--max-hla-i-peptides", str(int(candidate_selection.get("max_hla_i_peptides"))),
                     "--max-hla-ii-peptides", str(int(candidate_selection.get("max_hla_ii_peptides"))),
                 ])
@@ -578,6 +705,8 @@ def _run_one_sample(
                     "--cryptic-parent-coordinates", CRYPTIC_PARENT_COORDINATES,
                     "--cryptic-parent-orfcds", CRYPTIC_PARENT_ORFCDS,
                     "--cryptic-peptide-genomic-footprint", CRYPTIC_PEPTIDE_FOOTPRINT,
+                    "--cryptic-parent-junction-summary", CRYPTIC_PARENT_JUNCTION_SUMMARY,
+                    "--cryptic-peptide-junction-evidence", CRYPTIC_PEPTIDE_JUNCTION_EVIDENCE,
                     "--coordinate-resource-manifest", _external_normal_resource_value(
                         configure, paths, "coordinate_manifest", "COORDINATE_MANIFEST"
                     ),
@@ -591,6 +720,8 @@ def _run_one_sample(
             _run_cmd(tool, sample, cmd, display_name="External normal resource QC")
             binding_pep_fasta = CRYPTIC_PRIMARY_CORE_FASTA
             binding_input_mode = "peptide-core"
+            if do_pvacbind:
+                _validate_peptide_core_binding_manifest(CRYPTIC_EXTERNAL_MANIFEST, binding_pep_fasta)
 
         # ---------- 09 HLA binding prediction ----------
         binding_output_dir = ""

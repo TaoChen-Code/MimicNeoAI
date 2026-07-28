@@ -131,6 +131,98 @@ class CrypticCoreQCTest(unittest.TestCase):
         )
         return star_pairs
 
+    def _write_rna_vcf(self, root: Path, rows: list[str], sample: str = "TEST") -> Path:
+        path = root / "rna.call.sorted.tags.vcf"
+        path.write_text(
+            "\n".join([
+                "##fileformat=VCFv4.2",
+                "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">",
+                "##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"Allelic depths\">",
+                "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Read depth\">",
+                "##INFO=<ID=MQ,Number=1,Type=Float,Description=\"Mapping quality\">",
+                f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{sample}.Aligned.out.sorted.bam",
+                *rows,
+            ]) + "\n"
+        )
+        return path
+
+    def _write_rna_calling_manifest(self, vcf: Path, sample: str = "TEST") -> Path:
+        root = vcf.parent
+        bam = root / f"{sample}.Aligned.out.sorted.bam"
+        ref = root / "GRCh38.fa"
+        bed = root / "lncRNA.exons.merged.bed"
+        evidence = root / "rna.variant_evidence.tsv"
+        for path in [bam, ref, bed, evidence]:
+            if not path.exists():
+                path.write_text(path.name + "\n")
+
+        def ident(path: Path) -> dict[str, object]:
+            return {
+                "path": str(path),
+                "exists": True,
+                "size": path.stat().st_size,
+                "sha256": self._sha256_file(path),
+            }
+
+        manifest = root / "rna.variant_calling.manifest.json"
+        manifest.write_text(json.dumps({
+            "policy_version": "cryptic_known_branch_rna_variant_calling_v1.0",
+            "sample": sample,
+            "run_status": "complete",
+            "input_signature": {
+                "policy_version": "cryptic_known_branch_rna_variant_calling_v1.0",
+                "sample": sample,
+                "sample_bam": ident(bam),
+                "reference_fasta": ident(ref),
+                "exon_bed": ident(bed),
+                "parameters": {
+                    "mpileup_flag_filter": "0xF04",
+                    "read_mapq_min": 20,
+                    "base_quality_min": 20,
+                    "depth_cap": 100000,
+                    "variant_qual_min": 30,
+                    "total_depth_min_ad_derived": 10,
+                    "variant_mq_min": 20,
+                    "vaf_min_ad_derived": 0.05,
+                    "alt_reads_min": 3,
+                    "normalization": "bcftools norm -f REF -m -any -d exact",
+                },
+                "bcftools_version": "bcftools 1.20",
+                "calling_script_sha256": "fixture_script",
+            },
+            "output_signature": {
+                "raw_bcf": ident(bam),
+                "call_vcf_sorted": ident(vcf),
+                "norm_split_dedup_vcf": ident(vcf),
+                "filtered_vcf": ident(vcf),
+                "variant_evidence_tsv": ident(evidence),
+            },
+            "filter_stats": {"normalized_records": 1, "filtered_records": 1},
+        }))
+        return manifest
+
+    def _write_rediportal(self, root: Path, rows: list[str] | None = None) -> Path:
+        path = root / "rediportal.processed.tsv"
+        path.write_text(
+            "chrom\tpos_1based\tref\talt\tediting_type\tresource_record_id\tsource_release\n"
+            + "\n".join(rows or [])
+            + ("\n" if rows else "")
+        )
+        return path
+
+    def _write_rediportal_manifest(self, path: Path) -> Path:
+        manifest = path.with_suffix(".manifest.json")
+        manifest.write_text(json.dumps({
+            "policy_version": "rediportal_processed_resource_v1.0",
+            "reference_build": "GRCh38",
+            "processed_table_sha256": self._sha256_file(path),
+            "processed_table_size_bytes": path.stat().st_size,
+            "records": len(path.read_text().splitlines()) - 1,
+            "normalization_rules": "fixture_exact_forward_allele",
+            "processing_script_sha256": "fixture",
+        }))
+        return manifest
+
     def _write_inputs(self, root: Path) -> dict[str, Path]:
         annot = pd.DataFrame(
             [
@@ -441,14 +533,60 @@ class CrypticCoreQCTest(unittest.TestCase):
             selected = parent_map[parent_map["peptide_record_id"].fillna("").astype(str).ne("")]
             self.assertEqual(selected[["mhc_class", "peptide"]].drop_duplicates().shape[0], 2)
             stage = pd.read_csv(outdir / "stagewise_qc.tsv", sep="\t").set_index("stage")["count"].to_dict()
-            self.assertGreater(stage["peptide_deferred_window_rows"], 0)
+            self.assertEqual(manifest["candidate_selection"]["materialization_policy"], "initial_cap_plus_ranked_parent_stream")
+            self.assertFalse(manifest["candidate_selection"]["evaluated_deferred_peptide_universe_complete"])
+            self.assertIn("unmaterialized_deferred_parent_records", manifest["candidate_selection"])
             self.assertEqual(
                 int(stage["peptide_excluded_window_rows"]),
                 int(parent_map["human_reference_peptide_status"].eq("human_reference_peptide_match").sum()),
             )
             deferred = pd.read_csv(outdir / "cryptic_peptide_deferred.tsv", sep="\t")
-            self.assertTrue(deferred["peptide_core_status"].eq("deferred").all())
+            if not deferred.empty:
+                self.assertTrue(deferred["peptide_core_status"].eq("deferred").all())
             self.assertNotIn("not_selected_due_to_analysis_cap", set(parent_map["peptide_qc_reasons"].dropna().astype(str)))
+
+    def test_ranked_cap_repeated_parent_map_is_bound_to_materialized_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent_count = 2000
+            annot_rows = []
+            orf_ids = []
+            fasta_path = root / "orf_filtered.fa"
+            with fasta_path.open("w") as fasta:
+                for idx in range(parent_count):
+                    transcript = f"TX_REPEAT_{idx}"
+                    parent_id = f"{transcript}.p1"
+                    annot_rows.append({
+                        "Name": transcript,
+                        "nc_class": "noncoding",
+                        "is_aberrant": True,
+                        "TPM_tumor": 20.0 - (idx * 0.0001),
+                        "TPM_ctrl": 0.0,
+                        "log2FC": 6.0,
+                    })
+                    orf_ids.append(parent_id)
+                    fasta.write(f">{parent_id}\nACDEFGHIKLMNPQRSTVWY\n")
+            annot_path = root / "sample.aberrant_noncoding.annot.csv"
+            pd.DataFrame(annot_rows).to_csv(annot_path, index=False)
+            orf_final_path = root / "orf_final.csv"
+            pd.DataFrame({"TranscriptID": orf_ids}).to_csv(orf_final_path, index=False)
+            human_path = root / "human.fa"
+            human_path.write_text(">HUMAN\nYYYYYYYYYYYYYYYYYYYY\n")
+            paths = {"annot": annot_path, "orf_final": orf_final_path, "fasta": fasta_path, "human": human_path}
+            outdir = root / "ranked_repeat"
+            args = self._args(paths, outdir)
+            args.candidate_selection_mode = "ranked_cap"
+            args.max_hla_i_peptides = 1
+            args.max_hla_ii_peptides = 1
+
+            manifest = build_core(args)
+
+            parent_map = pd.read_csv(outdir / "cryptic_peptide_parent_map.tsv", sep="\t")
+            self.assertLessEqual(len(parent_map), 4)
+            self.assertEqual(manifest["candidate_selection"]["selected_hla_i"], 1)
+            self.assertEqual(manifest["candidate_selection"]["selected_hla_ii"], 1)
+            self.assertLessEqual(manifest["candidate_selection"]["materialized_parent_records"], 2)
+            self.assertGreater(manifest["candidate_selection"]["unmaterialized_deferred_parent_records"], 1900)
 
     def test_human_reference_keeps_standard_windows_around_u(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -576,7 +714,7 @@ class CrypticCoreQCTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_core(args)
 
-    def test_v11_junction_qc_rejects_ranked_cap_until_refill_qc_is_implemented(self) -> None:
+    def test_v11_junction_qc_allows_ranked_cap_with_ranked_parent_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             paths = self._write_inputs(root)
@@ -599,8 +737,18 @@ class CrypticCoreQCTest(unittest.TestCase):
             args.candidate_selection_mode = "ranked_cap"
             args.max_hla_i_peptides = 1
             args.max_hla_ii_peptides = 1
-            with self.assertRaisesRegex(ValueError, "ranked_cap with junction_qc is disabled"):
-                build_core(args)
+            manifest = build_core(args)
+
+            self.assertEqual(manifest["run_status"], "complete")
+            self.assertFalse(manifest["candidate_selection"]["evaluated_deferred_peptide_universe_complete"])
+            self.assertEqual(manifest["candidate_selection"]["materialization_coverage"], "selected_and_boundary_candidates")
+            self.assertEqual(manifest["stage_counts"]["junction_qc_enabled"], 1)
+            parent_ranked = pd.read_csv(root / "core_v11_ranked_junction" / "cryptic_parent_ranked.tsv", sep="\t")
+            self.assertIn("ranking_digest", parent_ranked.columns)
+            sensitivity_header = (
+                root / "core_v11_ranked_junction" / "junction_threshold_sensitivity.tsv"
+            ).read_text().splitlines()[0].split("\t")
+            self.assertEqual(len(sensitivity_header), len(set(sensitivity_header)))
 
     def test_v11_reference_translation_mismatch_is_not_coordinate_evaluable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -635,6 +783,119 @@ class CrypticCoreQCTest(unittest.TestCase):
             self.assertIn("reference_translation_mismatch", row["coordinate_mapping_reasons"])
             self.assertEqual(row["rna_variant_coordinate_status"], "RNA_variant_aware_not_evaluated")
             self.assertEqual(manifest["stage_counts"]["candidate_parents_reference_translation_mismatch"], 1)
+
+    def test_v11_rna_variant_rescue_restores_reference_mismatch_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = self._write_inputs(root)
+            coordinate_inputs = self._write_coordinate_inputs(
+                root,
+                {
+                    "ENST_NC.1.p1": "ACDEFGHIKLMNP",
+                    "TRINITY_X|NOVEL|.|..p1": "KLMNPQRSTVWY",
+                    "ENST_DUP.1.p1": "ACDEFGHIKLMNP",
+                },
+            )
+            ref = Path(coordinate_inputs["ref"])
+            text = ref.read_text()
+            ref.write_text(text.replace("GCT", "ACT", 1))
+            import pysam
+            pysam.faidx(str(ref))
+            rna_vcf = self._write_rna_vcf(
+                root,
+                ["chr1\t101\t.\tA\tG\t35\tPASS\tMQ=60\tGT:AD:DP\t0/1:7,3:10"],
+            )
+            rna_calling_manifest = self._write_rna_calling_manifest(rna_vcf)
+            rediportal = self._write_rediportal(root)
+            rediportal_manifest = self._write_rediportal_manifest(rediportal)
+
+            outdir = root / "core_v11_rna_rescue"
+            args = self._args(paths, outdir)
+            args.policy_version = "cryptic_core_qc_v1.1"
+            args.orf_bed12 = str(coordinate_inputs["bed12"])
+            args.orf_bam = str(coordinate_inputs["bam"])
+            args.orf_cds_fasta = str(coordinate_inputs["cds"])
+            args.reference_genome_fasta = str(ref)
+            args.rna_variant_editing_qc_enabled = True
+            args.rna_variant_qc_policy_version = "cryptic_rna_variant_editing_qc_v1.0"
+            args.rna_variant_vcf = str(rna_vcf)
+            args.rna_variant_calling_manifest = str(rna_calling_manifest)
+            args.rediportal_processed_table = str(rediportal)
+            args.rediportal_resource_manifest = str(rediportal_manifest)
+            args.allow_missing_rediportal_resource = False
+            args.allow_legacy_rna_variant_vcf = False
+            args.allow_legacy_duplicate_vcf = False
+            args.rna_variant_min_mapping_quality = 20.0
+            args.rna_variant_min_base_quality = 20.0
+            args.rna_variant_min_variant_qual = 30.0
+            args.rna_variant_min_total_depth = 10
+            args.rna_variant_min_variant_allele_fraction = 0.05
+            args.rna_variant_primary_min_alt_reads = 3
+            args.rna_variant_sensitivity_alt_reads = "2,3,5"
+
+            manifest = build_core(args)
+
+            parent_coords = pd.read_csv(outdir / "cryptic_parent_coordinates.tsv", sep="\t")
+            row = parent_coords.set_index("parent_record_id").loc["ENST_NC.1.p1"]
+            self.assertEqual(row["reference_genomic_translation_status"], "rna_variant_rescued")
+            self.assertEqual(row["rna_variant_coordinate_status"], "rna_variant_rescued")
+            core_parents = pd.read_csv(outdir / "cryptic_parent_core.tsv", sep="\t")
+            self.assertIn("ENST_NC.1.p1", set(core_parents["parent_record_id"]))
+            parent_summary = pd.read_csv(outdir / "cryptic_parent_rna_variant_summary.tsv", sep="\t")
+            self.assertEqual(
+                parent_summary.set_index("parent_record_id").loc["ENST_NC.1.p1", "rna_variant_rescue_status"],
+                "rna_variant_rescued",
+            )
+            peptide_evidence = pd.read_csv(outdir / "cryptic_peptide_rna_variant_evidence.tsv", sep="\t")
+            self.assertIn("YES", set(peptide_evidence["overlaps_variant_aa"].astype(str)))
+            self.assertEqual(manifest["stage_counts"]["candidate_parents_reference_translation_rna_variant_rescued"], 1)
+            self.assertIn("rna_variant_qc.manifest.json", manifest["output_signature"])
+
+            exploratory_outdir = root / "core_v11_rna_rescue_exploratory"
+            exploratory_args = self._args(paths, exploratory_outdir)
+            exploratory_args.policy_version = "cryptic_core_qc_v1.1"
+            exploratory_args.orf_bed12 = str(coordinate_inputs["bed12"])
+            exploratory_args.orf_bam = str(coordinate_inputs["bam"])
+            exploratory_args.orf_cds_fasta = str(coordinate_inputs["cds"])
+            exploratory_args.reference_genome_fasta = str(ref)
+            exploratory_args.rna_variant_editing_qc_enabled = True
+            exploratory_args.rna_variant_qc_policy_version = "cryptic_rna_variant_editing_qc_v1.0"
+            exploratory_args.rna_variant_vcf = str(rna_vcf)
+            exploratory_args.rna_variant_calling_manifest = str(root / "missing.variant_calling.manifest.json")
+            exploratory_args.rediportal_processed_table = ""
+            exploratory_args.rediportal_resource_manifest = ""
+            exploratory_args.allow_missing_rediportal_resource = True
+            exploratory_args.allow_legacy_rna_variant_vcf = True
+            exploratory_args.allow_legacy_duplicate_vcf = False
+            exploratory_args.rna_variant_min_mapping_quality = 20.0
+            exploratory_args.rna_variant_min_base_quality = 20.0
+            exploratory_args.rna_variant_min_variant_qual = 30.0
+            exploratory_args.rna_variant_min_total_depth = 10
+            exploratory_args.rna_variant_min_variant_allele_fraction = 0.05
+            exploratory_args.rna_variant_primary_min_alt_reads = 3
+            exploratory_args.rna_variant_sensitivity_alt_reads = "2,3,5"
+            exploratory_manifest = build_core(exploratory_args)
+            self.assertEqual(exploratory_manifest["run_status"], "complete_exploratory")
+            self.assertFalse(exploratory_manifest["binding_eligible"])
+            exploratory_summary = pd.read_csv(
+                exploratory_outdir / "cryptic_parent_rna_variant_summary.tsv",
+                sep="\t",
+            )
+            self.assertEqual(
+                exploratory_summary.set_index("parent_record_id").loc[
+                    "ENST_NC.1.p1", "rna_variant_rescue_status"
+                ],
+                "rna_variant_supported_editing_not_evaluated",
+            )
+            exploratory_core = pd.read_csv(exploratory_outdir / "cryptic_parent_core.tsv", sep="\t")
+            self.assertNotIn("ENST_NC.1.p1", set(exploratory_core["parent_record_id"]))
+
+            saved_path = outdir / "run_manifest.json"
+            saved = json.loads(saved_path.read_text())
+            saved["input_signature"]["rna_variant_editing_qc"]["rna_variant_qc_sha256"] = "changed"
+            saved_path.write_text(json.dumps(saved, indent=2))
+            with self.assertRaises(ValueError):
+                build_core(args)
 
 
 if __name__ == "__main__":

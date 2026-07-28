@@ -329,7 +329,7 @@ def mapping_primary_status(parent: dict[str, Any], min_mapq: int) -> tuple[str, 
         return PROVISIONAL_TRANSLATION, ["reference_translation_mismatch"]
     if coord_status != "coordinate_evaluable":
         return PROVISIONAL_COORDINATE, reasons or [coord_status or "coordinate_not_evaluable"]
-    if ref_status != "pass":
+    if ref_status not in {"pass", "rna_variant_rescued"}:
         return PROVISIONAL_COORDINATE, [ref_status or "reference_translation_not_evaluable"]
     return PRIMARY_PASS, []
 
@@ -450,7 +450,7 @@ def evaluate_parent_junctions(
             "primary_core_status": primary_status,
             "junction_qc_status": junction_status,
             "junction_qc_reasons": compact(parent_reasons),
-            "rna_variant_rescue_status": "not_evaluated",
+            "rna_variant_rescue_status": parent.get("rna_variant_coordinate_status", "not_evaluated"),
             "required_junction_count": required_count,
             "tumor_min_required_unique_reads": min(tumor_unique_values) if tumor_unique_values else "",
             "tumor_all_required_junctions_unique_ge1": required_count == 0 or all(v >= 1 for v in tumor_unique_values),

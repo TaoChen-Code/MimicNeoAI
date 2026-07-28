@@ -22,8 +22,9 @@ args:
   trinity_mem: "100G"
 
 # Pre-binding candidate selection for Cryptic Core.
-# all keeps the complete Core. ranked_cap ranks parent ORFs before peptide
-# tiling and keeps up to the requested unique HLA-I/HLA-II peptides.
+# all keeps the complete Core. ranked_cap ranks QC-passed parent ORFs and
+# keeps up to the requested unique HLA-I/HLA-II peptides; cap-external
+# candidates are deferred/not_selected, not QC failures or binding negatives.
 candidate_selection:
   mode: "all"                    # all | ranked_cap
   max_hla_i_peptides: null       # e.g. 400000 for Fig. 5 ranked runs
@@ -35,6 +36,26 @@ junction_qc:
   star_pair_inputs: ""
   primary_min_tumor_unique_reads: 2
   sensitivity_thresholds: "1,2,3,5"
+
+rna_variant_editing_qc:
+  enabled: false
+  policy_version: "cryptic_rna_variant_editing_qc_v1.0"
+  rna_variant_vcf: ""                  # Defaults to 02-known/04k.bcf_consensus/rna.flt.vcf.gz when enabled.
+  rna_variant_calling_manifest: ""     # Defaults to the VCF directory's rna.variant_calling.manifest.json.
+  # Optional exploratory RNA-supported branch only. The current strict main
+  # analysis keeps this disabled and does not require REDIportal resources.
+  rediportal_processed_table: ""
+  rediportal_resource_manifest: ""
+  allow_missing_rediportal_resource: false
+  allow_legacy_rna_variant_vcf: false
+  allow_legacy_duplicate_vcf: false
+  min_read_mapping_quality: 20
+  min_base_quality: 20
+  min_variant_qual: 30
+  min_total_depth: 10
+  min_variant_allele_fraction: 0.05
+  primary_min_alt_reads: 3
+  sensitivity_alt_reads: "2,3,5"
 
 others:
   QC: true
