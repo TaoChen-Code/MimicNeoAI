@@ -69,6 +69,9 @@ EXACT_EXCLUDED_STATUS = "external_normal_exact_match_excluded"
 COORDINATE_EXCLUDED_STATUS = "external_normal_coordinate_frame_excluded"
 BOTH_EXCLUDED_STATUS = "external_normal_exact_and_coordinate_frame_excluded"
 NOT_EVALUATED_STATUS = "external_normal_resources_not_evaluated"
+HUMAN_REFERENCE_MATCH = "human_reference_peptide_match"
+HUMAN_REFERENCE_NOT_DETECTED = "human_reference_peptide_not_detected"
+HUMAN_REFERENCE_NOT_EVALUATED = "not_evaluated"
 STANDARD_AA = set("ACDEFGHIKLMNPQRSTVWY")
 ALLOWED_LENGTHS = {
     "HLA-I": {8, 9, 10, 11},
@@ -249,7 +252,7 @@ def make_refill_parent_map_row(
         "peptide_sequence_sha256": sha256_text(peptide),
         "peptide_core_status": "core",
         "peptide_qc_reasons": "",
-        "human_reference_peptide_status": "not_evaluated",
+        "human_reference_peptide_status": HUMAN_REFERENCE_NOT_DETECTED,
         "normal_hla_presentation_status": "normal_hla_atlas_not_evaluated",
         "normal_translation_status": "normal_translation_not_evaluable",
         "external_normal_status": "external_normal_not_evaluated",
@@ -1095,6 +1098,13 @@ def evaluate_coordinate_evidence(
 def base_output_row(row: dict[str, object], resource_freeze_version: str) -> dict[str, object]:
     out = dict(row)
     out["hla_class_normalized"] = normalize_hla_class(row.get("mhc_class", ""))
+    peptide = str(out.get("peptide", ""))
+    if peptide and not str(out.get("peptide_sequence_sha256", "")).strip():
+        out["peptide_sequence_sha256"] = sha256_text(peptide)
+    if not str(out.get("peptide_core_status", "")).strip():
+        out["peptide_core_status"] = "core"
+    if "peptide_qc_reasons" not in out:
+        out["peptide_qc_reasons"] = ""
     out["normal_smorf_coordinate_status"] = COORDINATE_STATUS
     out["resource_freeze_version"] = resource_freeze_version
     return out
@@ -1170,6 +1180,7 @@ FINAL_SIDECAR_FIELDS = [
     "mhc_class",
     "peptide",
     "peptide_length",
+    "peptide_start",
     "parent_record_id",
     "source_parent_id",
     "parent_sequence",
@@ -1205,6 +1216,24 @@ FINAL_SIDECAR_FIELDS = [
 
 def row_key(row: dict[str, object]) -> tuple[str, str]:
     return (normalize_hla_class(row.get("mhc_class", "")), str(row.get("peptide", "")).upper())
+
+
+def occurrence_key(row: dict[str, object]) -> tuple[str, str, str, str, str, str]:
+    return (
+        str(row.get("peptide_record_id", "")),
+        str(row.get("parent_record_id", "")),
+        normalize_hla_class(row.get("mhc_class", "")),
+        str(row.get("peptide", "")).upper(),
+        str(row.get("peptide_start", "")),
+        str(row.get("peptide_length", "")),
+    )
+
+
+def resolved_human_reference_status(source: dict[str, object], retained: dict[str, object]) -> str:
+    status = str(source.get("human_reference_peptide_status", "")).strip()
+    if not status or status == HUMAN_REFERENCE_NOT_EVALUATED:
+        status = str(retained.get("human_reference_peptide_status", "")).strip()
+    return status
 
 
 def build_final_parent_sidecar(
@@ -1313,6 +1342,7 @@ def build_final_parent_sidecar(
             "mhc_class": source.get("mhc_class", retained.get("mhc_class", "")),
             "peptide": source.get("peptide", retained.get("peptide", "")),
             "peptide_length": source.get("peptide_length", retained.get("peptide_length", "")),
+            "peptide_start": source.get("peptide_start", retained.get("peptide_start", "")),
             "parent_record_id": parent_id,
             "source_parent_id": source.get("source_parent_id", ""),
             "parent_sequence": parent.get("parent_sequence", ""),
@@ -1332,7 +1362,7 @@ def build_final_parent_sidecar(
             "tumor_junction_support": parent_junction.get("tumor_min_required_unique_reads", ""),
             "matched_normal_junction_annotation": normal_junction_annotation,
             "peptide_crosses_junction": peptide_junction_row.get("peptide_crosses_junction", ""),
-            "human_reference_peptide_status": source.get("human_reference_peptide_status", retained.get("human_reference_peptide_status", "")),
+            "human_reference_peptide_status": resolved_human_reference_status(source, retained),
             "external_normal_status": retained.get("external_normal_status", ""),
             "normal_translation_status": retained.get("normal_translation_status", ""),
             "normal_smorf_coordinate_status": retained.get("normal_smorf_coordinate_status", ""),
@@ -1449,9 +1479,11 @@ def build_parent_map_for_target_keys(
     peptide_id_by_key: dict[tuple[str, str], str],
     mhc_i_lengths: Iterable[int],
     mhc_ii_lengths: Iterable[int],
+    metadata_by_key: Optional[dict[tuple[str, str], dict[str, object]]] = None,
 ) -> list[dict[str, object]]:
     if not peptide_id_by_key:
         return []
+    metadata_by_key = metadata_by_key or {}
     rows: list[dict[str, object]] = []
     for parent in ranked_parents:
         sequence = str(parent.get("parent_sequence", "")).upper()
@@ -1461,8 +1493,88 @@ def build_parent_map_for_target_keys(
                 peptide_id = peptide_id_by_key.get(key)
                 if not peptide_id:
                     continue
-                rows.append(make_refill_parent_map_row(sample, parent, mhc_class, start, length, peptide, peptide_id))
+                row = make_refill_parent_map_row(sample, parent, mhc_class, start, length, peptide, peptide_id)
+                metadata = metadata_by_key.get(key, {})
+                for field in [
+                    "peptide_core_status",
+                    "peptide_qc_reasons",
+                    "human_reference_peptide_status",
+                    "normal_hla_presentation_status",
+                    "normal_translation_status",
+                    "external_normal_status",
+                    "prebinding_selection_origin",
+                ]:
+                    if field in metadata:
+                        row[field] = metadata[field]
+                rows.append(row)
     return rows
+
+
+def validate_final_core_contract(
+    retained_rows: list[dict[str, object]],
+    final_sidecar_rows: list[dict[str, object]],
+    footprint_rows: list[dict[str, object]],
+    junction_rows: list[dict[str, object]],
+    mhc_i_lengths: Iterable[int],
+    mhc_ii_lengths: Iterable[int],
+    *,
+    human_reference_evaluated: bool,
+    formal_v11_ranked: bool,
+) -> None:
+    allowed_lengths = {
+        "HLA-I": {int(value) for value in mhc_i_lengths},
+        "HLA-II": {int(value) for value in mhc_ii_lengths},
+    }
+    for row in retained_rows:
+        peptide_id = str(row.get("peptide_record_id", "")).strip()
+        peptide = str(row.get("peptide", "")).strip().upper()
+        if not peptide_id:
+            raise AssertionError("final Core row missing peptide_record_id")
+        if str(row.get("sample", "")).strip() == "":
+            raise AssertionError(f"final Core row {peptide_id} missing sample")
+        if str(row.get("peptide_core_status", "")) != "core":
+            raise AssertionError(f"final Core row {peptide_id} has non-core peptide_core_status")
+        if str(row.get("peptide_qc_reasons", "")).strip():
+            raise AssertionError(f"final Core row {peptide_id} has non-empty peptide_qc_reasons")
+        if str(row.get("peptide_sequence_sha256", "")) != sha256_text(peptide):
+            raise AssertionError(f"final Core row {peptide_id} peptide_sequence_sha256 does not match peptide")
+        hla_class = normalize_hla_class(row.get("mhc_class", ""))
+        peptide_length = parse_int(row.get("peptide_length", ""), f"final Core peptide_length for {peptide_id}")
+        if peptide_length != len(peptide):
+            raise AssertionError(f"final Core row {peptide_id} peptide_length does not match peptide")
+        if peptide_length not in allowed_lengths.get(hla_class, set()):
+            raise AssertionError(
+                f"final Core row {peptide_id} has {hla_class} length outside configured lengths: {peptide_length}"
+            )
+        if (
+            human_reference_evaluated
+            and str(row.get("human_reference_peptide_status", "")) != HUMAN_REFERENCE_NOT_DETECTED
+        ):
+            raise AssertionError(f"final Core row {peptide_id} has invalid human-reference pass status")
+
+    if not formal_v11_ranked or not retained_rows:
+        return
+
+    sidecar_ids = {str(row.get("peptide_record_id", "")) for row in final_sidecar_rows}
+    retained_ids = {str(row.get("peptide_record_id", "")) for row in retained_rows}
+    missing_sidecar_ids = sorted(retained_ids - sidecar_ids)
+    if missing_sidecar_ids:
+        raise AssertionError(
+            "final sidecar missing retained peptide parent mappings: " + ", ".join(missing_sidecar_ids[:5])
+        )
+    footprint_keys = {occurrence_key(row) for row in footprint_rows}
+    junction_keys = {occurrence_key(row) for row in junction_rows}
+    for idx, row in enumerate(final_sidecar_rows, start=1):
+        key = occurrence_key(row)
+        if key not in footprint_keys:
+            raise AssertionError(f"final sidecar row {idx} missing matching genomic footprint evidence")
+        if key not in junction_keys:
+            raise AssertionError(f"final sidecar row {idx} missing matching junction evidence")
+        if (
+            human_reference_evaluated
+            and str(row.get("human_reference_peptide_status", "")) != HUMAN_REFERENCE_NOT_DETECTED
+        ):
+            raise AssertionError(f"final sidecar row {idx} has invalid human-reference pass status")
 
 
 def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
@@ -1729,12 +1841,17 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
                 str(row.get("peptide_record_id", ""))
                 for row in core.to_dict("records")
             }
+            core_metadata_by_key = {
+                (normalize_hla_class(row.get("mhc_class", "")), str(row.get("peptide", "")).upper()): row
+                for row in core.to_dict("records")
+            }
             completed_parent_map_rows = build_parent_map_for_target_keys(
                 args.sample,
                 ranked_parents_for_completion,
                 core_peptide_id_by_key,
                 refill_mhc_i_lengths,
                 refill_mhc_ii_lengths,
+                core_metadata_by_key,
             )
             if completed_parent_map_rows:
                 completed_core_parent_map = pd.DataFrame(completed_parent_map_rows)
@@ -1981,11 +2098,14 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
                     row = base_output_row(first, freeze_version)
                     row["peptide_record_id"] = peptide_id
                     row["prebinding_selection_origin"] = "deferred_refill"
-                    row["human_reference_peptide_status"] = "human_reference_peptide_match"
+                    row["peptide_core_status"] = "excluded"
+                    row["peptide_qc_reasons"] = "human_reference_peptide_match"
+                    row["human_reference_peptide_status"] = HUMAN_REFERENCE_MATCH
                     row["normal_translation_status"] = SMORF_NOT_EVALUATED
                     row["normal_hla_presentation_status"] = HLA_NOT_EVALUATED
                     row["normal_smorf_support_count"] = 0
                     row["normal_hla_ligand_support_count"] = 0
+                    row["supporting_window_count"] = ""
                     row["external_normal_status"] = "excluded_human_reference_match_before_external_normal_qc"
                     row["external_normal_qc_reasons"] = "human_reference_peptide_match"
                     candidate_records.append(row)
@@ -1994,7 +2114,13 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
                 peptide_id_by_key[key] = peptide_id
                 first["peptide_record_id"] = peptide_id
                 first["prebinding_selection_origin"] = "deferred_refill"
-                first["human_reference_peptide_status"] = "human_reference_peptide_not_detected"
+                first["peptide_sequence_sha256"] = sha256_text(key[1])
+                first["peptide_core_status"] = "core"
+                first["peptide_qc_reasons"] = ""
+                first["human_reference_peptide_status"] = HUMAN_REFERENCE_NOT_DETECTED
+                first["normal_hla_presentation_status"] = "normal_hla_atlas_not_evaluated"
+                first["normal_translation_status"] = "normal_translation_not_evaluable"
+                first["external_normal_status"] = "external_normal_not_evaluated"
                 unique_refill_rows.append(first)
 
             if not unique_refill_rows:
@@ -2006,9 +2132,22 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
                 peptide_id_by_key,
                 refill_mhc_i_lengths,
                 refill_mhc_ii_lengths,
+                {
+                    (normalize_hla_class(row.get("mhc_class", "")), str(row.get("peptide", "")).upper()): row
+                    for row in unique_refill_rows
+                },
             )
             if not batch_parent_map:
                 raise ValueError("refill selected candidate keys but generated no parent-map rows")
+            support_count_by_key: defaultdict[tuple[str, str], int] = defaultdict(int)
+            for row in batch_parent_map:
+                support_count_by_key[
+                    (normalize_hla_class(row.get("mhc_class", "")), str(row.get("peptide", "")).upper())
+                ] += 1
+            for row in unique_refill_rows:
+                row["supporting_window_count"] = support_count_by_key[
+                    (normalize_hla_class(row.get("mhc_class", "")), str(row.get("peptide", "")).upper())
+                ]
             batch_footprints = build_refill_peptide_footprints(
                 args.sample,
                 batch_parent_map,
@@ -2070,6 +2209,14 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
 
     common_fields = list(core.columns)
     extra_fields = [
+        "parent_record_id",
+        "source_parent_id",
+        "peptide_start",
+        "peptide_sequence_sha256",
+        "peptide_core_status",
+        "peptide_qc_reasons",
+        "human_reference_peptide_status",
+        "supporting_window_count",
         "prebinding_selection_origin",
         "hla_class_normalized",
         "normal_translation_status",
@@ -2232,6 +2379,7 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
                 "junction_qc_status",
                 "required_junction_count",
                 "peptide_crosses_junction",
+                "peptide_start",
                 "human_reference_peptide_status",
                 "external_normal_status",
             ]
@@ -2245,10 +2393,35 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
                     "formal v1.1 ranked final sidecar has missing coordinate/junction/parent joins in rows: "
                     + ", ".join(missing_rows[:5])
                 )
+    validate_final_core_contract(
+        retained_rows,
+        final_sidecar_rows,
+        completed_footprint_rows + refill_footprint_rows,
+        completed_junction_rows + refill_peptide_junction_rows,
+        refill_mhc_i_lengths if formal_v11_ranked else sorted(ALLOWED_LENGTHS["HLA-I"]),
+        refill_mhc_ii_lengths if formal_v11_ranked else sorted(ALLOWED_LENGTHS["HLA-II"]),
+        human_reference_evaluated=bool(human_reference_summary_from_08b.get("status") == "evaluated" or formal_v11_ranked),
+        formal_v11_ranked=formal_v11_ranked,
+    )
     write_tsv(
         final_sidecar_rows,
         outdir / "cryptic_final_peptide_parent_sidecar.tsv",
         FINAL_SIDECAR_FIELDS,
+    )
+
+    human_reference_refill_excluded_count = sum(
+        1
+        for row in excluded_rows
+        if str(row.get("external_normal_status", "")) == "excluded_human_reference_match_before_external_normal_qc"
+    )
+    exact_only_excluded_count = sum(
+        1 for row in excluded_rows if str(row.get("external_normal_status", "")) == EXACT_EXCLUDED_STATUS
+    )
+    coordinate_only_excluded_count = sum(
+        1 for row in excluded_rows if str(row.get("external_normal_status", "")) == COORDINATE_EXCLUDED_STATUS
+    )
+    exact_and_coordinate_excluded_count = sum(
+        1 for row in excluded_rows if str(row.get("external_normal_status", "")) == BOTH_EXCLUDED_STATUS
     )
 
     stage_counts = [
@@ -2259,6 +2432,15 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
         {"stage": "normal_smorf_exact_match_peptides", "count": smorf_match_count},
         {"stage": "normal_hla_ligand_exact_match_peptides", "count": hla_match_count},
         {"stage": "both_external_normal_evidence_peptides", "count": both_match_count},
+        {"stage": "human_reference_refill_excluded_unique_peptides", "count": human_reference_refill_excluded_count},
+        {"stage": "external_normal_exact_excluded_unique_peptides", "count": exact_only_excluded_count},
+        {"stage": "external_normal_coordinate_frame_excluded_unique_peptides", "count": coordinate_only_excluded_count},
+        {
+            "stage": "external_normal_exact_and_coordinate_frame_excluded_unique_peptides",
+            "count": exact_and_coordinate_excluded_count,
+        },
+        {"stage": "total_qc_excluded_unique_peptides", "count": len(excluded_rows)},
+        {"stage": "external_normal_excluded_unique_peptides_legacy_combined", "count": len(excluded_rows)},
         {"stage": "external_normal_excluded_unique_peptides", "count": len(excluded_rows)},
         {
             "stage": "external_normal_not_evaluated_unique_peptides",
@@ -2325,10 +2507,7 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
                 ),
             },
             {"stage": "v1.0_exact_excluded_peptides", "count": exact_excluded_count},
-            {
-                "stage": "v1.1_coordinate_additional_excluded_peptides",
-                "count": coordinate_additional_excluded_count,
-            },
+            {"stage": "v1.1_coordinate_additional_excluded_peptides", "count": coordinate_additional_excluded_count},
             {"stage": "final_primary_core_unique_peptides", "count": len(retained_rows)},
             {"stage": "smorf_coordinate_evidence_rows", "count": len(coordinate_evidence_rows)},
         ])
@@ -2339,6 +2518,14 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
     final_binding_fasta_identity = file_identity(final_binding_fasta)
     binding_eligible = bool(resources_evaluated and upstream_manifest.get("binding_eligible") is True)
     if upstream_selection_mode == "ranked_cap":
+        final_cap_reached_hla_i = len(hla_i_rows) >= cap_by_class.get("HLA-I", 10**18)
+        final_cap_reached_hla_ii = len(hla_ii_rows) >= cap_by_class.get("HLA-II", 10**18)
+        final_exhausted_before_cap_hla_i = (
+            refill_exhausted_before_cap["HLA-I"] or not final_cap_reached_hla_i
+        )
+        final_exhausted_before_cap_hla_ii = (
+            refill_exhausted_before_cap["HLA-II"] or not final_cap_reached_hla_ii
+        )
         cap_refill_summary = {
             "source_core_unique_peptides": len(source_core_records),
             "source_deferred_unique_peptides": 0 if deferred.empty else len(deferred),
@@ -2348,12 +2535,18 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
             "refill_human_reference_summaries": refill_human_reference_summaries,
             "cap_hla_i": cap_by_class.get("HLA-I", 0),
             "cap_hla_ii": cap_by_class.get("HLA-II", 0),
-            "exhausted_before_cap_hla_i": refill_exhausted_before_cap["HLA-I"]
-            or len(hla_i_rows) < cap_by_class.get("HLA-I", 10**18),
-            "exhausted_before_cap_hla_ii": refill_exhausted_before_cap["HLA-II"]
-            or len(hla_ii_rows) < cap_by_class.get("HLA-II", 10**18),
+            "final_cap_reached_hla_i": final_cap_reached_hla_i,
+            "final_cap_reached_hla_ii": final_cap_reached_hla_ii,
+            "final_exhausted_before_cap_hla_i": final_exhausted_before_cap_hla_i,
+            "final_exhausted_before_cap_hla_ii": final_exhausted_before_cap_hla_ii,
+            "exhausted_before_cap_hla_i": final_exhausted_before_cap_hla_i,
+            "exhausted_before_cap_hla_ii": final_exhausted_before_cap_hla_ii,
         }
     else:
+        final_cap_reached_hla_i = "not_applicable"
+        final_cap_reached_hla_ii = "not_applicable"
+        final_exhausted_before_cap_hla_i = "not_applicable"
+        final_exhausted_before_cap_hla_ii = "not_applicable"
         cap_refill_summary = {
             "source_core_unique_peptides": len(source_core_records),
             "source_deferred_unique_peptides": 0,
@@ -2361,6 +2554,10 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
             "deferred_after_external_normal_qc_unique_peptides": 0,
             "cap_hla_i": "not_applicable",
             "cap_hla_ii": "not_applicable",
+            "final_cap_reached_hla_i": "not_applicable",
+            "final_cap_reached_hla_ii": "not_applicable",
+            "final_exhausted_before_cap_hla_i": "not_applicable",
+            "final_exhausted_before_cap_hla_ii": "not_applicable",
             "exhausted_before_cap_hla_i": "not_applicable",
             "exhausted_before_cap_hla_ii": "not_applicable",
         }
@@ -2388,7 +2585,17 @@ def build_external_normal_qc(args: argparse.Namespace) -> dict[str, object]:
             "HLA-II": len(hla_ii_rows),
             "total": len(retained_rows),
         },
+        "final_cap_reached_hla_i": final_cap_reached_hla_i,
+        "final_cap_reached_hla_ii": final_cap_reached_hla_ii,
+        "final_exhausted_before_cap_hla_i": final_exhausted_before_cap_hla_i,
+        "final_exhausted_before_cap_hla_ii": final_exhausted_before_cap_hla_ii,
         "cap_refill_summary": cap_refill_summary,
+        "stage_count_notes": {
+            "external_normal_excluded_unique_peptides": (
+                "legacy combined count; includes human-reference refill exclusions, external-normal exact "
+                "exclusions, coordinate/frame exclusions, and exact+coordinate exclusions"
+            )
+        },
         "final_binding_fasta_identity": final_binding_fasta_identity,
         "external_normal_resource_identities": resource_identity,
         "coordinate_resource_identities": coordinate_resource_identity,

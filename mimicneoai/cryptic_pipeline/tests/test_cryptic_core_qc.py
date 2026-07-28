@@ -532,6 +532,9 @@ class CrypticCoreQCTest(unittest.TestCase):
             parent_map = pd.read_csv(outdir / "cryptic_peptide_parent_map.tsv", sep="\t")
             selected = parent_map[parent_map["peptide_record_id"].fillna("").astype(str).ne("")]
             self.assertEqual(selected[["mhc_class", "peptide"]].drop_duplicates().shape[0], 2)
+            self.assertTrue(
+                selected["human_reference_peptide_status"].eq("human_reference_peptide_not_detected").all()
+            )
             stage = pd.read_csv(outdir / "stagewise_qc.tsv", sep="\t").set_index("stage")["count"].to_dict()
             self.assertEqual(manifest["candidate_selection"]["materialization_policy"], "initial_cap_plus_ranked_parent_stream")
             self.assertFalse(manifest["candidate_selection"]["evaluated_deferred_peptide_universe_complete"])
