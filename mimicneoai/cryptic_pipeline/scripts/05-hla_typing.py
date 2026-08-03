@@ -71,11 +71,9 @@ def main():
     fastq_dir  = f"{output_hla}/{sample}/fastq/"
     ensure_dir(fastq_dir)
 
-    # 1) Map to HLA reference with bowtie2 → keep mapped pairs with samtools → convert back to FASTQ
-    #    Note: some bowtie2 versions use -S (stdout SAM) instead of -o (output path). Detect and fallback.
-    cmd_1 = f"bowtie2 -p {thread} -x {hla_gen} -1 {r1} -2 {r2} -o {fastq_dir}/{sample}.hlamap.sam"
-    if os.system("bowtie2 -h 2>&1 | grep -q ' -o '") != 0:
-        cmd_1 = f"bowtie2 -p {thread} -x {hla_gen} -1 {r1} -2 {r2} -S {fastq_dir}/{sample}.hlamap.sam"
+    # 1) Map to HLA reference with bowtie2, keep mapped pairs, then convert back to FASTQ.
+    # Keep this command contract aligned with mimicneoai.functions.hlatyping.
+    cmd_1 = f"bowtie2 -p {thread} -x {hla_gen} -1 {r1} -2 {r2} -S {fastq_dir}/{sample}.hlamap.sam"
 
     cmd_2 = f"samtools view -@ {thread} -h -F 4 {fastq_dir}/{sample}.hlamap.sam > {fastq_dir}/{sample}.mapped.sam"
     cmd_3 = (
@@ -99,7 +97,7 @@ def main():
 
     # 3) Run HLA-HD main workflow
     cmd_6 = (
-        f"hlahd.sh -t {thread} -m 30 -f {freq_data_dir} "
+        f"hlahd.sh -t {thread} -f {freq_data_dir} "
         f"{fastq_dir}/{sample}.hla.1.fastq {fastq_dir}/{sample}.hla.2.fastq "
         f"{HLA_gene} {dictionary} {sample} {output_hla}"
     )
@@ -122,13 +120,13 @@ def main():
     exon_dir    = f"{output_hla}/{sample}/exon/"
 
     if os.path.exists(f'{fastq_dir}/{sample}.hlamap.sam'):
-        run_cmd(f"rm -f {fastq_dir}/*")
+        run_cmd(f"rm {fastq_dir}/*")
     if os.path.exists(mapfile_dir) and (not is_directory_empty(mapfile_dir)):
-        run_cmd(f"rm -f {mapfile_dir}/*")
+        run_cmd(f"rm {mapfile_dir}/*")
     if os.path.exists(intron_dir) and (not is_directory_empty(intron_dir)):
-        run_cmd(f"rm -f {intron_dir}/*")
+        run_cmd(f"rm {intron_dir}/*")
     if os.path.exists(exon_dir) and (not is_directory_empty(exon_dir)):
-        run_cmd(f"rm -f {exon_dir}/*")
+        run_cmd(f"rm {exon_dir}/*")
 
     print("[DONE] HLA typing finished.", flush=True)
 
