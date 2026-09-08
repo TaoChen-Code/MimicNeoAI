@@ -160,6 +160,10 @@ In matched-normal mode, `06b.MicrobialProteinCoreQC_v1.0` writes the paired Core
   after binding. Oversized samples that are skipped by the binding scale gate
   are also skipped for immunogenicity scoring and are not labeled negative.
 - Immunogenicity inference requires a Python environment with PyTorch and
-  scikit-learn. Use `others.immunogenicity_python_bin` or the
-  `MIMICNEOAI_IMMUNOGENICITY_PYTHON_BIN` environment variable to select a CPU
-  or GPU runtime explicitly; otherwise the current pipeline Python is used.
+  scikit-learn. Runtime resolution is: `others.immunogenicity_python_bin`,
+  then `MIMICNEOAI_IMMUNOGENICITY_PYTHON_BIN`, then
+  `path.common.IMMUNOGENICITY.PYTHON_BIN` in `paths.yaml`, then the current
+  pipeline Python. Model-root resolution follows the same pattern using
+  `others.immunogenicity_model_root`,
+  `MIMICNEOAI_IMMUNOGENICITY_MODEL_ROOT`, and
+  `path.common.IMMUNOGENICITY.MODEL_ROOT`.

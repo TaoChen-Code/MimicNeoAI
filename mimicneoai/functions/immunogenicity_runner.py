@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Mapping, Sequence
 
 import pandas as pd
 
@@ -31,7 +31,26 @@ def resolve_immunogenicity_num_processes(configure: Mapping[str, Any]) -> int:
     return 1
 
 
-def resolve_immunogenicity_python_bin(configure: Mapping[str, Any]) -> str:
+def _mapping(value: Any, name: str) -> Mapping[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a mapping")
+    return value
+
+
+def _immunogenicity_paths(paths: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if paths is None:
+        return {}
+    path_cfg = _mapping(paths.get("path", {}), "paths.path")
+    common = _mapping(path_cfg.get("common", {}), "paths.path.common")
+    return _mapping(common.get("IMMUNOGENICITY", {}), "paths.path.common.IMMUNOGENICITY")
+
+
+def resolve_immunogenicity_python_bin(
+    configure: Mapping[str, Any],
+    paths: Mapping[str, Any] | None = None,
+) -> str:
     """Resolve the Python interpreter used for runtime immunogenicity scoring.
 
     Immunogenicity inference depends on PyTorch. Production images may keep CPU
@@ -39,16 +58,33 @@ def resolve_immunogenicity_python_bin(configure: Mapping[str, Any]) -> str:
     points should not assume that the main ``mimicneoai`` interpreter has torch.
     """
 
-    others = configure.get("others", {})
-    if not isinstance(others, Mapping):
-        raise TypeError("configure.others must be a mapping")
+    others = _mapping(configure.get("others", {}), "configure.others")
     configured = str(others.get("immunogenicity_python_bin", "") or "").strip()
     if configured:
         return configured
     env_value = os.environ.get("MIMICNEOAI_IMMUNOGENICITY_PYTHON_BIN", "").strip()
     if env_value:
         return env_value
+    path_value = str(_immunogenicity_paths(paths).get("PYTHON_BIN", "") or "").strip()
+    if path_value:
+        return path_value
     return sys.executable
+
+
+def resolve_immunogenicity_model_root(
+    configure: Mapping[str, Any],
+    paths: Mapping[str, Any] | None = None,
+) -> str:
+    """Resolve the default runtime model root, if the deployment config sets one."""
+
+    others = _mapping(configure.get("others", {}), "configure.others")
+    configured = str(others.get("immunogenicity_model_root", "") or "").strip()
+    if configured:
+        return configured
+    env_value = os.environ.get("MIMICNEOAI_IMMUNOGENICITY_MODEL_ROOT", "").strip()
+    if env_value:
+        return env_value
+    return str(_immunogenicity_paths(paths).get("MODEL_ROOT", "") or "").strip()
 
 
 

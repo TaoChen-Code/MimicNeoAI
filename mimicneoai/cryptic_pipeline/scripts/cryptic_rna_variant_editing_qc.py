@@ -47,7 +47,7 @@ MIN_MAPPING_QUALITY = 20.0
 MIN_READ_MAPPING_QUALITY = 20
 MIN_BASE_QUALITY = 20
 MPILEUP_FLAG_FILTER = "0xF04"
-NORMALIZATION_POLICY = "bcftools norm -f REF -m -any -d exact"
+NORMALIZATION_POLICY = "bcftools norm -f REF -m -any; bcftools norm -d exact"
 
 
 def sha256_file(path: Path) -> str:

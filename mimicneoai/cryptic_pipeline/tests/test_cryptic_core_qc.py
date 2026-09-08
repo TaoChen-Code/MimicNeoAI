@@ -185,7 +185,7 @@ class CrypticCoreQCTest(unittest.TestCase):
                     "variant_mq_min": 20,
                     "vaf_min_ad_derived": 0.05,
                     "alt_reads_min": 3,
-                    "normalization": "bcftools norm -f REF -m -any -d exact",
+                    "normalization": "bcftools norm -f REF -m -any; bcftools norm -d exact",
                 },
                 "bcftools_version": "bcftools 1.20",
                 "calling_script_sha256": "fixture_script",

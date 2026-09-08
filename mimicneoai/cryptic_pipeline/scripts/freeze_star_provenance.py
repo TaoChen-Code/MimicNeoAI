@@ -60,6 +60,7 @@ RESUME_IGNORED_FIELDS = {
     "created_at_utc",
     "started_at_utc",
     "finished_at_utc",
+    "relocated_at",
     "previous_manifest_sha256",
     "upgrade_reason",
     "upgraded_at_utc",

@@ -93,6 +93,7 @@ class LncSorfKnownBranchVcfTest(unittest.TestCase):
         outputs = {
             "raw_bcf": out_dir / "rna.raw.bcf",
             "call_vcf_sorted": out_dir / "rna.call.sorted.vcf.gz",
+            "norm_split_vcf": out_dir / "rna.call.norm.split.vcf.gz",
             "norm_split_dedup_vcf": out_dir / "rna.call.norm.split.dedup.vcf.gz",
             "filtered_vcf": out_dir / "rna.flt.vcf.gz",
             "variant_evidence_tsv": out_dir / "rna.variant_evidence.tsv",
@@ -175,6 +176,70 @@ class LncSorfKnownBranchVcfTest(unittest.TestCase):
                         str(out_dir),
                         sample="TEST",
                     )
+
+    def test_step_call_rnaseq_variants_splits_and_deduplicates_in_two_norm_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bam = root / "sample.Aligned.out.sorted.bam"
+            ref = root / "GRCh38.fa"
+            bed = root / "lncRNA.exons.merged.bed"
+            out_dir = root / "04k.bcf_consensus"
+            out_dir.mkdir()
+            for path in [bam, ref, bed]:
+                path.write_text(path.name + "\n")
+            (root / "sample.Aligned.out.sorted.bam.bai").write_text("index\n")
+
+            class FakeStdout:
+                def close(self) -> None:
+                    return None
+
+            class FakeProc:
+                def __init__(self, cmd, stdout=None, stdin=None):
+                    self.cmd = list(cmd)
+                    self.stdout = FakeStdout()
+                    if self.cmd[:2] == ["bcftools", "call"]:
+                        Path(self.cmd[self.cmd.index("-o") + 1]).write_text("raw\n")
+
+                def wait(self) -> int:
+                    return 0
+
+            commands: list[list[str]] = []
+
+            def fake_run(cmd):
+                cmd = list(map(str, cmd))
+                commands.append(cmd)
+                if "-o" in cmd:
+                    Path(cmd[cmd.index("-o") + 1]).write_text("out\n")
+                if cmd[:3] == ["bcftools", "index", "-f"]:
+                    Path(cmd[3] + ".csi").write_text("index\n")
+
+            def fake_filter(norm_vcf, flt_vcf, evidence_tsv, **_kwargs):
+                self.assertTrue(Path(norm_vcf).name.endswith(".dedup.vcf.gz"))
+                Path(flt_vcf).write_text("##fileformat=VCFv4.2\n")
+                Path(evidence_tsv).write_text("chrom\tpos\n")
+                return {"normalized_records": 0, "filtered_records": 0}
+
+            with patch.object(lnc_sorf_pipeline, "command_version", return_value="bcftools 1.20"), \
+                    patch.object(lnc_sorf_pipeline.subprocess, "Popen", side_effect=FakeProc), \
+                    patch.object(lnc_sorf_pipeline, "run", side_effect=fake_run), \
+                    patch.object(lnc_sorf_pipeline, "filter_normalized_vcf_by_ad", side_effect=fake_filter):
+                observed = lnc_sorf_pipeline.step_call_rnaseq_variants(
+                    str(bam),
+                    str(ref),
+                    str(bed),
+                    str(out_dir),
+                    sample="TEST",
+                )
+
+            self.assertEqual(Path(observed), out_dir / "rna.flt.vcf.gz")
+            norm_commands = [cmd for cmd in commands if cmd[:2] == ["bcftools", "norm"]]
+            self.assertEqual(len(norm_commands), 2)
+            self.assertIn("-m", norm_commands[0])
+            self.assertNotIn("-d", norm_commands[0])
+            self.assertIn("-d", norm_commands[1])
+            self.assertNotIn("-m", norm_commands[1])
+            manifest = json.loads((out_dir / "rna.variant_calling.manifest.json").read_text())
+            self.assertIn("norm_split_vcf", manifest["output_signature"])
 
 
 if __name__ == "__main__":

@@ -79,7 +79,7 @@ def file_identity(path):
 
 QC = []
 RNA_VARIANT_CALLING_POLICY_VERSION = "cryptic_known_branch_rna_variant_calling_v1.0"
-RNA_VARIANT_CALLING_NORMALIZATION_POLICY = "bcftools norm -f REF -m -any -d exact"
+RNA_VARIANT_CALLING_NORMALIZATION_POLICY = "bcftools norm -f REF -m -any; bcftools norm -d exact"
 RNA_VARIANT_CALLING_FLAG_FILTER = "0xF04"  # unmapped + secondary + QC-failed + duplicate + supplementary
 
 
@@ -812,11 +812,12 @@ def step_call_rnaseq_variants(sorted_bam, ref_fa, bed, out_dir,
     raw_bcf = str(Path(out_dir) / "rna.raw.bcf")
     call_vcf = str(Path(out_dir) / "rna.call.vcf.gz")
     call_vcf_sorted = str(Path(out_dir) / "rna.call.sorted.vcf.gz")
+    split_vcf = str(Path(out_dir) / "rna.call.norm.split.vcf.gz")
     norm_vcf = str(Path(out_dir) / "rna.call.norm.split.dedup.vcf.gz")
     flt_vcf = str(Path(out_dir) / "rna.flt.vcf.gz")
     evidence_tsv = str(Path(out_dir) / "rna.variant_evidence.tsv")
     manifest_json = str(Path(out_dir) / "rna.variant_calling.manifest.json")
-    legacy_outputs = [raw_bcf, call_vcf, call_vcf_sorted, norm_vcf, flt_vcf, evidence_tsv]
+    legacy_outputs = [raw_bcf, call_vcf, call_vcf_sorted, split_vcf, norm_vcf, flt_vcf, evidence_tsv]
 
     flag_filter = RNA_VARIANT_CALLING_FLAG_FILTER
     parameters = {
@@ -898,9 +899,13 @@ def step_call_rnaseq_variants(sorted_bam, ref_fa, bed, out_dir,
         run(["bcftools", "sort", "-Oz", "-o", call_vcf_sorted, call_vcf])
     run(["bcftools", "index", "-f", call_vcf_sorted])
 
-    # 4) normalize, split multiallelics, exact-deduplicate
+    # 4) normalize/split multiallelics, then exact-deduplicate.
+    # bcftools rejects combining "-m -any" and "-d exact" in current releases.
+    if not exists(split_vcf):
+        run(["bcftools", "norm", "-f", ref_fa, "-m", "-any", "-Oz", "-o", split_vcf, call_vcf_sorted])
+    run(["bcftools", "index", "-f", split_vcf])
     if not exists(norm_vcf):
-        run(["bcftools", "norm", "-f", ref_fa, "-m", "-any", "-d", "exact", "-Oz", "-o", norm_vcf, call_vcf_sorted])
+        run(["bcftools", "norm", "-d", "exact", "-Oz", "-o", norm_vcf, split_vcf])
     run(["bcftools", "index", "-f", norm_vcf])
 
     # 5) AD-derived evidence table and final pass-only VCF
@@ -917,6 +922,7 @@ def step_call_rnaseq_variants(sorted_bam, ref_fa, bed, out_dir,
     outputs = {
             "raw_bcf": file_identity(raw_bcf),
             "call_vcf_sorted": file_identity(call_vcf_sorted),
+            "norm_split_vcf": file_identity(split_vcf),
             "norm_split_dedup_vcf": file_identity(norm_vcf),
             "filtered_vcf": file_identity(flt_vcf),
             "variant_evidence_tsv": file_identity(evidence_tsv),

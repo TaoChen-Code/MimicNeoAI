@@ -29,13 +29,17 @@ class CrypticJunctionQCTest(unittest.TestCase):
     def _write_star_pair(self, root: Path, tumor_sj: Path, normal_sj: Path) -> Path:
         tumor_sha = sha256_file(tumor_sj)
         normal_sha = sha256_file(normal_sj)
+        star_index = root / "STAR-index"
+        star_index.mkdir()
+        for name in ("Genome", "SA", "SAindex", "sjdbList.out.tab"):
+            (star_index / name).write_text(f"{name}\n")
         star_cmd = (
             "STAR --runThreadN 8 --genomeDir {index} --readFilesIn R1.fq.gz R2.fq.gz "
             "--readFilesCommand zcat --outSAMtype BAM Unsorted "
             "--outFilterMultimapNmax 20 --alignSJoverhangMin 8 "
             "--alignSJDBoverhangMin 1 --alignIntronMin 20 --alignIntronMax 1000000 "
             "--alignMatesGapMax 1000000 --outFileNamePrefix out/"
-        ).format(index=root / "STAR-index")
+        ).format(index=star_index)
         tumor_log = root / "tumor.Log.out"
         normal_log = root / "normal.Log.out"
         tumor_log.write_text(f"##### Command Line:\n{star_cmd}\n")
@@ -397,6 +401,29 @@ class CrypticJunctionQCTest(unittest.TestCase):
             tumor_sj.write_text(tumor_sj.read_text() + "chr1\t300\t350\t1\t1\t1\t1\t0\t10\n")
             with self.assertRaisesRegex(ValueError, "hash mismatch"):
                 validate_star_pair_contract(pair, "TEST")
+
+    def test_star_pair_contract_accepts_relocated_index_identity_without_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tumor_sj = root / "tumor.SJ.out.tab"
+            normal_sj = root / "normal.SJ.out.tab"
+            self._write_sj(tumor_sj, [("chr1", 119, 200, 1, 1, 1, 2, 0, 20)])
+            self._write_sj(normal_sj, [("chr1", 119, 200, 1, 1, 1, 0, 0, 16)])
+            pair = self._write_star_pair(root, tumor_sj, normal_sj)
+            normal_manifest_path = root / "normal_star.json"
+            normal_manifest = json.loads(normal_manifest_path.read_text())
+            normal_manifest.pop("star_index", None)
+            normal_manifest["star_index_identity"] = {
+                "files": {
+                    name: {"exists": True, "size_bytes": (root / "STAR-index" / name).stat().st_size}
+                    for name in ("Genome", "SA", "SAindex", "sjdbList.out.tab")
+                }
+            }
+            normal_manifest["star_index_identity_status"] = "from_source_manifest"
+            normal_manifest_path.write_text(json.dumps(normal_manifest, sort_keys=True))
+            validation = validate_star_pair_contract(pair, "TEST")
+            self.assertEqual(validation["status"], "validated")
+            self.assertEqual(validation["star_index_compatibility"], "compatible")
 
     def test_standalone_build_fails_when_manifest_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

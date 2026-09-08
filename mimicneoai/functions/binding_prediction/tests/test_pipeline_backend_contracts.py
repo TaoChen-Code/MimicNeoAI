@@ -130,6 +130,11 @@ class PipelineBackendContractTest(unittest.TestCase):
         self.assertTrue(
             predictor_paths["IEDB_MHCII_SCRIPT"].endswith("mhc_II_binding.py")
         )
+        immunogenicity_paths = paths["path"]["common"]["IMMUNOGENICITY"]
+        self.assertEqual(immunogenicity_paths["PYTHON_BIN"], "")
+        self.assertTrue(
+            immunogenicity_paths["MODEL_ROOT"].endswith("immunogenicity_prediction/models/default")
+        )
         external_normal_paths = paths["database"]["cryptic"]["EXTERNAL_NORMAL_RESOURCES"]
         self.assertTrue(
             external_normal_paths["MANIFEST"].endswith(

@@ -33,7 +33,11 @@ candidate_selection:
 junction_qc:
   enabled: false
   policy_version: "junction_qc_v1.0"
-  star_pair_inputs: ""
+  star_pair_inputs: ""                 # Existing frozen STAR pair table. Takes precedence when provided.
+  auto_freeze_star_provenance: false   # If true, build a per-sample STAR pair table from current 01-star outputs.
+  star_provenance_outdir: ""           # Optional. Defaults to 01-star/star-provenance-freeze for each tumor sample.
+  full_bam_hash: false                 # Usually false; SJ/log files are hashed and BAM size is recorded.
+  allow_critical_contract_upgrade: false
   primary_min_tumor_unique_reads: 2
   sensitivity_thresholds: "1,2,3,5"
 
@@ -105,7 +109,8 @@ others:
   binding_prediction_force_large_samples: false
   run_immunogenicity_prediction: false
   immunogenicity_step_name: "10-immunogenicity_prediction_mimicneoai"
-  immunogenicity_python_bin: ""  # Optional: Python with torch/sklearn; falls back to current python or MIMICNEOAI_IMMUNOGENICITY_PYTHON_BIN.
+  immunogenicity_python_bin: ""  # Optional override; otherwise uses MIMICNEOAI_IMMUNOGENICITY_PYTHON_BIN, then paths.yaml.
+  immunogenicity_model_root: ""  # Optional override; otherwise uses MIMICNEOAI_IMMUNOGENICITY_MODEL_ROOT, then paths.yaml.
   immunogenicity_device: "auto"
   immunogenicity_batch_size: 512
   immunogenicity_workers: 8

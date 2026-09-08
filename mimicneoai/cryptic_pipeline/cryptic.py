@@ -38,7 +38,10 @@ from multiprocessing import Manager
 import multiprocessing.pool
 from importlib.resources import files
 from mimicneoai.functions.binding_prediction import configured_predictor_cli_args
-from mimicneoai.functions.immunogenicity_runner import resolve_immunogenicity_python_bin
+from mimicneoai.functions.immunogenicity_runner import (
+    resolve_immunogenicity_model_root,
+    resolve_immunogenicity_python_bin,
+)
 from mimicneoai.functions.pipline_tools import raise_for_failed_samples, tools
 
 
@@ -92,6 +95,8 @@ STEP_NAME = {
     "mimicneoai_binding": "09-hla_binding_pred_mimicneoai",
     "immunogenicity": "10-immunogenicity_prediction_mimicneoai",
 }
+
+STAR_FREEZE_REQUIRED_SUFFIXES = ("Aligned.out.bam", "SJ.out.tab", "Log.final.out", "Log.out")
 
 
 # ---------------------- Helpers ----------------------
@@ -166,6 +171,103 @@ def _external_normal_resource_value(
     ).strip()
 
 
+def _write_auto_star_pair_sheet(pair_sheet_path: str, tumor_sample: str, ctrl_sample: str | None) -> None:
+    if not ctrl_sample:
+        raise ValueError(
+            "junction_qc.auto_freeze_star_provenance requires paired sample format: Tumor,Normal"
+        )
+    if tumor_sample == ctrl_sample:
+        raise ValueError("STAR provenance freeze requires distinct tumor and control sample IDs")
+    path = Path(pair_sheet_path)
+    text = f"tumor_sample\tnormal_sample\n{tumor_sample}\t{ctrl_sample}\n"
+    if path.exists():
+        existing = path.read_text(encoding="utf-8")
+        if existing != text:
+            raise RuntimeError(f"Existing auto STAR pair sheet differs from current sample pair: {path}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _star_dir_for_pair_freeze(cryptic_root: str, tumor_sample: str, star_sample: str) -> Path:
+    return (
+        Path(cryptic_root)
+        / tumor_sample
+        / STEP_NAME["align"]
+        / star_sample
+        / f"{star_sample}.star"
+    )
+
+
+def _require_star_provenance_inputs(cryptic_root: str, tumor_sample: str, ctrl_sample: str | None) -> None:
+    if not ctrl_sample:
+        raise ValueError("junction_qc.auto_freeze_star_provenance requires matched-control STAR outputs")
+    missing: list[str] = []
+    for star_sample in (tumor_sample, ctrl_sample):
+        star_dir = _star_dir_for_pair_freeze(cryptic_root, tumor_sample, star_sample)
+        for suffix in STAR_FREEZE_REQUIRED_SUFFIXES:
+            path = star_dir / f"{star_sample}{suffix}"
+            if not path.exists() or path.stat().st_size == 0:
+                missing.append(str(path))
+    normal_manifest = _star_dir_for_pair_freeze(
+        cryptic_root, tumor_sample, ctrl_sample
+    ) / "star_alignment.manifest.json"
+    if not normal_manifest.exists() or normal_manifest.stat().st_size == 0:
+        missing.append(str(normal_manifest))
+    if missing:
+        raise FileNotFoundError(
+            "junction_qc.auto_freeze_star_provenance requires complete tumor/control STAR outputs. "
+            "Enable others.alignment_control or provide junction_qc.star_pair_inputs. Missing: "
+            + ", ".join(missing)
+        )
+
+
+def _resolve_star_pair_inputs_for_junction_qc(
+    tool: tools,
+    run_sample_id: str,
+    junction_qc: Dict[str, Any],
+    cryptic_root: str,
+    dir01: str,
+    tumor_sample: str,
+    ctrl_sample: str | None,
+    star_index: str,
+) -> str:
+    explicit_pair_inputs = str(junction_qc.get("star_pair_inputs", "") or "").strip()
+    if explicit_pair_inputs:
+        return explicit_pair_inputs
+    if not bool(junction_qc.get("auto_freeze_star_provenance", False)):
+        raise ValueError(
+            "junction_qc.enabled requires junction_qc.star_pair_inputs, or "
+            "junction_qc.auto_freeze_star_provenance: true"
+        )
+
+    _require_star_provenance_inputs(cryptic_root, tumor_sample, ctrl_sample)
+
+    freeze_outdir = str(junction_qc.get("star_provenance_outdir", "") or "").strip()
+    if not freeze_outdir:
+        freeze_outdir = os.path.join(dir01, "star-provenance-freeze")
+    elif not os.path.isabs(freeze_outdir):
+        freeze_outdir = os.path.join(dir01, freeze_outdir)
+
+    pair_sheet = os.path.join(freeze_outdir, "auto_star_pair_sheet.tsv")
+    _write_auto_star_pair_sheet(pair_sheet, tumor_sample, ctrl_sample)
+
+    cmd = [
+        sys.executable, _script_path("freeze_star_provenance.py"),
+        "--cryptic-root", cryptic_root,
+        "--pair-sheet", pair_sheet,
+        "-o", freeze_outdir,
+    ]
+    if star_index:
+        cmd.extend(["--star-index", star_index])
+    if bool(junction_qc.get("full_bam_hash", False)):
+        cmd.append("--full-bam-hash")
+    if bool(junction_qc.get("allow_critical_contract_upgrade", False)):
+        cmd.append("--allow-critical-contract-upgrade")
+    _run_cmd(tool, run_sample_id, cmd, display_name="STAR provenance freeze")
+    return os.path.join(freeze_outdir, "cryptic_star_pair_inputs.tsv")
+
+
 # ---------------------- One-sample pipeline ----------------------
 def _run_one_sample(
     sample: str,
@@ -231,6 +333,7 @@ def _run_one_sample(
         HLA_GENE = paths["database"]["common"]["HLA"]["HLA_GENE"]
         HLA_DICT = paths["database"]["common"]["HLA"]["DICTIONARY"]
         HLA_BOWTIE2_INDEX = paths["database"]["common"]["HLA"]["BOWTIE2_INDEX"]
+        HLAHD_SCRIPT = paths["database"]["common"]["HLA"].get("HLAHD_SCRIPT", "")
 
         # Output layout
         OPT = os.path.join(out_root, tumor_sample)
@@ -451,6 +554,7 @@ def _run_one_sample(
                 "--HLA-gene", HLA_GENE,
                 "--dictionary", HLA_DICT,
                 "--hla-gen", HLA_BOWTIE2_INDEX,
+                *(["--hlahd-bin", HLAHD_SCRIPT] if HLAHD_SCRIPT else []),
             ], display_name="HLA-HD typing")
 
         # ---------- 06 Extract aeSEPs ----------
@@ -499,7 +603,17 @@ def _run_one_sample(
 
         if do_cryptic_core:
             if not do_orf_filter:
-                raise ValueError("cryptic_core_qc requires orf_filter to be enabled")
+                missing_orf_filter = [
+                    path for path in (ORF_FILTERED_AESEPs_PEP, ORF_FINAL_TABLE)
+                    if not os.path.exists(path) or os.path.getsize(path) == 0
+                ]
+                if missing_orf_filter:
+                    raise ValueError(
+                        "cryptic_core_qc requires orf_filter to be enabled, or existing "
+                        "08-orf_filter outputs to be present: "
+                        + ", ".join(missing_orf_filter)
+                    )
+                binding_pep_fasta = ORF_FILTERED_AESEPs_PEP
             candidate_selection = configure.get("candidate_selection", {}) or {}
             cryptic_core_policy_version = str(
                 others.get("cryptic_core_qc_policy_version", "cryptic_core_qc_v1.0")
@@ -554,10 +668,20 @@ def _run_one_sample(
             if not isinstance(junction_qc, dict):
                 raise ValueError("junction_qc must be a mapping")
             if bool(junction_qc.get("enabled", False)):
+                star_pair_inputs = _resolve_star_pair_inputs_for_junction_qc(
+                    tool=tool,
+                    run_sample_id=sample,
+                    junction_qc=junction_qc,
+                    cryptic_root=out_root,
+                    dir01=DIR01,
+                    tumor_sample=tumor_sample,
+                    ctrl_sample=ctrl_sample,
+                    star_index=STAR_GENOME_DIR,
+                )
                 cmd.extend([
                     "--junction-qc-enabled",
                     "--junction-policy-version", str(junction_qc.get("policy_version", "junction_qc_v1.0")),
-                    "--star-pair-inputs", str(junction_qc.get("star_pair_inputs", "")),
+                    "--star-pair-inputs", star_pair_inputs,
                     "--primary-min-tumor-unique-reads",
                     str(int(junction_qc.get("primary_min_tumor_unique_reads", 2))),
                     "--junction-sensitivity-thresholds",
@@ -801,8 +925,9 @@ def _run_one_sample(
             if not immunogenicity_step or Path(immunogenicity_step).name != immunogenicity_step:
                 raise ValueError("immunogenicity_step_name must be a single directory name")
             immunogenicity_outdir = os.path.join(OPT, immunogenicity_step)
+            model_root = resolve_immunogenicity_model_root(configure, paths)
             cmd = [
-                resolve_immunogenicity_python_bin(configure),
+                resolve_immunogenicity_python_bin(configure, paths),
                 "-m",
                 "mimicneoai.functions.immunogenicity_workflow",
                 "-s",
@@ -820,8 +945,8 @@ def _run_one_sample(
                 "--workers",
                 str(int(others.get("immunogenicity_workers", configure.get("args", {}).get("threads", n_pvacbind)))),
             ]
-            if others.get("immunogenicity_model_root"):
-                cmd.extend(["--model-root", str(others.get("immunogenicity_model_root"))])
+            if model_root:
+                cmd.extend(["--model-root", model_root])
             _run_cmd(tool, sample, cmd, display_name="MimicNeoAI cryptic immunogenicity prediction")
 
         tool.write_log(f"[DONE] Completed cryptic pipeline: {OPT}", "info")

@@ -7,7 +7,10 @@ from datetime import datetime
 from importlib.resources import files
 from pathlib import Path
 from mimicneoai.functions.binding_prediction import configured_predictor_cli_args
-from mimicneoai.functions.immunogenicity_runner import resolve_immunogenicity_python_bin
+from mimicneoai.functions.immunogenicity_runner import (
+    resolve_immunogenicity_model_root,
+    resolve_immunogenicity_python_bin,
+)
 from mimicneoai.functions.utils import format_java_heap
 import pandas as pd
 from mimicneoai.microbial_pipeline.scripts.get_data_for_blastx import get_data
@@ -164,7 +167,14 @@ def MicrobialPairedProteinCoreQC(tumor_sample, normal_sample, configure, paths, 
     return {"outdir": outdir, "core_fasta": core_fasta, "scale_gate_skipped": False, "manifest": manifest_path}
 
 
-def MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_dir=None, run_sample_id=None):
+def MicrobialImmunogenicityPrediction(
+    sample,
+    configure,
+    tool,
+    binding_output_dir=None,
+    run_sample_id=None,
+    paths=None,
+):
     """Run microbial immunogenicity scoring from an existing binding directory."""
     output_path = configure['path']['output_dir'] + "/"
     others = configure.get("others", {})
@@ -178,8 +188,9 @@ def MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_di
     if not immunogenicity_step or Path(immunogenicity_step).name != immunogenicity_step:
         raise ValueError("immunogenicity_step_name must be a single directory name")
     immunogenicity_outdir = output_path + f"{sample}/{immunogenicity_step}/"
+    model_root = resolve_immunogenicity_model_root(configure, paths)
     cmd = [
-        resolve_immunogenicity_python_bin(configure),
+        resolve_immunogenicity_python_bin(configure, paths),
         "-m",
         "mimicneoai.functions.immunogenicity_workflow",
         "-s",
@@ -200,8 +211,8 @@ def MicrobialImmunogenicityPrediction(sample, configure, tool, binding_output_di
             configure.get("args", {}).get("threads", configure.get("args", {}).get("thread", 1)),
         ))),
     ]
-    if others.get("immunogenicity_model_root"):
-        cmd.extend(["--model-root", str(others.get("immunogenicity_model_root"))])
+    if model_root:
+        cmd.extend(["--model-root", model_root])
     tool.exec_cmd(
         " ".join(shlex.quote(item) for item in cmd),
         run_sample_id or sample,
@@ -1033,6 +1044,7 @@ def MicrobialPeptidesBindingPrediction(
                 tool,
                 binding_output_dir,
                 run_sample_id=run_sample_id,
+                paths=paths,
             )
     elif explicit_peptide_fa:
         raise FileNotFoundError(f"Explicit microbial binding FASTA not found: {peptide_fa}")

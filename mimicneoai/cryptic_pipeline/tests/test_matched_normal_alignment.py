@@ -34,7 +34,16 @@ class MatchedNormalAlignmentDispatchTest(unittest.TestCase):
             (sample_dir / f"{sample}.R1.fq.gz").write_text("r1\n", encoding="utf-8")
             (sample_dir / f"{sample}.R2.fq.gz").write_text("r2\n", encoding="utf-8")
 
-    def _config(self, **others_updates) -> dict[str, object]:
+    def _write_star_freeze_inputs(self, tumor: str, normal: str) -> None:
+        for sample in (tumor, normal):
+            star_dir = self.root / tumor / "01-star" / sample / f"{sample}.star"
+            star_dir.mkdir(parents=True, exist_ok=True)
+            for suffix in cryptic.STAR_FREEZE_REQUIRED_SUFFIXES:
+                (star_dir / f"{sample}{suffix}").write_text(f"{sample} {suffix}\n", encoding="utf-8")
+        normal_manifest = self.root / tumor / "01-star" / normal / f"{normal}.star" / "star_alignment.manifest.json"
+        normal_manifest.write_text('{"status":"completed"}\n', encoding="utf-8")
+
+    def _config(self, junction_qc: dict[str, object] | None = None, **others_updates) -> dict[str, object]:
         others = {
             "QC": True,
             "alignment": True,
@@ -52,11 +61,14 @@ class MatchedNormalAlignmentDispatchTest(unittest.TestCase):
             "hla_binding_pred": False,
         }
         others.update(others_updates)
-        return {
+        config = {
             "path": {"input_dir": str(self.root / "input"), "output_dir": str(self.root)},
             "args": {"threads": 2, "hla_binding_threads": 2},
             "others": others,
         }
+        if junction_qc is not None:
+            config["junction_qc"] = junction_qc
+        return config
 
     @staticmethod
     def _paths() -> dict[str, object]:
@@ -77,6 +89,7 @@ class MatchedNormalAlignmentDispatchTest(unittest.TestCase):
                 },
                 "common": {
                     "HLA": {
+                        "HLAHD_SCRIPT": "/ref/hla/hlahd.sh",
                         "FREQ_DATA_DIR": "/ref/hla/freq",
                         "HLA_GENE": "/ref/hla/gene",
                         "DICTIONARY": "/ref/hla/dictionary",
@@ -106,6 +119,22 @@ class MatchedNormalAlignmentDispatchTest(unittest.TestCase):
         self.assertTrue(any("--raw-fq1" in cmd for cmd in star_commands))
         self.assertEqual(run_cmd.call_args_list[2].kwargs["display_name"], "STAR alignment")
         self.assertEqual(run_cmd.call_args_list[3].kwargs["display_name"], "Control STAR alignment")
+
+    def test_hla_typing_dispatch_passes_configured_hlahd_script(self) -> None:
+        self._touch_raw_fastqs("CRYPTIC-T")
+        config = self._config(
+            QC=False,
+            alignment=False,
+            hlatyping=True,
+        )
+
+        with patch.object(cryptic, "_run_cmd") as run_cmd:
+            cryptic._run_one_sample("CRYPTIC-T", config, self._paths(), MagicMock())
+
+        hla_commands = [cmd for cmd in self._commands(run_cmd) if cmd[1].endswith("05-hla_typing.py")]
+        self.assertEqual(len(hla_commands), 1)
+        self.assertIn("--hlahd-bin", hla_commands[0])
+        self.assertIn("/ref/hla/hlahd.sh", hla_commands[0])
 
     def test_alignment_control_false_does_not_run_control_star(self) -> None:
         self._touch_raw_fastqs("CRYPTIC-T", "CRYPTIC-N")
@@ -168,6 +197,65 @@ class MatchedNormalAlignmentDispatchTest(unittest.TestCase):
         for cmd in downstream_commands:
             self.assertIn("CRYPTIC-T", cmd)
             self.assertNotIn("CRYPTIC-N", cmd)
+
+    def test_auto_star_provenance_freeze_feeds_junction_qc(self) -> None:
+        tumor = "CRYPTIC-T"
+        normal = "CRYPTIC-N"
+        self._touch_raw_fastqs(tumor, normal)
+        self._write_star_freeze_inputs(tumor, normal)
+        config = self._config(
+            QC=False,
+            alignment=False,
+            alignment_control=False,
+            orf_filter=True,
+            cryptic_core_qc=True,
+            cryptic_core_qc_policy_version="cryptic_core_qc_v1.1",
+            hla_binding_pred=False,
+            junction_qc={
+                "enabled": True,
+                "auto_freeze_star_provenance": True,
+                "policy_version": "junction_qc_v1.0",
+            },
+        )
+
+        with patch.object(cryptic, "_run_cmd") as run_cmd:
+            cryptic._run_one_sample(f"{tumor},{normal}", config, self._paths(), MagicMock())
+
+        commands = self._commands(run_cmd)
+        freeze_commands = [cmd for cmd in commands if cmd[1].endswith("freeze_star_provenance.py")]
+        core_commands = [cmd for cmd in commands if cmd[1].endswith("cryptic_core_qc.py")]
+        self.assertEqual(len(freeze_commands), 1)
+        self.assertEqual(len(core_commands), 1)
+        pair_sheet = self.root / tumor / "01-star" / "star-provenance-freeze" / "auto_star_pair_sheet.tsv"
+        pair_table = self.root / tumor / "01-star" / "star-provenance-freeze" / "cryptic_star_pair_inputs.tsv"
+        self.assertEqual(
+            pair_sheet.read_text(encoding="utf-8"),
+            f"tumor_sample\tnormal_sample\n{tumor}\t{normal}\n",
+        )
+        self.assertIn("--pair-sheet", freeze_commands[0])
+        self.assertIn(str(pair_sheet), freeze_commands[0])
+        self.assertIn("--star-pair-inputs", core_commands[0])
+        self.assertIn(str(pair_table), core_commands[0])
+        self.assertEqual(run_cmd.call_args_list[-2].kwargs["display_name"], "STAR provenance freeze")
+        self.assertEqual(run_cmd.call_args_list[-1].kwargs["display_name"], "Cryptic Core QC")
+
+    def test_junction_qc_requires_explicit_or_auto_star_pair_inputs(self) -> None:
+        self._touch_raw_fastqs("CRYPTIC-T", "CRYPTIC-N")
+        config = self._config(
+            QC=False,
+            alignment=False,
+            orf_filter=True,
+            cryptic_core_qc=True,
+            hla_binding_pred=False,
+            junction_qc={"enabled": True},
+        )
+
+        with (
+            patch.object(cryptic, "_run_cmd") as run_cmd,
+            self.assertRaisesRegex(ValueError, "star_pair_inputs"),
+        ):
+            cryptic._run_one_sample("CRYPTIC-T,CRYPTIC-N", config, self._paths(), MagicMock())
+        self.assertEqual(len(run_cmd.call_args_list), 1)
 
 
 class StarAlignmentCompletionTest(unittest.TestCase):

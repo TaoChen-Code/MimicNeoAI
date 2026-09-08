@@ -24,6 +24,9 @@ path:
       IEDB_MHCII_PYTHON_BIN: "/workspace/pkgs/IEDB/.venv/bin/python"
       IEDB_MHCII_SCRIPT: "/workspace/pkgs/IEDB/mhc_ii/mhc_II_binding.py"
       IEDB_MHCII_CWD: "/workspace/pkgs/IEDB/mhc_ii"
+    IMMUNOGENICITY:
+      PYTHON_BIN: ""
+      MODEL_ROOT: "../immunogenicity_prediction/models/default"
 
   neoantigen:
     VEP_SIF:  "../database/soft/VEP/vep.sif"
@@ -38,6 +41,7 @@ database:
 
   common:
     HLA:
+      HLAHD_SCRIPT: "../database/soft/HLAHD/hlahd.1.7.0/bin/hlahd.sh"
       FREQ_DATA_DIR: "../database/soft/HLAHD/hlahd.1.7.0/freq_data/"
       HLA_GENE:      "../database/soft/HLAHD/hlahd.1.7.0/HLA_gene.split.txt"
       DICTIONARY:    "../database/soft/HLAHD/hlahd.1.7.0/dictionary/"

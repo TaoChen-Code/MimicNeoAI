@@ -97,6 +97,11 @@ class StarProvenanceFreezeTest(unittest.TestCase):
             allow_critical_contract_upgrade=False,
         )
 
+    def _args_without_fixed_relocated_at(self, cryptic: Path, pair_sheet: Path, outdir: Path) -> argparse.Namespace:
+        args = self._args(cryptic, pair_sheet, outdir)
+        args.relocated_at = ""
+        return args
+
     def test_freezes_relocated_normal_and_legacy_tumor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -130,6 +135,15 @@ class StarProvenanceFreezeTest(unittest.TestCase):
 
             reused = freeze_pairs(self._args(cryptic, pair_sheet, outdir))
             self.assertEqual(reused["pair_count"], 1)
+
+    def test_resume_ignores_volatile_relocated_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cryptic, pair_sheet = self._write_fixture(root)
+            outdir = root / "freeze"
+            first = freeze_pairs(self._args_without_fixed_relocated_at(cryptic, pair_sheet, outdir))
+            second = freeze_pairs(self._args_without_fixed_relocated_at(cryptic, pair_sheet, outdir))
+            self.assertEqual(first["pair_count"], second["pair_count"])
 
     def test_pair_sheet_duplicate_tumor_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

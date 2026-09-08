@@ -167,6 +167,10 @@ def ts() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def log_progress(message: str) -> None:
+    print(f"[{ts()}] {message}", flush=True)
+
+
 def parse_int_list(value: str) -> list[int]:
     out: list[int] = []
     for token in str(value).replace(",", " ").split():
@@ -641,6 +645,97 @@ def record_rna_variant_evaluation(
             threshold_pass_counts[int(threshold)] += 1
 
 
+def build_parent_status_from_coordinate_sidecars(
+    parent_coordinates: list[dict[str, object]],
+    parent_orfcds: list[dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    blocks_by_parent: defaultdict[str, list[GenomicBlock]] = defaultdict(list)
+    for row in sorted(
+        parent_orfcds,
+        key=lambda item: (
+            str(item.get("parent_record_id", "")),
+            int(item.get("transcript_block_order", 0) or 0),
+        ),
+    ):
+        parent_id = str(row.get("parent_record_id", ""))
+        if not parent_id:
+            continue
+        try:
+            blocks_by_parent[parent_id].append(
+                GenomicBlock(
+                    str(row.get("chromosome", "")),
+                    str(row.get("strand", "")),
+                    int(row.get("start0", 0)),
+                    int(row.get("end0", 0)),
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+
+    parent_status: dict[str, dict[str, object]] = {}
+    for row in parent_coordinates:
+        parent_id = str(row.get("parent_record_id", ""))
+        if not parent_id:
+            continue
+        parent_status[parent_id] = {
+            **row,
+            "transcript_blocks": blocks_by_parent.get(parent_id, []),
+        }
+    return parent_status
+
+
+def build_peptide_footprints_from_parent_status(
+    sample: str,
+    peptide_parent_rows: list[dict[str, object]],
+    parent_status: dict[str, dict[str, object]],
+    reference_build: str,
+) -> list[dict[str, object]]:
+    peptide_footprints: list[dict[str, object]] = []
+    for row in peptide_parent_rows:
+        parent_id = str(row.get("parent_record_id", ""))
+        parent_info = parent_status.get(parent_id, {})
+        status = str(parent_info.get("coordinate_mapping_status", "not_evaluable_candidate_coordinate_qc"))
+        reasons = str(parent_info.get("coordinate_mapping_reasons", ""))
+        tx_blocks = parent_info.get("transcript_blocks", [])
+        peptide_start = int(row.get("peptide_start", 0))
+        peptide_length = int(row.get("peptide_length", 0))
+        cds_start0 = (peptide_start - 1) * 3
+        cds_end0 = cds_start0 + peptide_length * 3
+        footprint_blocks: list[GenomicBlock] = []
+        if status == "coordinate_evaluable":
+            try:
+                footprint_blocks = [
+                    block
+                    for _segment_start, _segment_end, block in map_transcript_interval_to_genome(
+                        tx_blocks, str(parent_info.get("strand", "")), cds_start0, cds_end0
+                    )
+                ]
+            except Exception as exc:
+                status = "not_evaluable_candidate_coordinate_qc"
+                reasons = ";".join(filter(None, [reasons, f"peptide_footprint_mapping_failed:{exc}"]))
+        peptide_footprints.append({
+            "sample": sample,
+            "peptide_record_id": row.get("peptide_record_id", ""),
+            "parent_record_id": parent_id,
+            "source_parent_id": row.get("source_parent_id", ""),
+            "mhc_class": row.get("mhc_class", ""),
+            "peptide": row.get("peptide", ""),
+            "peptide_start": peptide_start,
+            "peptide_length": peptide_length,
+            "chromosome": parent_info.get("chromosome", ""),
+            "strand": parent_info.get("strand", ""),
+            "peptide_cds_start0": cds_start0,
+            "peptide_cds_end0": cds_end0,
+            "codon_blocks_transcript_order": blocks_to_json(footprint_blocks),
+            "codon_blocks_text": blocks_to_text(footprint_blocks),
+            "peptide_footprint_phase": cds_start0 % 3,
+            "candidate_coordinate_status": status,
+            "candidate_coordinate_reasons": reasons,
+            "reference_build": reference_build,
+        })
+    return peptide_footprints
+
+
 def build_coordinate_sidecars(
     args: argparse.Namespace,
     parent_core_rows: list[dict[str, object]],
@@ -849,49 +944,12 @@ def build_coordinate_sidecars(
     finally:
         reference_fasta.close()
 
-    peptide_footprints: list[dict[str, object]] = []
-    for row in peptide_parent_rows:
-        parent_id = str(row.get("parent_record_id", ""))
-        parent_info = parent_status.get(parent_id, {})
-        status = str(parent_info.get("coordinate_mapping_status", "not_evaluable_candidate_coordinate_qc"))
-        reasons = str(parent_info.get("coordinate_mapping_reasons", ""))
-        tx_blocks = parent_info.get("transcript_blocks", [])
-        peptide_start = int(row.get("peptide_start", 0))
-        peptide_length = int(row.get("peptide_length", 0))
-        cds_start0 = (peptide_start - 1) * 3
-        cds_end0 = cds_start0 + peptide_length * 3
-        footprint_blocks: list[GenomicBlock] = []
-        if status == "coordinate_evaluable":
-            try:
-                footprint_blocks = [
-                    block
-                    for _segment_start, _segment_end, block in map_transcript_interval_to_genome(
-                        tx_blocks, str(parent_info.get("strand", "")), cds_start0, cds_end0
-                    )
-                ]
-            except Exception as exc:
-                status = "not_evaluable_candidate_coordinate_qc"
-                reasons = ";".join(filter(None, [reasons, f"peptide_footprint_mapping_failed:{exc}"]))
-        peptide_footprints.append({
-            "sample": args.sample,
-            "peptide_record_id": row.get("peptide_record_id", ""),
-            "parent_record_id": parent_id,
-            "source_parent_id": row.get("source_parent_id", ""),
-            "mhc_class": row.get("mhc_class", ""),
-            "peptide": row.get("peptide", ""),
-            "peptide_start": peptide_start,
-            "peptide_length": peptide_length,
-            "chromosome": parent_info.get("chromosome", ""),
-            "strand": parent_info.get("strand", ""),
-            "peptide_cds_start0": cds_start0,
-            "peptide_cds_end0": cds_end0,
-            "codon_blocks_transcript_order": blocks_to_json(footprint_blocks),
-            "codon_blocks_text": blocks_to_text(footprint_blocks),
-            "peptide_footprint_phase": cds_start0 % 3,
-            "candidate_coordinate_status": status,
-            "candidate_coordinate_reasons": reasons,
-            "reference_build": reference_build,
-        })
+    peptide_footprints = build_peptide_footprints_from_parent_status(
+        args.sample,
+        peptide_parent_rows,
+        parent_status,
+        reference_build,
+    )
 
     summary = {
         "status": "evaluated",
@@ -1017,9 +1075,18 @@ def build_ranked_candidate_rows(
         if not pending_rows_by_key:
             return
         candidate_keys = set(pending_rows_by_key)
+        log_progress(
+            "Human reference scan started for ranked selection: "
+            f"pending_unique_peptides={len(candidate_keys)}"
+        )
         human_matches, human_summary = load_human_reference_matches(
             human_proteome,
             {peptide for _mhc, peptide in candidate_keys},
+        )
+        log_progress(
+            "Human reference scan complete: "
+            f"pending_unique_peptides={len(candidate_keys)}, "
+            f"matched_peptides={human_summary.get('matched_peptides', 0)}"
         )
         human_reference_summaries.append(human_summary)
         ordered = sorted(
@@ -1563,6 +1630,11 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         if isinstance(old_output_signature, dict) and outputs_match_signature(old_output_signature):
             return {**old, "reused": True}
 
+    log_progress(
+        "Cryptic Core QC started: "
+        f"sample={args.sample}, policy_version={policy_version}, "
+        f"candidate_selection={candidate_selection_mode}"
+    )
     annot = pd.read_csv(args.aeseps_annotation, low_memory=False)
     if "Name" not in annot.columns or "nc_class" not in annot.columns or "is_aberrant" not in annot.columns:
         raise ValueError("aeSEP annotation table must contain Name, nc_class, and is_aberrant columns")
@@ -1659,6 +1731,12 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         else:
             parent_excluded_rows.append(parent_row)
 
+    log_progress(
+        "Parent QC complete: "
+        f"parents={len(parent_rows)}, pre_coordinate_core={len(parent_core_rows)}, "
+        f"excluded={len(parent_excluded_rows)}"
+    )
+
     phase_a_parent_coordinate_rows: list[dict[str, object]] = []
     phase_a_parent_orfcds_rows: list[dict[str, object]] = []
     phase_a_coordinate_summary: dict[str, object] = {"status": "not_evaluated"}
@@ -1670,6 +1748,12 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
             _phase_a_peptide_footprints,
             phase_a_coordinate_summary,
         ) = build_coordinate_sidecars(args, parent_core_rows, [], policy_version, rna_variant_context)
+        log_progress(
+            "Coordinate phase-A QC complete: "
+            f"parents={phase_a_coordinate_summary.get('parent_rows', 0)}, "
+            f"coordinate_evaluable={phase_a_coordinate_summary.get('parent_coordinate_evaluable', 0)}, "
+            f"coordinate_not_evaluable={phase_a_coordinate_summary.get('parent_coordinate_not_evaluable', 0)}"
+        )
 
     if rna_variant_qc_enabled and rna_variant_context is not None:
         summaries = {
@@ -1715,6 +1799,7 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
                 mhc_i_lengths,
                 mhc_ii_lengths,
             )
+        log_progress(f"RNA variant/editing QC complete: retained_parent_core={len(parent_core_rows)}")
 
     if junction_qc_enabled:
         if star_pair_validation is None:
@@ -1760,6 +1845,10 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
                 mhc_i_lengths,
                 mhc_ii_lengths,
             )
+        log_progress(
+            "Junction QC complete: "
+            f"retained_parent_core={len(parent_core_rows)}, total_excluded_parents={len(parent_excluded_rows)}"
+        )
 
     parent_rank_rows: list[dict[str, object]] = []
     peptide_selection_evidence_rows: list[dict[str, object]] = []
@@ -1774,6 +1863,10 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
     }
 
     if candidate_selection_mode == RANKED_CAP_MODE:
+        log_progress(
+            "Ranked peptide selection started: "
+            f"parents={len(parent_core_rows)}, max_hla_i={max_hla_i_peptides}, max_hla_ii={max_hla_ii_peptides}"
+        )
         (
             core_peptide_rows,
             excluded_peptide_rows,
@@ -1796,6 +1889,12 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
         )
         candidate_peptide_rows = core_peptide_rows + excluded_peptide_rows + deferred_peptide_rows
         selection_summary.update(ranked_selection_summary)
+        log_progress(
+            "Ranked peptide selection complete: "
+            f"selected_hla_i={selection_summary.get('selected_hla_i', 0)}, "
+            f"selected_hla_ii={selection_summary.get('selected_hla_ii', 0)}, "
+            f"examined_unique_peptides={selection_summary.get('examined_candidate_peptides', 0)}"
+        )
     else:
         candidate_peptides = {str(row["peptide"]) for row in candidate_peptide_rows}
         human_matches, human_reference_summary = load_human_reference_matches(human_proteome, candidate_peptides)
@@ -1837,16 +1936,19 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
 
     hla_i_rows = [row for row in unique_core_peptide_rows if row["mhc_class"] == "MHC-I"]
     hla_ii_rows = [row for row in unique_core_peptide_rows if row["mhc_class"] == "MHC-II"]
-    parent_coordinate_rows, parent_orfcds_rows, peptide_footprint_rows, coordinate_summary = build_coordinate_sidecars(
-        args,
-        parent_core_rows,
-        core_peptide_rows,
-        policy_version,
-        rna_variant_context,
-    )
     if junction_qc_enabled or rna_variant_qc_enabled:
         parent_coordinate_rows = phase_a_parent_coordinate_rows
         parent_orfcds_rows = phase_a_parent_orfcds_rows
+        parent_status = build_parent_status_from_coordinate_sidecars(
+            parent_coordinate_rows,
+            parent_orfcds_rows,
+        )
+        peptide_footprint_rows = build_peptide_footprints_from_parent_status(
+            args.sample,
+            core_peptide_rows,
+            parent_status,
+            str(args.reference_build or "GRCh38"),
+        )
         coordinate_summary = {
             **phase_a_coordinate_summary,
             "peptide_footprint_rows": len(peptide_footprint_rows),
@@ -1854,6 +1956,18 @@ def build_core(args: argparse.Namespace) -> dict[str, object]:
                 1 for row in peptide_footprint_rows if row["candidate_coordinate_status"] == "coordinate_evaluable"
             ),
         }
+    else:
+        parent_coordinate_rows, parent_orfcds_rows, peptide_footprint_rows, coordinate_summary = build_coordinate_sidecars(
+            args,
+            parent_core_rows,
+            core_peptide_rows,
+            policy_version,
+            rna_variant_context,
+        )
+    log_progress(
+        "Peptide coordinate footprint complete: "
+        f"peptide_parent_rows={len(core_peptide_rows)}, footprint_rows={len(peptide_footprint_rows)}"
+    )
     if junction_qc_enabled:
         peptide_junction_rows = annotate_peptide_junctions(
             sample=args.sample,

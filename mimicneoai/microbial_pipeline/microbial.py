@@ -170,7 +170,7 @@ def _start_one_sample(
             raise
     elif bool(o.get("run_immunogenicity_prediction", False)):
         try:
-            MicrobialImmunogenicityPrediction(sample, configure, tool)
+            MicrobialImmunogenicityPrediction(sample, configure, tool, paths=paths)
         except Exception:
             tool.write_log(f"Immunogenicity prediction error:\n{traceback.format_exc()}", "error")
             raise
@@ -287,7 +287,7 @@ def _start_one_pair(
             raise
     elif bool(o.get("run_immunogenicity_prediction", False)):
         try:
-            MicrobialImmunogenicityPrediction(tumor_sample, configure, tool, run_sample_id=unit.label)
+            MicrobialImmunogenicityPrediction(tumor_sample, configure, tool, run_sample_id=unit.label, paths=paths)
         except Exception:
             tool.write_log(f"Immunogenicity prediction error:\n{traceback.format_exc()}", "error")
             raise

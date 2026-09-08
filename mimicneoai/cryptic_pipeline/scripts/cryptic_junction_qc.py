@@ -620,12 +620,70 @@ def manifest_output(manifest: dict[str, Any], suffix: str, label: str) -> dict[s
 
 
 def manifest_star_index_path(manifest: dict[str, Any]) -> str:
-    if manifest.get("star_index"):
+    if isinstance(manifest.get("star_index"), str) and manifest.get("star_index"):
         return str(manifest.get("star_index", ""))
     identity = manifest.get("star_index_identity", {})
     if isinstance(identity, dict):
-        return str(identity.get("path", ""))
+        path = identity.get("path", "")
+        return str(path) if isinstance(path, str) else ""
     return ""
+
+
+STAR_INDEX_REQUIRED_FILES = ("Genome", "SA", "SAindex", "sjdbList.out.tab")
+
+
+def star_index_identity_from_path(path: str) -> dict[str, Any]:
+    if not path:
+        return {}
+    root = Path(path)
+    return {
+        "path": str(root),
+        "exists": root.exists(),
+        "files": {
+            name: {
+                "exists": (root / name).exists(),
+                "size_bytes": (root / name).stat().st_size if (root / name).exists() else 0,
+            }
+            for name in STAR_INDEX_REQUIRED_FILES
+        },
+    }
+
+
+def manifest_star_index_identity(manifest: dict[str, Any]) -> dict[str, Any]:
+    for key in ("star_index_identity", "star_index_record"):
+        identity = manifest.get(key, {})
+        if isinstance(identity, dict) and isinstance(identity.get("files"), dict):
+            return identity
+    return star_index_identity_from_path(manifest_star_index_path(manifest))
+
+
+def star_index_fingerprint(identity: dict[str, Any]) -> str:
+    files = identity.get("files", {})
+    if not isinstance(files, dict):
+        return ""
+    records: list[tuple[str, int]] = []
+    for name in STAR_INDEX_REQUIRED_FILES:
+        record = files.get(name, {})
+        if not isinstance(record, dict) or not record.get("exists", True):
+            return ""
+        try:
+            size_bytes = int(record.get("size_bytes", 0))
+        except (TypeError, ValueError):
+            return ""
+        if size_bytes <= 0:
+            return ""
+        records.append((name, size_bytes))
+    return sha256_text(json.dumps(records, sort_keys=True, separators=(",", ":")))
+
+
+def star_index_compatible(tumor: dict[str, Any], normal: dict[str, Any]) -> bool:
+    tumor_path = str(tumor.get("star_index_path", "") or "")
+    normal_path = str(normal.get("star_index_path", "") or "")
+    if tumor_path and normal_path and tumor_path == normal_path:
+        return True
+    tumor_fingerprint = str(tumor.get("star_index_fingerprint", "") or "")
+    normal_fingerprint = str(normal.get("star_index_fingerprint", "") or "")
+    return bool(tumor_fingerprint and normal_fingerprint and tumor_fingerprint == normal_fingerprint)
 
 
 def parse_star_command_line(log_out: Path) -> list[str]:
@@ -750,6 +808,7 @@ def validate_one_star_manifest(
         star_parameters = normalize_star_parameters(parse_star_command_line(Path(manifest_log_path)))
         parameter_source = "log_out"
     manifest_hash = sha256_file(manifest_path)
+    star_index_identity = manifest_star_index_identity(manifest)
     source_manifest_summary: dict[str, Any] = {}
     if role == "normal":
         source_manifest_path = Path(str(manifest.get("source_manifest_path", "")).strip())
@@ -793,6 +852,7 @@ def validate_one_star_manifest(
         "sj_size_bytes": sj_record.get("size_bytes", ""),
         "star_version": str(manifest.get("star_version", "")),
         "star_index_path": manifest_star_index_path(manifest),
+        "star_index_fingerprint": star_index_fingerprint(star_index_identity),
         "star_index_identity_status": str(manifest.get("star_index_identity_status", "")),
         "log_out_path": manifest_log_path,
         "expected_log_sha256": manifest_log_sha,
@@ -834,8 +894,8 @@ def validate_star_pair_contract(path: Path, sample: str) -> dict[str, Any]:
     normal = validate_one_star_manifest(role="normal", row=pair, sample=sample, normal_sample=normal_sample)
     if tumor["star_version"] and normal["star_version"] and tumor["star_version"] != normal["star_version"]:
         raise ValueError(f"Tumor and normal STAR versions differ for {sample}: {tumor['star_version']} vs {normal['star_version']}")
-    if tumor["star_index_path"] and normal["star_index_path"] and tumor["star_index_path"] != normal["star_index_path"]:
-        raise ValueError(f"Tumor and normal STAR index paths differ for {sample}")
+    if not star_index_compatible(tumor, normal):
+        raise ValueError(f"Tumor and normal STAR index identity differs for {sample}")
     if not tumor["star_parameters_normalized"] or not normal["star_parameters_normalized"]:
         raise ValueError(f"Tumor and normal STAR critical parameters could not be parsed for {sample}")
     if tumor["critical_star_parameter_digest"] != normal["critical_star_parameter_digest"]:
@@ -852,7 +912,7 @@ def validate_star_pair_contract(path: Path, sample: str) -> dict[str, Any]:
         "tumor": tumor,
         "normal": normal,
         "star_version_match": tumor["star_version"] == normal["star_version"],
-        "star_index_compatibility": "compatible" if tumor["star_index_path"] == normal["star_index_path"] else "not_comparable",
+        "star_index_compatibility": "compatible",
         "critical_parameter_compatibility": "compatible",
         "tumor_sj_path": pair["tumor_sj_path"],
         "normal_sj_path": pair["normal_sj_path"],

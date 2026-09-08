@@ -22,7 +22,10 @@ from typing import Any, Dict, List, Optional
 from mimicneoai.functions.binding_prediction import configured_predictor_cli_args
 from mimicneoai.functions.fastp import fastp
 from mimicneoai.functions.hlatyping import hlahd
-from mimicneoai.functions.immunogenicity_runner import resolve_immunogenicity_python_bin
+from mimicneoai.functions.immunogenicity_runner import (
+    resolve_immunogenicity_model_root,
+    resolve_immunogenicity_python_bin,
+)
 from mimicneoai.functions.pipline_tools import raise_for_failed_samples, tools
 from mimicneoai.mutation_derived_pipeline.scripts.annotation import annotation_vcf
 from mimicneoai.mutation_derived_pipeline.scripts.hla_binding_pred import Pvacseq
@@ -106,6 +109,7 @@ def _variants_calling_and_annotation(
 def _run_mutation_immunogenicity(
     sample: str,
     configure: Dict[str, Any],
+    paths: Dict[str, Any],
     tool: tools,
     binding_outdir: str,
 ) -> None:
@@ -122,8 +126,9 @@ def _run_mutation_immunogenicity(
     if not immunogenicity_step or Path(immunogenicity_step).name != immunogenicity_step:
         raise ValueError("immunogenicity_step_name must be a single directory name")
     immunogenicity_outdir = f"{output_dir}/{tumor_sample}/{immunogenicity_step}"
+    model_root = resolve_immunogenicity_model_root(configure, paths)
     cmd = [
-        resolve_immunogenicity_python_bin(configure),
+        resolve_immunogenicity_python_bin(configure, paths),
         "-m",
         "mimicneoai.functions.immunogenicity_workflow",
         "-s",
@@ -144,8 +149,8 @@ def _run_mutation_immunogenicity(
             configure.get("args", {}).get("threads", configure.get("args", {}).get("thread", 1)),
         ))),
     ]
-    if others.get("immunogenicity_model_root"):
-        cmd.extend(["--model-root", str(others.get("immunogenicity_model_root"))])
+    if model_root:
+        cmd.extend(["--model-root", model_root])
     tool.exec_cmd(
         " ".join(shlex.quote(item) for item in cmd),
         sample,
@@ -292,7 +297,7 @@ def _start_one_sample(
                 raise ValueError(f"Unsupported binding_prediction_backend: {backend}")
 
             if bool(configure.get("others", {}).get("run_immunogenicity_prediction", False)):
-                _run_mutation_immunogenicity(sample, configure, tool, binding_outdir)
+                _run_mutation_immunogenicity(sample, configure, paths, tool, binding_outdir)
         elif bool(configure.get("others", {}).get("run_immunogenicity_prediction", False)):
             output_dir = configure["path"]["output_dir"]
             tumor_sample = sample.split(",")[0]
@@ -305,7 +310,7 @@ def _start_one_sample(
             if not binding_step or Path(binding_step).name != binding_step:
                 raise ValueError("binding_prediction_step_name must be a single directory name")
             binding_outdir = f"{output_dir}/{tumor_sample}/{binding_step}"
-            _run_mutation_immunogenicity(sample, configure, tool, binding_outdir)
+            _run_mutation_immunogenicity(sample, configure, paths, tool, binding_outdir)
 
     except Exception:
         tool.write_log(f"Worker crashed:\n{traceback.format_exc()}", "error")

@@ -1,5 +1,7 @@
 # coding=utf-8
 import os
+import shlex
+import shutil
 
 def is_directory_empty(dir_path):
     """Check if a directory is empty.
@@ -11,6 +13,35 @@ def is_directory_empty(dir_path):
         bool: True if directory is empty, False otherwise
     """
     return not os.listdir(dir_path)
+
+def resolve_hlahd_script(configured_path, freq_data_dir):
+    candidates = []
+    if configured_path:
+        candidates.append(configured_path)
+    which_path = shutil.which("hlahd.sh")
+    if which_path:
+        candidates.append(which_path)
+
+    hla_root = os.path.dirname(os.path.abspath(str(freq_data_dir).rstrip("/")))
+    candidates.extend([
+        os.path.join(hla_root, "bin", "hlahd.sh"),
+        os.path.join(hla_root, "hlahd.sh"),
+    ])
+
+    checked = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        candidate = os.path.abspath(os.path.expanduser(candidate))
+        checked.append(candidate)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    raise FileNotFoundError(
+        "HLA-HD executable hlahd.sh was not found or is not executable. "
+        "Configure database.common.HLA.HLAHD_SCRIPT. "
+        f"Checked: {', '.join(checked)}"
+    )
 
 def hlahd(run_sample_id, sample, configure, paths, tool):
     """
@@ -31,10 +62,13 @@ def hlahd(run_sample_id, sample, configure, paths, tool):
     #time_out = configure['others']['time_out']
     
     # Reference data paths
-    freq_data_dir = paths['database']['common']['HLA']['FREQ_DATA_DIR']
-    HLA_gene = paths['database']['common']['HLA']['HLA_GENE']
-    dictionary = paths['database']['common']['HLA']['DICTIONARY']
-    hla_gen = paths['database']['common']['HLA']['BOWTIE2_INDEX']
+    hla_config = paths['database']['common']['HLA']
+    freq_data_dir = hla_config['FREQ_DATA_DIR']
+    HLA_gene = hla_config['HLA_GENE']
+    dictionary = hla_config['DICTIONARY']
+    hla_gen = hla_config['BOWTIE2_INDEX']
+    hlahd_bin = resolve_hlahd_script(hla_config.get('HLAHD_SCRIPT'), freq_data_dir)
+    hlahd_bin_dir = os.path.dirname(hlahd_bin)
     
     # Output directory configuration
     
@@ -68,7 +102,12 @@ def hlahd(run_sample_id, sample, configure, paths, tool):
     cmd_5 = f"cat {fastq_dir}/{sample}.hlatmp.2.fastq |awk {awk_cmd_2} > {fastq_dir}/{sample}.hla.2.fastq"
     
     # HLaHD main analysis command
-    cmd_6 = f'hlahd.sh -t {thread} -f {freq_data_dir} {fastq_dir}/{sample}.hla.1.fastq {fastq_dir}/{sample}.hla.2.fastq {HLA_gene} {dictionary} {sample} {output_hla}'
+    cmd_6 = (
+        f'PATH={shlex.quote(hlahd_bin_dir)}:$PATH {shlex.quote(hlahd_bin)} '
+        f'-t {thread} -f {freq_data_dir} '
+        f'{fastq_dir}/{sample}.hla.1.fastq {fastq_dir}/{sample}.hla.2.fastq '
+        f'{HLA_gene} {dictionary} {sample} {output_hla}'
+    )
     
     # Cleanup commands
     cmd_7 = f'rm {fastq_dir}/*'

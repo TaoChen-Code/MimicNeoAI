@@ -135,9 +135,15 @@ Notable subfolders:
   same human-reference, coordinate, junction and external-normal evidence
   checks to each refill peptide before it can enter the final peptide Core.
 - `junction_qc.enabled: true` enables production junction support QC for
-  `cryptic_core_qc_v1.1`. It consumes the explicit STAR pair table produced by
+  `cryptic_core_qc_v1.1`. It consumes a frozen STAR pair table produced by
   `freeze_star_provenance.py`; downstream code should read SJ paths from that
-  table rather than infer unprefixed filenames. The primary policy is
+  table rather than infer unprefixed filenames. Existing production configs may
+  keep providing `junction_qc.star_pair_inputs`. For one-command paired runs,
+  set `others.alignment_control: true` and
+  `junction_qc.auto_freeze_star_provenance: true`; the launcher will freeze the
+  current tumor/control `01-star` outputs into a per-sample pair table before
+  08b. If junction QC is enabled without either an explicit pair table or
+  auto-freeze, the pipeline fails closed with a configuration error. The primary policy is
   `junction_qc_v1.0`, requiring all required parent junctions to have tumor
   unique split reads >=2. It also records threshold sensitivity for 1, 2, 3,
   and 5 reads. Intronless parents are retained as not applicable. Matched-normal
@@ -206,6 +212,10 @@ Notable subfolders:
   after binding. If binding is skipped by the scale gate, immunogenicity scoring
   is skipped and recorded in the summary rather than being treated as negative.
 - Immunogenicity inference requires a Python environment with PyTorch and
-  scikit-learn. Use `others.immunogenicity_python_bin` or the
-  `MIMICNEOAI_IMMUNOGENICITY_PYTHON_BIN` environment variable to select a CPU
-  or GPU runtime explicitly; otherwise the current pipeline Python is used.
+  scikit-learn. Runtime resolution is: `others.immunogenicity_python_bin`,
+  then `MIMICNEOAI_IMMUNOGENICITY_PYTHON_BIN`, then
+  `path.common.IMMUNOGENICITY.PYTHON_BIN` in `paths.yaml`, then the current
+  pipeline Python. Model-root resolution follows the same pattern using
+  `others.immunogenicity_model_root`,
+  `MIMICNEOAI_IMMUNOGENICITY_MODEL_ROOT`, and
+  `path.common.IMMUNOGENICITY.MODEL_ROOT`.
