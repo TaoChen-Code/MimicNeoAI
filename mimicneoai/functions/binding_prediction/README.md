@@ -1,13 +1,11 @@
 # Native Binding Prediction Backend
 
-MimicNeoAI provides a local binding-prediction backend shared by mutation-derived,
-cryptic, and microbial antigen pipelines. Mutation-derived and microbial
-antigens use the native `mimicneoai` backend with the `fast` preset by default.
-Cryptic antigen templates still default to `pvactools`; set
-`others.binding_prediction_backend: mimicneoai` explicitly for cryptic analyses
-to use the native backend.
+MimicNeoAI provides a local binding-prediction backend shared by the microbial,
+cryptic, and mutation-derived antigen pipelines. All three packaged workflow
+templates use the native `mimicneoai` backend with the `fast` preset by default.
+The legacy `pvactools` backend remains available only when selected explicitly.
 
-## Pipeline boundary
+## Pipeline Boundary
 
 - Mutation-derived antigens use external pVACtools only for VCF conversion and
   WT/MT protein FASTA generation. MimicNeoAI builds mutation-covering peptide
@@ -77,7 +75,7 @@ The task limit is evaluated after peptide-window construction but before
 the task-count estimate, and a manifest. Prediction runs only when
 `binding_prediction_force_large_samples` is explicitly enabled.
 
-## Output layout
+## Output Layout
 
 Mutation-derived output:
 
@@ -101,7 +99,7 @@ Cryptic and microbial native output:
 └── <sample>.mimicneoai_binding.summary.json
 ```
 
-## Resume rules
+## Resume Rules
 
 - Mutation pVACtools source files record the VCF, flank length, pass-only mode,
   and pVACtools image identity. A later mismatch stops with an explicit request
@@ -120,7 +118,7 @@ Cryptic and microbial native output:
 File identity uses resolved path, size, and nanosecond modification time. Use a
 new output directory when replacing an input while preserving all three values.
 
-## Output semantics
+## Output Semantics
 
 - `IC50_SUMMARY_ALGORITHMS` contains binding-affinity algorithms only.
 - EL/presentation algorithms contribute their score and percentile fields but
@@ -134,7 +132,7 @@ new output directory when replacing an input while preserving all three values.
 - Partial predictor failures remain informational. A run with runnable tasks
   but no usable prediction rows exits nonzero and stops the parent pipeline.
 
-## HLA support discovery
+## HLA Support Discovery
 
 The runner builds support catalogs from the installed predictor resources:
 
@@ -149,22 +147,22 @@ The runner builds support catalogs from the installed predictor resources:
 executables, scripts, and environments. Catalog discovery failure is fail-open:
 the task is attempted and the adapter records the real execution result.
 
-## IEDB MHC-II / NNalign runtime
+## IEDB MHC-II and NNalign Runtime
 
 IEDB MHC-II 3.1.11 imports the legacy `pkg_resources` API. Use a dedicated
 Python 3.10 environment and pin setuptools below version 81:
 
 ```bash
-python3.10 -m venv /workspace/pkgs/IEDB/.venv
-/workspace/pkgs/IEDB/.venv/bin/python -m pip install 'setuptools<81'
+python3.10 -m venv /path/to/IEDB/.venv
+/path/to/IEDB/.venv/bin/python -m pip install 'setuptools<81'
 ```
 
 Configure `IEDB_MHCII_PYTHON_BIN` with
-`/workspace/pkgs/IEDB/.venv/bin/python`. The binding runner executes an NNalign
+`/path/to/IEDB/.venv/bin/python`. The binding runner executes an NNalign
 runtime preflight before scheduling supported NNalign tasks, so a missing or
 incompatible IEDB environment fails before prediction starts.
 
-## Regression tests
+## Regression Tests
 
 ```bash
 PYTHONPATH=. python -m unittest discover -v \
@@ -175,3 +173,11 @@ The dependency-light suite does not invoke external predictors. It covers all
 three pipeline backend branches, mutation event classes, cryptic and microbial
 FASTA fixtures, HLA-II pairing, unsupported alleles, scale gating, resume input
 signatures, normalized error states, and merged-table summary semantics.
+
+## Interpretation
+
+The native backend reports algorithm-level predictions and aggregation fields;
+it does not perform antigen-source discovery QC. A Stage 1 routing failure,
+unsupported predictor-allele combination, scale-gated sample, or execution
+error is distinct from a completed non-binding prediction and remains explicit
+in the output status fields.
