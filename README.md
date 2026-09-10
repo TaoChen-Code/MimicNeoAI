@@ -6,8 +6,10 @@
 
 MimicNeoAI is a research toolkit for constructing and evaluating tumor antigen
 candidates from sequencing data. It provides separate workflows for microbial,
-sORF-encoded cryptic, and mutation-derived antigens, followed by shared binding,
-source-specific immunogenicity, and cross-source sequence-mimicry analyses.
+sORF-encoded cryptic, and mutation-derived antigens, followed by HLA-binding
+prediction, source-specific immunogenicity assessment, and cross-source peptide
+sequence matching. Pairs for which both peptides are predicted to bind the same
+patient HLA-I allele are reported as predicted mimicry candidates.
 
 The software preserves the evidence and exclusion status of each candidate.
 Unsupported HLA alleles, failed predictors, scale-gated samples, and candidates
@@ -27,11 +29,11 @@ currently distributed as part of the public release.
 | Cryptic antigen | Tumor RNA FASTQ, preferably with matched-normal RNA | Expression-, ORF-, mapping-, and junction-supported cryptic peptide Core | [Cryptic pipeline](mimicneoai/cryptic_pipeline/README.md) |
 | Mutation-derived antigen | Matched tumor-normal WES FASTQ | Event-level mutant peptides with matched-WT controls | [Mutation-derived pipeline](mimicneoai/mutation_derived_pipeline/README.md) |
 | Immunogenicity prediction | Peptide-HLA table | Source-specific immunogenicity scores and input QC | [Immunogenicity prediction](mimicneoai/immunogenicity_prediction/README.md) |
-| Molecular mimicry | Final HLA-I peptide Core tables from two or more sources | Within-patient cross-source sequence-mimicry candidates | [Molecular mimicry](mimicneoai/mimicry/README.md) |
+| Molecular mimicry | Quality-controlled HLA-I candidate tables from two or more antigen sources, with optional binding results | Within-patient sequence-similar pairs and predicted mimicry candidates | [Molecular mimicry](mimicneoai/mimicry/README.md) |
 
-The antigen workflows use HLA-I peptides of 8-11 amino acids and HLA-II
-peptides of 13-17 amino acids in the packaged configuration. Molecular
-mimicry currently evaluates only the HLA-I-length candidates. The native
+The antigen workflows use HLA-I peptides of 8–11 amino acids and HLA-II
+peptides of 13–17 amino acids in the packaged configuration. Molecular
+mimicry analysis is currently restricted to 8–11-aa HLA-I candidates. The native
 binding backend is documented separately in the
 [binding prediction guide](mimicneoai/functions/binding_prediction/README.md).
 
@@ -161,11 +163,14 @@ presentation, T-cell recognition, or clinical immunogenicity. RNA-only support
 for a cryptic or microbial peptide should not be described as DNA-confirmed,
 somatic, or naturally presented without independent evidence.
 
-The molecular-mimicry module consumes frozen, provenance-preserving HLA-I
-peptide Core tables from these workflows. Its v1.2 primary call is based only
-on within-patient, equal-length sequence similarity. Binding and HLA evidence
-remain independent downstream annotations and do not retroactively alter the
-sequence call.
+The molecular-mimicry module compares quality-controlled, equal-length HLA-I
+candidates from different antigen sources within each patient. Peptide pairs
+that meet the sequence criteria are reported as sequence-similar pairs. When
+binding results are supplied, pairs in which both peptides are predicted to
+bind the same patient HLA-I allele are additionally classified as predicted
+mimicry candidates. Shared predicted HLA-I binding does not alter the sequence
+classification. Neither classification establishes natural co-presentation or
+T-cell cross-reactivity.
 
 ## Repository Layout
 
@@ -175,7 +180,7 @@ mimicneoai/
 ├── cryptic_pipeline/              # sORF-encoded cryptic antigens
 ├── microbial_pipeline/            # Microbial antigens
 ├── mutation_derived_pipeline/     # Somatic mutation-derived antigens
-├── mimicry/                        # Cross-source sequence mimicry
+├── mimicry/                        # Cross-source peptide sequence matching
 ├── functions/binding_prediction/  # Shared native binding backend
 ├── immunogenicity_prediction/     # Runtime API, models, and benchmarks
 └── example/                       # Small module-level examples

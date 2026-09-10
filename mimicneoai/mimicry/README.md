@@ -1,34 +1,44 @@
 # Molecular Mimicry
 
-The MimicNeoAI molecular-mimicry module identifies equal-length, HLA class
-I-length peptide pairs with sequence similarity concentrated in the central,
-putative TCR-facing region. It operates on final peptide Core outputs from two
-or more antigen workflows and does not rerun antigen discovery. In this
-documentation, a peptide Core is the unique candidate set retained after a
-source workflow's formal quality-control steps.
+The MimicNeoAI molecular-mimicry module compares quality-controlled 8–11-aa
+candidate peptides from different antigen sources within each patient. It first
+identifies sequence-similar pairs on the basis of positional identity across the
+central region and across the full peptide. When HLA-binding predictions are
+available, pairs in which both peptides are predicted to bind the same patient
+HLA-I allele are classified as predicted mimicry candidates. The module operates
+on candidate sets retained by the antigen-discovery workflows and does not rerun
+antigen discovery.
 
-## Evidence Boundary
+## Sequence Matching and Shared HLA-I Binding
 
-The current public policy is `sequence_mimicry_v1.2`. A pair is evaluated only
-when both peptides:
+The analysis distinguishes sequence-similar pairs from predicted mimicry
+candidates. A pair is evaluated for sequence similarity only when both peptides:
 
 - belong to the same patient but different antigen sources;
 - have the same length of 8, 9, 10, or 11 amino acids;
 - contain only the 20 canonical amino acids; and
-- passed their source-specific upstream Core QC.
+- have passed source-specific quality control.
 
-A pair is called `sequence_based_mimicry_v12_candidate` when all three
-sequence requirements are met:
+A peptide pair is classified as a sequence-similar pair when all three
+requirements are met:
 
 1. central position-wise identity is at least 60% over P4 through
    Pmin(8, L-1);
 2. the same central window contains at least three consecutive exact matches;
 3. the full peptide contains at least four position-wise exact matches.
 
-HLA type, predicted binding, immunogenicity, mass-spectrometry evidence, and
-the legacy longest common substring do not determine this primary sequence
-call. Sequence similarity alone does not demonstrate shared HLA presentation
-or T-cell cross-reactivity.
+Passing pairs are reported as sequence-similar pairs. The machine-readable
+`primary_call` field records this result as
+`sequence_based_mimicry_v12_candidate`. HLA type, predicted binding,
+immunogenicity, immunopeptidomics evidence, and the legacy longest common
+substring do not contribute to the sequence classification. Exact P2 and
+PΩ matches and BLOSUM62 scores are retained as descriptive annotations.
+
+Microbial--Mutation and Microbial--Cryptic comparisons comprise the
+microbial--host analyses. Cryptic--Mutation comparisons are reported separately
+as cross-source tumour-antigen sequence similarity. Sequence similarity and
+shared predicted HLA-I binding nominate peptide pairs for further evaluation
+but do not establish natural co-presentation or T-cell cross-reactivity.
 
 ## Command Line
 
@@ -54,9 +64,9 @@ Then run:
 mimicneoai mimicry -c mimicry.yaml
 ```
 
-Thresholds are part of the named frozen policy and are intentionally absent
-from the run configuration. A change to an eligibility threshold requires a
-new policy version.
+The method identifier records the implemented thresholds for reproducibility,
+so these values are not repeated in the run configuration. Changes to the
+eligibility thresholds require a new method version.
 
 `workers` limits concurrent search processes. `shard_count` divides each
 patient, source-pair, and peptide-length comparison into deterministic,
@@ -108,11 +118,13 @@ mimicry/
 └── .parts/
 ```
 
-`mimicry_pairs.tsv.gz` contains only pairs passing v1.2. The stagewise table
-records the number of all evaluable, same-length cross-source pairs without
-materializing failed Cartesian pairs. Member provenance is written once for
-each participating source occurrence and retains the original source row as
-JSON.
+`mimicry_pairs.tsv.gz` contains the sequence-similar pairs identified by the
+analysis. When binding support is enabled, their shared HLA-I binding status
+and predicted mimicry classification are recorded in
+`mimicry_hla_support.tsv.gz`. The stagewise table records the number of all
+evaluable, same-length cross-source pairs without materializing failed
+Cartesian pairs. Member provenance is written once for each participating
+source occurrence and retains the original source row as JSON.
 
 For source pairs containing mutation-derived peptides, event-level WT
 classification is reported separately as `MT_specific_sequence_mimic`,
@@ -123,13 +135,13 @@ The manifest records resolved policy values, source file identities, code
 identities, output hashes, worker settings, and elapsed time. Existing results
 are reused only when the complete input and output contracts match.
 
-## Shared HLA-I Evidence
+## Predicted Mimicry Candidates with Shared HLA-I Binding
 
-Set `binding_support.enabled: true` to annotate sequence pairs using existing
-MimicNeoAI merged binding tables listed in `binding_path`. The module does not
-run or reimplement a predictor. It uses the Best/Median values produced by the
-shared binding backend and reports support only when both peptide members pass
-for the same classical HLA-A, HLA-B, or HLA-C allele:
+Set `binding_support.enabled: true` to evaluate sequence-similar pairs using
+existing MimicNeoAI merged binding tables listed in `binding_path`. The module
+does not run or reimplement a predictor. A pair is classified as a predicted
+mimicry candidate only when both peptides meet the binding criteria for the
+same patient HLA-A, HLA-B, or HLA-C allele:
 
 ```yaml
 binding_support:
@@ -143,8 +155,8 @@ The result is written to `mimicry_hla_support.tsv.gz`. Missing metrics or
 unsupported alleles are marked `binding_not_evaluable`, not as negative
 binding evidence. The HLA-A/B/C allele universe must also agree between both
 source results for a patient. A mismatch is reported as
-`binding_not_evaluable_hla_contract_mismatch`. This annotation never removes
-or changes a v1.2 sequence candidate.
+`binding_not_evaluable_hla_contract_mismatch`. This assessment does not change
+the set of sequence-similar pairs.
 
 ## Python API
 

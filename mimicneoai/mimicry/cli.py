@@ -67,7 +67,10 @@ def load_run_config(path: Path) -> MimicryRunConfig:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Find within-patient, cross-source sequence mimicry candidates."
+        description=(
+            "Identify within-patient, cross-source sequence-similar peptide pairs "
+            "and optionally assess shared predicted HLA-I binding."
+        )
     )
     parser.add_argument("-c", "--configure", required=True, type=Path)
     return parser

@@ -1,5 +1,5 @@
-# Sequence-mimicry thresholds are frozen by the named method and are not
-# configurable in a run file.
+# The method identifier records the sequence-matching thresholds used for the
+# analysis. These thresholds are not configured separately for individual runs.
 method: "sequence_mimicry_v1.2"
 
 # One TSV row per patient and antigen source. Relative paths in both this YAML
@@ -18,8 +18,8 @@ workers: 8
 # single comparison but also rebuild the search index more often.
 shard_count: 2
 
-# Optional post hoc evidence from existing MimicNeoAI merged binding tables.
-# This never changes the primary sequence-mimicry call. When enabled, every
-# input-manifest row must provide binding_path.
+# Optional assessment of shared predicted HLA-I binding using existing
+# MimicNeoAI merged binding tables. This does not change the sequence-similar
+# pair set. When enabled, every input-manifest row must provide binding_path.
 binding_support:
   enabled: false
