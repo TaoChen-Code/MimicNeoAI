@@ -163,14 +163,11 @@ presentation, T-cell recognition, or clinical immunogenicity. RNA-only support
 for a cryptic or microbial peptide should not be described as DNA-confirmed,
 somatic, or naturally presented without independent evidence.
 
-The molecular-mimicry module compares quality-controlled, equal-length HLA-I
-candidates from different antigen sources within each patient. Peptide pairs
-that meet the sequence criteria are reported as sequence-similar pairs. When
-binding results are supplied, pairs in which both peptides are predicted to
-bind the same patient HLA-I allele are additionally classified as predicted
-mimicry candidates. Shared predicted HLA-I binding does not alter the sequence
-classification. Neither classification establishes natural co-presentation or
-T-cell cross-reactivity.
+The molecular-mimicry module connects candidate repertoires across antigen
+sources through within-patient peptide sequence comparison. It reports
+sequence-similar pairs and, when binding results are available, identifies
+predicted mimicry candidates supported by binding of both peptides to the same
+patient HLA-I allele.
 
 ## Repository Layout
 
